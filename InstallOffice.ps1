@@ -1,9 +1,8 @@
 Param(
   $SourcePath=$(Split-Path $MyInvocation.MyCommand.Path),
-  # $SourcePath=$PSScriptRoot,
-  [ValidateSet("32","64")][String]$Architecture,
-  [ValidateSet("Insiders","Monthly","Targeted","Broad")][string]$ChangeUpdateChannel,
-  [ValidateSet("EN","FR","DE")][string]$Language,
+  [ValidateSet("32","64")][String]$Architecture)="32",
+  [ValidateSet("Insiders","Monthly","Targeted","Broad")][string]$ChangeUpdateChannel="Monthly",
+  [ValidateSet("EN","FR","DE")][string]$Language="EN",
   [switch]$Office=$false,
   [switch]$Visio=$false,
   [switch]$Project=$false,
