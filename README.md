@@ -1,4 +1,8 @@
+**Requirements for all my PS Scripts** : Powershell 7+, i do not create script for older PS since PS7 is compatible on all OS where PS5- is available and is multiplateform.
+
 # Functions of AzureADGetRights.ps1 :
+
+**Requirements** : Az Cli must be installed
 
 ## Get-AzureSubscriptions
   * _What is it_ : List all subscription of currently connected user
