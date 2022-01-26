@@ -1,4 +1,4 @@
-**Requirements for all my PS Scripts** : Powershell 7+, i do not create script for older PS since PS7 is compatible on all OS where PS5- is available and is multiplateform.
+**Requirements for all my PS Scripts** : Powershell 7+, i do not create script for older PS since PS7 is available on most OS.
 
 # Functions of AzureADGetRights.ps1 :
 
