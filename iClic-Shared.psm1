@@ -58,7 +58,7 @@ if ($IsLinux) {
 }
 
 # TO CLEAN
-Function PSElevate {
+Function PSElevate { # Open an elevated Powershell window (not possible to elevate without opening a new window). If already elevated will open another window
  Param (
   $User
  )
@@ -86,7 +86,7 @@ Function PSElevate {
   write-colored "Red" "Error while Elevate : " $error[0]
  }
 }
-Function Get-UptimePerso {
+Function Get-UptimePerso { # Show machine uptime, works with any OS and works remotely
  Param (
   $ServerName=$env:ComputerName,
   [switch]$Obj
@@ -127,7 +127,7 @@ Function Get-UptimePerso {
  }
  return $returnmessage
 }
-Function KillAllPsSessions {
+Function KillAllPsSessions { # Remove all opened PS sessions
  $Sessions=get-pssession
  try {
   $Sessions | Remove-PSSession -ErrorAction Stop
@@ -139,19 +139,9 @@ Function KillAllPsSessions {
  Title
  Remove-Module -Name "tmp_*"
 }
-Function Get-LastStart {
- Param (
-  [switch]$ShowAll
- )
- if ($ShowAll) {
-  Get-WinEvent -FilterHashtable @{LogName='System';ID='6009'} | Select-Object RecordID,@{name="Date";expression={$(get-date -Date $_.TimeCreated -UFormat "%Y-%m-%d %T")}}
- } else {
-  (Get-WinEvent -FilterHashtable @{LogName='System';ID='6009'} -MaxEvents 1 | Select-Object RecordID,@{name="Date";expression={$(get-date -Date $_.TimeCreated -UFormat "%Y-%m-%d %T")}}).Date
- }
-}
 
 # Display Functions
-Function Title {
+Function Title { # Used to manage the title of the Powershell Window
  Param (
   $PostMsg
  )
@@ -171,7 +161,7 @@ Function Title {
   $Host.UI.RawUI.WindowTitle = "$TitleUserInfo$TitleAdmin$TitlePsVersion$PostMsg$TitleArchitecture"
  } catch {}
 }
-Function prompt {
+Function prompt { # Used to have a "pretty" Powershell prompt showing important info (fast - will be slow when adding Kube prompt)
 
  # $backcolor=[console]::backgroundcolor
  # $frontcolor=[console]::foregroundcolor
@@ -236,7 +226,7 @@ Function prompt {
 
  # Title $($myinvocation.Line)
 }
-Function Question {
+Function Question { # Function to ask simple yes/no question
  Param (
   $message,
   [int]$defaultChoice=0,
@@ -255,7 +245,7 @@ Function Question {
   return $false
  }
 }
-Function Banner {
+Function Banner { # Prints a default banner
  Param (
   [string]$title
  )
@@ -269,10 +259,10 @@ Function Banner {
  Write-StarLine
  Write-Blank
 }
-Function ClearProgressBar {
+Function ClearProgressBar { # Remove Powershell process bar which sometimes is not closed
  for ($i = 1; $i -le 100; $i++ ) {write-progress -activity "Finishing" -status "$i% Complete:" -percentcomplete $i -Completed}
 }
-Function PSWindowResize {
+Function PSWindowResize { # Used to resize the Powershell Window
  Param (
   $windowsize="100"
  )
@@ -283,7 +273,7 @@ Function PSWindowResize {
  # [console]::windowheight=(get-host).UI.RawUI.MaxPhysicalWindowSize.Height
  } catch {}
 }
-Function PSWindowsColors {
+Function PSWindowsColors { # Used to change default Powershell colors
  Param (
   [switch]$Dark=$false
  )
@@ -297,7 +287,7 @@ Function PSWindowsColors {
   $host.PrivateData.ErrorBackgroundColor = $BG_Color
  } catch {}
 }
-Function Progress {
+Function Progress { # Default progress function, used to show a progress of something that may take time
  Param (
   $Message,
   $Value,
@@ -314,13 +304,13 @@ Function Progress {
  Write-Colored $defaultblue "`r$blanklinesize" -nonewline
  Write-Colored $defaultblue "`r$Time$Message" $Value -nonewline
 }
-Function ProgressClear {
+Function ProgressClear { # Clear progress when a progress is done
  try {
   $blanklinesize=" "*([console]::windowwidth -2)
  } catch {$blanklinesize=" "*100}
  Write-Colored $defaultblue "`r$blanklinesize" -nonewline
 }
-Function Align {
+Function Align { # Align function depending on the window size
  Param (
   $variable,
   $size,
@@ -330,7 +320,7 @@ Function Align {
  return $variable
 }
 # Write functions
-Function Write-Centered {
+Function Write-Centered { # Function to print text centered on the powershell screen
  Param (
   [string]$message,
   [string]$Color = $defaultblue,
@@ -344,7 +334,7 @@ Function Write-Centered {
  if ($NoNewLine) {$NoNewLineValue="-nonewline"} else {$NoNewLineValue=""}
  Write-Colored $Color "" ("{0,$offsetvalue}" -f $message) $NoNewLineValue
 }
-Function Write-StarLine {
+Function Write-StarLine { # Print a line of a specific character
  Param (
   $character,
   $color="Blue"
@@ -357,10 +347,10 @@ Function Write-StarLine {
  }
  Write-Centered $starsize $color
 }
-Function Write-Blank {
+Function Write-Blank { # Print a blank line (\n equivalent)
  Write-Host
 }
-Function Write-Colored {
+Function Write-Colored { # Advanced Write-Host function which can be used to print to a file at the same time as the screen
  Param (
   $Color=$defaultblue,
   $NonColoredText,
@@ -698,29 +688,14 @@ Function Tail { # 'tail' equivalent
  if ( ! (test-path $filename)) { write-Colored "Red" "" "Unavailable path : $filename" ; return }
  get-content $filename -wait -tail $tailsize
 }
-Function Get-LastReboots {
- Param (
-  $Server=$Env:COMPUTERNAME
- )
- $xml=@'
-<QueryList>
-<Query Id="0" Path="System">
-<Select Path="System">*[System[(EventID=6005)]]</Select>
-</Query>
-</QueryList>
-'@
-
- Get-WinEvent -FilterXml $xml -MaxEvents 20 -ComputerName $Server | Select-Object @{Name="Reboots";Expression={Format-Date $_.TimeCreated}}
-}
-Function Get-TopProcesses {
+Function Get-TopProcesses { # 'top' equivalent using Get-Process
  Param (
   $NumberOfProcess = 25
  )
- $LogicalProc =  (Get-CimInstance win32_Processor).NumberOfLogicalProcessors
  Get-Process | Sort-Object -Descending cpu | Select-Object -First 15 ProcessName,ID,@{N="Memory";E={Format-Filesize $_.PrivateMemorySize}},StartTime,
  @{N="TotalProcessorTime";E={($_.TotalProcessorTime).ToString().Split(".")[0]}},Path | Sort-Object CPU -Descending | Format-Table
 }
-Function Top { # 'top' equivalent
+Function Top { # 'top' equivalent using Windows Counters
  Param (
   $MaxProcess = 25
  )
@@ -866,6 +841,29 @@ Function Get-DiskUsage { # 'du' equivalent
  New-Object PSObject -Property @{Name="[Total]";'Size(Auto)'=$(Format-FileSize $global:TotalSize);Size=$global:TotalSize;Count=$global:TotalCount}
 
 }
+Function Get-LastReboots { # 'last reboot' equivalent
+ Param (
+  [switch]$ShowAll,
+  $EventID = "6009",
+  $Server = $Env:COMPUTERNAME
+ )
+ # Event ID 6005 (alternate): "The event log service was started." This is synonymous to system startup.
+ # Event ID 6006 (alternate): "The event log service was stopped." This is synonymous to system shutdown.
+ # Event ID 6008 (alternate): "The previous system shutdown was unexpected." Records that the system started after it was not shut down properly.
+ # Event ID 6009 (alternate): Indicates the Windows product name, version, build number, service pack number, and operating system type detected at boot time.
+
+ if ($ShowAll) {
+  Get-WinEvent -FilterHashtable @{LogName='System';ID='$EventID'} -ComputerName $Server | Select-Object RecordID,@{name="Date";expression={$(get-date -Date $_.TimeCreated -UFormat "%Y-%m-%d %T")}}
+ } else {
+  (Get-WinEvent -FilterHashtable @{LogName='System';ID='$EventID'} -MaxEvents 1 -ComputerName $Server | Select-Object RecordID,@{name="Date";expression={$(get-date -Date $_.TimeCreated -UFormat "%Y-%m-%d %T")}}).Date
+ }
+
+#  It is also possible to do this using XML :
+#  $xml=@'
+# <QueryList><Query Id="0" Path="System"><Select Path="System">*[System[(EventID=6005)]]</Select></Query></QueryList>
+# '@
+#   Get-WinEvent -FilterXml $xml -MaxEvents $MaxEvents -ComputerName $Server | Select-Object @{Name="Reboots";Expression={Format-Date $_.TimeCreated}}
+}
 
 # SID Convert
 Function Get-SIDFromUser {
@@ -913,7 +911,7 @@ Function WaitForKeyPressAdvanced {
   $Message = "Press any key to continue . . . "
  )
  If ($psISE) {
-  # The "ReadKey" functionality is not supported in Windows PowerShell ISE.
+  # The "ReadKey" functionality is not supported in Windows PowerShell ISE ...
   $Shell = New-Object -ComObject "WScript.Shell"
   $Shell.Popup("Click OK to continue.", 0, "Script Paused", 0)
   Return
@@ -1066,8 +1064,8 @@ Function Assert-IsDLLInRegistry {
     $Value=$CurrentProperty.'(default)'
     $ValueFound=$True
    }
+   [pscustomobject]@{CLSID=$CLSID;ValueFound=$ValueFound;Value=$Value}
   }
-  Return $ValueFound,$CLSID,$Value
  } else {
   $Dump=reg query HKLM\$RegPath /s /f $DllName
   $Result=$LastExitCode
@@ -1576,7 +1574,7 @@ Function Get-WindowsVersion {
  )
  Try {
   if (! ($Quick)) {
-   #Check Command Availibility (PS 5.1+)
+   #Check Command Availability (PS 5.1+)
    if ($ServerName) {
     $AdvCommandAvailable=invoke-command -ComputerName $ServerName -ScriptBlock {$(get-command Get-ComputerInfo -ErrorAction SilentlyContinue)}
    } else {
@@ -2310,7 +2308,7 @@ Function Get-IP {
    $countIPv6=0
    $_.IP | Sort-Object PrefixLength | ForEach-Object {
     if ($_.PrefixLength -le "32") {
-     $IPType = "IPv4"
+     # IPv4
      if ($count -eq 0) {
       write-colored $fontcolor (Align "IP" $alignsize " : ") "$($_.Address) | $($_.IPv4Mask) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
      }
@@ -2320,7 +2318,7 @@ Function Get-IP {
      $count++
     }
     if (($_.PrefixLength -gt "32")) {
-     $IPType = "IPv6"
+     # IPv6
      if ($countIPv6 -eq 0) {
       write-colored $fontcolor (Align "IPv6" $alignsize " : ") "$($_.Address) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
      }
@@ -2356,6 +2354,16 @@ Function Get-IP {
   }
   if ($_.DHCP) {write-colored $fontcolor (Align "DHCP " $alignsize " : ") $_.DHCP}
   if ($_.Sent) {write-colored $fontcolor (Align "Sent | Received " $alignsize " : ") "$($_.Sent) | $($_.Received)"}
+ }
+
+ $NRPTPolicies = Get-DnsClientNrptPolicy -Effective
+ if ($NRPTPolicies) {
+  Write-StarLine -character "-"
+  Write-Centered -Color 'Magenta' "NRPT Policies"
+  Write-StarLine -character "-"
+  $NRPTPolicies | ForEach-Object {
+   write-colored $fontcolor (Align "$($_.Namespace) " $alignsize " : ") $_.NameServers
+  }
  }
 }
 Function Get-NetIP {
@@ -3028,7 +3036,7 @@ Function Get-GPOALL {
             @{LABEL="LinkOrder";EXPRESSION={$_.link.linkorder}},
             @{LABEL="Denied";EXPRESSION={$_.AccessDenied}},
             Name,
-            @{LABEL="LinkLocation";EXPRESSION={$_.link.SOMPath}},SecurityFilter | Sort-Object { [int]$_.linkorder }
+            @{LABEL="LinkLocation";EXPRESSION={$_.link.SOMPath}},SecurityFilter | Sort-Object { [int]$_.linkorder[0] }
 
  #User
  $UserResult=$xml.DocumentElement.UserResults.GPO | Where-Object {
@@ -3040,7 +3048,7 @@ Function Get-GPOALL {
             @{LABEL="LinkOrder";EXPRESSION={$_.link.linkorder}},
             @{LABEL="Denied";EXPRESSION={$_.AccessDenied}},
             Name,
-            @{LABEL="LinkLocation";EXPRESSION={$_.link.SOMPath}},SecurityFilter | Sort-Object { [int]$_.linkorder }
+            @{LABEL="LinkLocation";EXPRESSION={$_.link.SOMPath}},SecurityFilter | Sort-Object { [int]$_.linkorder[0] }
 
  $AllEnabled=$ComputerResult+$UserResult | Where-Object Denied -eq false
  $AllDisabled=$ComputerResult+$UserResult | Where-Object Denied -eq True
@@ -4090,7 +4098,7 @@ Function Get-ExchangeResources {
  Connect-O365 $user $password
 
  #Get O365 Information
- $Migrated=Get-Mailbox -RecipientTypeDetails RoomMailbox -ResultSize:Unlimited -filter {DisplayName -like "DAS FR*" } | Select-Object SamAccountName,DisplayName,PrimarySmtpAddress,
+ $Migrated=Get-Mailbox -RecipientTypeDetails RoomMailbox -ResultSize:Unlimited -filter {DisplayName -like "*" } | Select-Object SamAccountName,DisplayName,PrimarySmtpAddress,
   @{name="EmailAddresses";expression={$_.EmailAddresses -replace "SMTP:","" -join ","}},Office,
   @{name="GrantSendOnBehalfTo";expression={$_.GrantSendOnBehalfTo.Name -join ","}},UserPrincipalName,OrganizationalUnit
 
@@ -4984,46 +4992,50 @@ Function Get-Rights {
  $U_Administrators=Get-UserFromSID 'S-1-5-32-544'
  $U_CreatorOwner=Get-UserFromSID 'S-1-3-0'
 
- # while ( ! $path ) { $path = read-host "Enter path to check" }
- if ( ! ($(try {test-path $path -ErrorAction SilentlyContinue} catch {}))) {write-colored "Red" -ColoredText "Please provide a valid path. `"$path`" is not accessible" ; return}
- $objlist=@()
- get-acl $path | ForEach-Object {$_.Access} | Sort-Object | ForEach-Object {
-  $obj = New-Object PSObject
-  $obj | Add-Member NoteProperty ID $_.IdentityReference
-  if ($_.GetType().Name -eq 'FileSystemAccessRule') { $CurrentRights=$_.FileSystemRights }
-  elseif ($_.GetType().Name -eq 'RegistryAccessRule') { $CurrentRights=$_.RegistryRights }
-  #Add different type of rights
-  else { $CurrentRights='UNKNOWN' }
-  $obj | Add-Member NoteProperty Rights $CurrentRights
-  $obj | Add-Member NoteProperty Type $_.AccessControlType
-  $objlist += $obj
- }
+ try {
+  # while ( ! $path ) { $path = read-host "Enter path to check" }
+  if ( ! ($(try {test-path $path -ErrorAction SilentlyContinue} catch {}))) {write-colored "Red" -ColoredText "Please provide a valid path. `"$path`" is not accessible" ; return}
+  $objlist=@()
+  get-acl $path | ForEach-Object {$_.Access} | Sort-Object | ForEach-Object {
+   $obj = New-Object PSObject
+   $obj | Add-Member NoteProperty ID $_.IdentityReference
+   if ($_.GetType().Name -eq 'FileSystemAccessRule') { $CurrentRights=$_.FileSystemRights }
+   elseif ($_.GetType().Name -eq 'RegistryAccessRule') { $CurrentRights=$_.RegistryRights }
+   #Add different type of rights
+   else { $CurrentRights='UNKNOWN' }
+   $obj | Add-Member NoteProperty Rights $CurrentRights
+   $obj | Add-Member NoteProperty Type $_.AccessControlType
+   $objlist += $obj
+  }
 
- if ($Object) {
+  if ($Object) {
+   $objlist | ForEach-Object {
+    if ($_.Type -eq "Allow") {"$($_.ID) ($($_.Rights))"} else {"$($_.ID) ($($_.Rights)) [DENIED]"}
+   }
+   return
+  }
+
   $objlist | ForEach-Object {
-   if ($_.Type -eq "Allow") {"$($_.ID) ($($_.Rights))"} else {"$($_.ID) ($($_.Rights)) [DENIED]"}
+   #$textcolor = [console]::foregroundcolor
+   $textcolor = "red"
+   #if ( $_.Rights -eq "FullControl" ) { $textcolor = "red" }
+   #Different color for default rights
+   if ( $_.ID -eq "BUILTIN\$U_Users") {if ( $_.Rights -like "ReadAndExecute*" ) {$textcolor = $defaultblue} }
+   if ( $_.Rights -eq "FullControl" -and $_.ID -eq "BUILTIN\$U_Administrators" -or $_.ID -eq "NT AUTHORITY\$U_System" ) { $textcolor = "DarkGreen" }
+   if ( $path -eq "C:\" ) {
+    if ( $_.ID -eq "BUILTIN\$U_Users" -and ( $_.Rights -like "AppendData*" -or $_.Rights -like "CreateFiles*" ) ) {$textcolor = $defaultblue}
+    if ( $_.ID -eq $U_CreatorOwner -and $_.Rights -like "268435456" ) {$textcolor = $defaultblue}
+   }
+   #To Highlight a specific user. Everything is black except specified user
+   if ( $highlighteduser ) { if ( $_.ID -like "*"+$highlighteduser ) {$textcolor =$defaultblue} else {$textcolor = [console]::foregroundcolor} }
+   if ($_.Type -eq "Allow") {
+    Write-colored $textcolor "=>" ($_.ID,"(",$_.Rights,")")
+   } else {
+    Write-colored $textcolor "=>" ($_.ID,"(",$_.Rights,") [DENIED]")
+   }
   }
-  return
- }
-
- $objlist | ForEach-Object {
-  #$textcolor = [console]::foregroundcolor
-  $textcolor = "red"
-  #if ( $_.Rights -eq "FullControl" ) { $textcolor = "red" }
-  #Different color for default rights
-  if ( $_.ID -eq "BUILTIN\$U_Users") {if ( $_.Rights -like "ReadAndExecute*" ) {$textcolor = $defaultblue} }
-  if ( $_.Rights -eq "FullControl" -and $_.ID -eq "BUILTIN\$U_Administrators" -or $_.ID -eq "NT AUTHORITY\$U_System" ) { $textcolor = "DarkGreen" }
-  if ( $path -eq "C:\" ) {
-   if ( $_.ID -eq "BUILTIN\$U_Users" -and ( $_.Rights -like "AppendData*" -or $_.Rights -like "CreateFiles*" ) ) {$textcolor = $defaultblue}
-   if ( $_.ID -eq $U_CreatorOwner -and $_.Rights -like "268435456" ) {$textcolor = $defaultblue}
-  }
-  #To Highlight a specific user. Everything is black except specified user
-  if ( $highlighteduser ) { if ( $_.ID -like "*"+$highlighteduser ) {$textcolor =$defaultblue} else {$textcolor = [console]::foregroundcolor} }
-  if ($_.Type -eq "Allow") {
-   Write-colored $textcolor "=>" ($_.ID,"(",$_.Rights,")")
-  } else {
-   Write-colored $textcolor "=>" ($_.ID,"(",$_.Rights,") [DENIED]")
-  }
+ } Catch {
+  write-host -foregroundcolor "Red" "Error checking rights on folder $path ($($Error[0]))"
  }
 }
 Function Set-Rights {
@@ -5475,7 +5487,7 @@ Function Connect-Kaspersky { #Connect to the API
  $KLDomainEncoded=Convert-StringToBase64UTF8 $KLDomain
 
  #Not Used :
- $KLServerEncoded=Convert-StringToBase64UTF8 $KLServer
+ # $KLServerEncoded=Convert-StringToBase64UTF8 $KLServer
 
  $url = "https://$($KLServerFull):13299/api/v1.0/login"
  $Authentheaders = @{
@@ -6274,7 +6286,7 @@ Function Get-PowerSettingsAdvanced {
  Get-CimInstance -ClassName Win32_PowerSetting -Namespace root\cimv2\power | Select-Object ElementName,@{name="ID";expression={$_.InstanceID.split("\")[1] -replace '}','' -replace '{',''}},Description | Sort-Object ElementName
 }
 
-#Sound
+# Sound
 Function Set-Speaker {
  Param (
   $Volume,
@@ -6431,7 +6443,7 @@ Function Get-KeycloakValueForAllUsers {
   $CurrentValue | Select-Object identityProvider,GUID,UserNameKC,@{Label="UserID";Expression={$_.userId.Trim()}},@{Label="UserName";Expression={$_.userName.Trim()}}
  }
 }
-Function Get-KeyCloakRolesFromID { #Get All Assigned Role from Users or Service Account
+Function Get-KeyCloakRolesFromID { # Get All Assigned Role from Users or Service Account
  Param (
   [Parameter(Mandatory=$true)]$KeyCloakID,
   [Parameter(Mandatory=$true)]$KeycloakURL,
@@ -6929,6 +6941,8 @@ Function Add-ToPath {
 Function Install-MSI { #Generic MSI Installer with logs
  Param (
   [Parameter(Mandatory=$true)]$MsiPath,
+  $ProductName = "Product",
+  $LogfileLocation = $("$env:SystemRoot\Temp"),
   [switch]$Remove=$false
  )
  $ErrorActionPreference="Stop"
@@ -6937,21 +6951,21 @@ Function Install-MSI { #Generic MSI Installer with logs
   if ( ! $(test-path $MsiPath) ) { throw "Path unavailable : $MsiPath" }
   $DataStamp = get-date -uformat "%Y%m%d-%H%M"
   $MsiFileName=[System.IO.Path]::GetFileNameWithoutExtension($MsiPath)
-  $logFile = $("$env:SystemRoot\Temp")+"\"+$MsiFileName+"-"+$DataStamp+".log"
+  $logFile = $LogfileLocation+"\"+$MsiFileName+"-"+$DataStamp+".log"
   if ($Remove) {$InstallOrRemove="x"} else {$InstallOrRemove="i"}
   $MSIArguments = @(
    "/$InstallOrRemove"
    ('"{0}"' -f $MsiPath)
    "/qn"
    "/norestart"
-   "/L*"
+   "/Lv*x"
    $logFile
   )
   Start-Process "msiexec.exe" -ArgumentList $MSIArguments -Wait -NoNewWindow
 
-  write-output "$(get-date -uformat '%Y-%m-%d %T') - Install OK Check Log"
+  write-output "$(get-date -uformat '%Y-%m-%d %T') $($Env:COMPUTERNAME) - Install OK Check Log"
 
-  Get-Content $logFile | Select-String "MSI \(s\)" | Out-String
+  Get-Content $logFile | Select-String "MSI \(s\)" | Select-String $ProductName |  Out-String
  } catch {
   write-output "$(get-date -uformat '%Y-%m-%d %T') - ERROR : $($Error[0])"
  }
@@ -7002,6 +7016,7 @@ Function Install-GIT { # Download and install latest GIT [User version] (Non Adm
   $SetupFileName = Get-FileFromURL $DownloadLink -OutputFile 'Git.exe'
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
   Invoke-Expression  "& { ./$SetupFileName /verysilent /Log /suppressmsgboxes /norestart /forcecloseapplications /restartapplications /lang=EN /dir='$InstallDestination' }"
+  Wait-ProcessTermination -Process $SetupFileName -Message "Waiting for the end of the installation"
   Remove-Item $SetupFileName
   Add-ToPath "$InstallDestination\cmd"
  } Catch {
@@ -7017,6 +7032,7 @@ Function Install-StorageExplorer { # Download and install latest Storage Explore
   $SetupFileName = Get-FileFromURL $DownloadLink -OutputFile 'StorageExplorer.exe'
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
   Invoke-Expression  "& { .\$SetupFileName /VERYSILENT /SUPPRESSMSGBOXES /FORCECLOSEAPPLICATIONS /LANG=US /CURRENTUSER /NORESTART /LOG=$InstallDestination\StorageExplorerInstall.log /dir='$InstallDestination' }"
+  Wait-ProcessTermination -Process $SetupFileName -Message "Waiting for the end of the installation"
   Remove-Item $SetupFileName
   Add-ToPath "$InstallDestination"
  } Catch {
@@ -7027,6 +7043,7 @@ Function Install-KubeCTL { # Download and 'install' latest KubeCTL - Add Binary 
  Param (
   $InstallDestination="C:\Apps\Kubectl"
  )
+ New-Item -Type Directory $InstallDestination -Force
  $logfile = "$InstallDestination\Kubectl_Install.log"
  Write-Colored -Color "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Getting latest version number" -FilePath $logfile
  $CurrentVersionNumber=$(Invoke-WebRequest 'https://storage.googleapis.com/kubernetes-release/release/stable.txt' -ErrorAction Stop -TimeoutSec 1 -UseBasicParsing).Content.Trim()
@@ -7128,7 +7145,7 @@ Function Install-FFMpeg { # Download and 'install' latest FFMpeg - Add Binary to
  $RootURL = "https://github.com"
  $ProductName = "ffmpeg"
 
- $DownloadLink = $RootURL + ((Invoke-WebRequest $RootURL/BtbN/$ProductName-Builds/releases/latest).links | Where-Object { $_ -like "*$ProductName-n[0-9]*win64-gpl-shared*" }).href
+ $DownloadLink = $RootURL + ((Invoke-WebRequest $RootURL/BtbN/$ProductName-Builds/releases/latest).links | Where-Object { $_ -like "*$ProductName-n[0-9]*win64-gpl-shared*" } | Select-Object -Last 1).href
 
  try {
   Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
@@ -7228,27 +7245,30 @@ Function Install-RSAT { # Install Full RSAT (Remote Server Administration Tools)
 }
 Function Install-WAC { # Download and install latest WAC (Windows Admin Center) [MSI]
  Param (
-  $URL = '"http://aka.ms/WACDownload"'
+  $URL = 'http://aka.ms/WACDownload'
  )
  $MSIInstallFile = Get-FileFromURL $URL
- Install-MSI $MSIInstallFile
+ Install-MSI -MsiPath $MSIInstallFile -ProductName "Windows Admin Center"
+ Remove-Item $MSIInstallFile
 }
 Function Install-AzureCli { # Download and install latest AzureCLI [MSI]
  Param (
   $URL = 'https://aka.ms/installazurecliwindows'
  )
  $MSIInstallFile = Get-FileFromURL $URL
- Install-MSI $MSIInstallFile
+ Install-MSI -MsiPath $MSIInstallFile -ProductName "Microsoft Azure CLI"
+ Remove-Item $MSIInstallFile
 }
 Function Install-7zip { # Download and install latest 7Zip [MSI]
  Param (
   $InstallDestination="C:\Apps\7Zip"
  )
+ $MSIInstallFile = '7zip.msi'
  $RootURL = "https://www.7-zip.org/"
  $DownloadLink = $RootURL + $((Invoke-WebRequest $RootURL/download.html).links | Where-Object { $_ -like  "*x64.msi*" } | Select-Object -first 1).href
- Get-FileFromURL $DownloadLink -OutputFile '7zip.msi'
- Install-MSI "7zip.msi"
- Remove-Item "7zip.msi"
+ Get-FileFromURL $DownloadLink -OutputFile $MSIInstallFile
+ Install-MSI -MsiPath $MSIInstallFile -ProductName "7-Zip"
+ Remove-Item $MSIInstallFile
 }
 Function Install-Nmap { # Download and install latest Nmap [EXE] - No silent install on Non-OEM installs
  Param (
@@ -7300,7 +7320,7 @@ Function Install-WinSCP { # Download and install latest WinSCP [EXE]
  Invoke-Expression  "& { .\$SetupFileName /LANG=EN /SILENT /CURRENTUSER /NORESTART /LOG=$InstallDestination\$ProductName.log /dir='$InstallDestination' }"
  Remove-Item $SetupFileName
 }
-Function Install-Python { # Download and install latest Python [EXE]
+Function Install-Python { # Download and install latest Python [EXE] - Possible to use the Store in Windows 11 (at least)
  Param (
   $InstallDestination="C:\Apps\Python"
  )
@@ -7366,4 +7386,1157 @@ Function Install-DellDSIAPC { # Download and install latest Dell DSIAPC
  } Catch {
   Write-Host -ForegroundColor Red $Error[0]
  }
+}
+Function Install-SSMS { # Download and install latest SQL Server Management Studio [EXE]
+ $SetupFileName = Get-FileFromURL "https://aka.ms/ssmsfullsetup"
+ $Arguments = @(
+  "/quiet"
+ )
+ Start-Process -FilePath $SetupFileName -ArgumentList $Arguments -Wait
+ Remove-Item $SetupFileName
+}
+
+# Misc Functions
+Function Add-ValuesToArray { # Example to add values to a Powershell Array
+ Param (
+  $userlist=@(""),
+  $FirstColumnLabel,
+  $SecondColumnLabel,
+  $SecondColumnValue,
+  $ThirdColumnLabel,
+  $ThirdColumnValue
+ )
+ $OutputArray = @()
+ $UserList | Sort-Object | ForEach-Object {
+  $TmpObj = New-Object PSObject
+  $TmpObj | Add-Member -type NoteProperty -Name $FirstColumnLabel -Value $_
+  $TmpObj | Add-Member -type NoteProperty -Name $SecondColumnLabel -Value $SecondColumnValue
+  $TmpObj | Add-Member -type NoteProperty -Name $ThirdColumnLabel -Value $ThirdColumnValue
+  $OutputArray += $TmpObj
+ }
+ $OutputArray
+}
+Function Clear-Temp { # Clean all temp folder of a machine - Can be used for any folder - Will add rights if needed
+ Param(
+  [int]$NumberOfDays="5",
+  [switch]$NoConfirm,
+  $TempPath
+ )
+
+ #System Temp : [environment]::GetEnvironmentVariable("temp","machine")
+ #Local Temp : $($env:Temp)
+ #All users Temp : Get-ChildItem C:\Users\*\AppData\Local\Temp | Select-Object FullName
+
+ if (! $TempPath) {
+  if (Assert-IsAdmin) {
+   $TempPath=@($($env:Temp),$([environment]::GetEnvironmentVariable("temp","machine")),$((Get-ChildItem -ErrorAction SilentlyContinue C:\Users\*\AppData\Local\Temp).FullName -join ";"))
+  } else {
+   $TempPath=@($($env:Temp))
+  }
+ }
+
+ $TempPath -split ";" | ForEach-Object {
+  try {
+   $FileList=Get-ChildItem $_ -Recurse -ErrorAction Stop | Where-Object {($_.LastWriteTime -lt (Get-Date).AddDays(-$NumberOfDays))} | Select-Object FullName
+   $ObjectCount=$FileList.count
+   if (! $ObjectCount) {write-colored -Color "Green" -ColoredText "Nothing to do in folder $($_)" ; return}
+   if (! $NoConfirm) {$Answer=Question "Are you sure you want to remove $ObjectCount files older than $NumberOfDays days in $($_)" "1"} else {$Answer=$true}
+   if ($Answer) {
+    write-Centered -Color "Magenta" -Message "[****** Removing $ObjectCount files from $($_) ******]"
+    write-Blank
+    $FileList | ForEach-Object {
+     $CurrentError=''
+     try {
+      $CurrentFile=$_.FullName
+      Progress -Message "Removing File " -Value $_.FullName
+      Remove-Item $_.FullName -ErrorAction Stop -Force -Recurse
+     } catch {
+      ProgressClear
+      $CurrentError=$Error[0]
+      #Change rights if access is denied
+      if ($CurrentError.CategoryInfo.Reason -eq "UnauthorizedAccessException") {
+       write-colored -Color "DarkYellow" -NonColoredText "`r" -ColoredText "Changing rights for file $CurrentFile"
+       #Change Owner To Admin Group
+       $Dump=Set-Rights $CurrentFile -ChangeOwner
+       #Reenable Inheritance
+       $Dump=Set-Rights $CurrentFile -GlobalInheritance Add -Commit
+       #Change Rights to Admin Group
+       # $Dump=Set-Rights $CurrentFile -User $(Get-UserFromSID('S-1-5-32-544')) -UserRights FullControl -UserInheritance None -Commit
+       Remove-Item $CurrentFile -Force -ErrorAction Stop
+       Return
+      }
+      #Print message if not file not found (because of recurse)
+      if ($CurrentError.CategoryInfo.Reason -ne "ItemNotFoundException") {
+       write-colored -Color "Red" -NonColoredText "`r$CurrentFile : " -ColoredText $Error[0]
+      }
+     }
+    }
+    ProgressClear
+    $ObjectCountAfterAction=$ObjectCount-$((Get-ChildItem $_ -ErrorAction Stop | Where-Object {($_.LastWriteTime -lt (Get-Date).AddDays(-$NumberOfDays))})).Count
+    write-Blank
+    write-Centered -Color "Green" -Message "[****** $ObjectCountAfterAction files deleted from $($_) ******]"
+   } else {
+     write-host -foregroundcolor "Magenta" "Cancelled"
+   }
+   Write-StarLine
+  } catch {
+   write-colored -Color "Red" -ColoredText $Error[0]
+  }
+ }
+}
+Function ConvertTo-PDF { # Convert any file to PDF using the MS Print To PDF virtual Printer
+ Param (
+  [Parameter(Mandatory=$true)]$TextDocumentPath
+ )
+ Add-Type -AssemblyName System.Drawing
+ $doc = New-Object System.Drawing.Printing.PrintDocument
+ $doc.DocumentName = $TextDocumentPath
+ $doc.PrinterSettings = new-Object System.Drawing.Printing.PrinterSettings
+ $doc.PrinterSettings.PrinterName = 'Microsoft Print to PDF'
+ $doc.PrinterSettings.PrintToFile = $true
+ $file=[io.fileinfo]$TextDocumentPath
+ $pdf= [io.path]::Combine($file.DirectoryName,$file.BaseName) + '.pdf'
+ $doc.PrinterSettings.PrintFileName = $pdf
+ $doc.Print()
+ $doc.Dispose()
+}
+Function Disable-ScreenSaver { # Disable screensaver GPO (Will work only until the GPO reapplies)
+ if ( ! (Assert-IsAdmin) ) {Write-Colored "red" -ColoredText "You must be admin to run this command" ; return}
+ $RegKey="\Software\Policies\Microsoft\Windows\Control Panel\Desktop"
+ $("ScreenSaveActive","ScreenSaverIsSecure","ScreenSaveTimeOut") | ForEach-Object {
+  Set-RegAllUserRegKey $RegKey -RegName $_ -RegValue 0
+ }
+}
+Function Disable-IEEnhancedSecurity { # Disable IEEnhancedSecurity on Windows Server
+ $AdminKey = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\{A509B1A7-37EF-4b3f-8CFC-4F3A74704073}"
+ Set-ItemProperty -Path $AdminKey -Name "IsInstalled" -Value 0 -Force
+}
+Function Expand-ZIPFile { # Unzip all files of a Zip to a specific destination - Non external app required
+ Param (
+  [Parameter(Mandatory=$true)]$file,
+  [Parameter(Mandatory=$true)]$destination
+ )
+ if ( ! (test-path $file)) { write-Colored "Red" -ColoredText "Unavailable file : $file" ; return }
+
+ New-Item -type directory "$destination" 2>&1 | Out-Null
+ $shell = new-object -com shell.application
+ $zip = $shell.NameSpace($file)
+ foreach($item in $zip.items()) { $shell.Namespace($destination).copyhere($item),16 }
+}
+Function Find-TextInFiles {
+ Param (
+  $Path,
+  $TextToFind
+ )
+ Get-ChildItem -path $Path -Recurse -exclude *.dll,*.exe | Select-String $TextToFind | Select-Object -unique path | ForEach-Object { $_.path}
+}
+Function Get-FileFromURL { # Download file from URL - Try to follow link if possible
+ Param (
+  [Parameter(Mandatory=$true)]$Link,
+  $OutputFile,
+  $OutputFolder
+ )
+ #Should use browser authentication (check with basic parsing => mandatory for Core Server)
+
+ #This will speed file download a lot !
+ $progressPreference = 'silentlyContinue'
+
+ $start_time = Get-Date
+ Write-Colored -Color Cyan -PrintDate -ColoredText "Checking real filename"
+
+ #Check if destination file is specified
+ if (! $outputfile) {
+  try {
+   #Get Real FileName if available
+   #Direct Connexion
+   $FullLink = (Invoke-WebRequest -Uri $link -Method Head -UseBasicParsing).BaseResponse.ResponseUri.AbsoluteUri
+   #Via Proxy
+   if (! $FullLink) {
+    $FullLink = (Invoke-WebRequest -Uri $link -Method Head -UseBasicParsing).BaseResponse.RequestMessage.RequestUri.OriginalString
+   }
+   $outputfile=[System.IO.Path]::GetFileName(($FullLink))
+  } catch {
+   #If cannot find filename and nothing is specified then the end of the link name will be used
+   $outputfile=[System.IO.Path]::GetFileName(($link))
+  }
+ }
+
+ Write-Colored -Color Cyan -PrintDate -ColoredText "Starting download of file $outputfile, please wait"
+
+ try {
+  Invoke-WebRequest -Uri $link -OutFile "$OutputFolder$outputfile" -UseBasicParsing -ErrorAction Stop
+ } catch {
+  write-colored "red" -PrintDate -ColoredText $error[0]
+  return
+ }
+
+ $FileSize = Format-FileSize (Get-ChildItem "$OutputFolder$outputfile").Length
+
+ Write-Colored -Color Cyan -PrintDate -ColoredText "Downloaded file $($OutputFolder+$outputfile) in $((Get-Date).Subtract($start_time).Seconds) second(s) [$FileSize]"
+
+ return "$OutputFolder$outputfile"
+}
+Function Get-FileContent { # Can be used to search for a string in a file
+ Param (
+  [Parameter(Mandatory=$true)]$File,
+  [Parameter(Mandatory=$true)]$StringToSearch,
+  [Switch]$Context
+ )
+ write-blank
+ Write-Colored $defaultblue "Search for message " $StringToSearch -nonewline
+ Write-Colored $defaultblue " in " $File
+
+ if ( $Context ) {
+  $filecontent=get-content $File | select-string $StringToSearch -context 0,1
+ } else {
+  $filecontent=get-content $File | select-string $StringToSearch
+ }
+
+ if ( ! $filecontent ) { write-blank ; write-colored "darkgreen" "" "Cannot find `"$StringToSearch`" in $File"} else { $filecontent }
+}
+Function Get-RDPSession { # List open RDP Sessions (Convert qwinsta them to PS Object)
+ $Results = qwinsta
+ #Extract titles
+ $PropertiesTitle = $Results[0].Trim(" ") -replace (" +",";")
+ #Convert to Title Case
+ $PropertiesTitle = (Get-Culture).TextInfo.ToTitleCase($PropertiesTitle.ToLower()).split(";")
+ #Add Column
+ $PropertiesTitle += "Current"
+ #Get sessions
+ $Sessions = $Results[1..$($Results.Count -1)]
+
+ Foreach ($Session in $Sessions) {
+  #If first character is > then it's current session
+  if ( $($Session.Substring(0,1).Trim()) -eq "`>" ) { $current = $true } else { $current = $false }
+  $hash = [ordered]@{
+   $PropertiesTitle[0] = $Session.Substring(1,18).Trim()
+   $PropertiesTitle[1] = $Session.Substring(19,22).Trim()
+   $PropertiesTitle[2] = $Session.Substring(41,7).Trim()
+   $PropertiesTitle[3] = $Session.Substring(48,8).Trim()
+   $PropertiesTitle[4] = $Session.Substring(56,12).Trim()
+   $PropertiesTitle[5] = $Session.Substring(68,8).Trim()
+   $PropertiesTitle[6] = $current
+   'ComputerName' = $env:ComputerName
+  }
+  New-Object -TypeName PSObject -Property $hash
+ }
+}
+Function Get-NetAdapterPowersaving { # Check Powersaving values on Network Adapters - Can disable PowerSaving for performance issues
+ Param (
+  [Switch]$Disable
+ )
+  $NIC_List=@()
+ foreach ($NIC in (Get-NetAdapter -Physical)){
+  $PowerSaving = Get-CimInstance -ClassName MSPower_DeviceEnable -Namespace root\wmi | Where-Object {
+   $_.InstanceName -match [Regex]::Escape($NIC.PnPDeviceID)
+  }
+  $NIC_List+=[pscustomobject]@{DeviceName=$NIC.Name;Description=$NIC.InterfaceDescription;MacAddress=$NIC.MacAddress;Status=$NIC.Status;PhysicalMediaType=$NIC.PhysicalMediaType;Powersaving=$PowerSaving.Enable}
+  if ($Disable) {
+   if ($PowerSaving.Enable){
+    write-host "Disabling powersaving on device $($NIC.Name)"
+    $PowerSaving.Enable = $false
+    $PowerSaving | Set-CimInstance
+  }
+ }
+ }
+ return $NIC_List
+}
+Function Get-IniContent { # Convert INI file to a Powershell Object
+ Param (
+  $filePath
+ )
+ #Script found here : https://devblogs.microsoft.com/scripting/use-powershell-to-work-with-any-ini-file/
+ $ini = @{}
+ switch -regex -file $FilePath {
+ # Section
+  "^\[(.+)\]" { $section = $matches[1] ; $ini[$section] = @{} ; $CommentCount = 0 }
+  # Comment
+  "^(;.*)$" { $value = $matches[1] ; $CommentCount = $CommentCount + 1 ; $name = "Comment" + $CommentCount ; $ini[$section][$name] = $value }
+  # Key
+   "(.+?)\s*=(.*)" { $name,$value = $matches[1..2] ; $ini[$section][$name] = $value }
+ }
+ return $ini
+}
+Function Get-WindowsImageInfo { # Get information from a Windows Image
+ Param (
+  $ImagePath="D:\sources\install.wim"
+ )
+ $IndexList = (Dism /Get-ImageInfo /ImageFile:$ImagePath | Select-String "Index") -replace "Index : ",""
+ $OS_List=@()
+ $IndexList | ForEach-Object {
+  $CurrentIndexInfo=dism /Get-WimInfo /WimFile:$ImagePath /index:$_
+  $OS_List+=New-Object PSObject -Property @{
+  Name=($CurrentIndexInfo | select-string "Name :") -Replace("Name : ")
+  Description=($CurrentIndexInfo | select-string "Description :") -Replace("Description : ")
+  Architecture=($CurrentIndexInfo | select-string "Architecture :") -Replace("Architecture : ")
+  Version=($CurrentIndexInfo | select-string "Version :") -Replace("Version : ")
+  Edition=($CurrentIndexInfo | select-string "Edition :") -Replace("Edition : ")
+  Installation=($CurrentIndexInfo | select-string "Installation :") -Replace("Installation : ")
+  ProductType=($CurrentIndexInfo | select-string "ProductType :") -Replace("ProductType : ")
+  ProductSuite=($CurrentIndexInfo | select-string "ProductSuite :") -Replace("ProductSuite : ")
+  Created=($CurrentIndexInfo | select-string "Created :") -Replace("Created : ")
+  Modified=($CurrentIndexInfo | select-string "Modified :") -Replace("Modified : ")
+ }
+ }
+ $OS_List
+}
+Function Get-TeamviewerSettings { # Get all Teamviewer settings locally or remotely (Includes ID)
+ Param (
+  $remotecomputer
+ )
+ #On Winx86 : (get-ItemProperty "HKLM:\SOFTWARE\TeamViewer").ClientID
+ try {
+  if ($remotecomputer) {
+   $returnresult=Invoke-Command -ComputerName $remotecomputer -ErrorAction Stop -ScriptBlock {get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\TeamViewer"}
+  } else {
+   $returnresult=get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\TeamViewer"
+  }
+  $returnresult | Select-Object ClientID,Proxy_IP,General_DirectLAN,Version
+ }catch {
+  write-host -foregroundcolor "Red" $Error[0]
+ }
+}
+Function Get-AntiVirus { # Get Current antivirus used (Only if the antivirus respects Microsoft Implementations)
+ Param (
+  $computername=$env:computername
+ )
+ Try {
+  $AntiVirusProducts = Get-CimInstance -Namespace "root\SecurityCenter2" -Class AntiVirusProduct -ComputerName $computername -ErrorAction Stop
+ } Catch {Return}
+
+ Function Format-AntivirusIdToStatus ($AntivirusStatusID) {
+  $AntivirusStatusIDHex = [convert]::ToString($AntivirusStatusID, 16).PadLeft(6,'0')
+
+  $RealTimeProtectionStatus = switch ($AntivirusStatusIDHex.Substring(2,2)) {
+   "00" {"Off"}
+   "01" {"Disabled"}
+   "10" {"On"}
+   "11" {"On"}
+   default {"UNKNOWN"}
+  }
+  $DefinitionStatus = switch ($AntivirusStatusIDHex.Substring(4,2)) {
+   "00" {"Up To Date"}
+   "10" {"Out Of Date"}
+   default {"UNKNOWN"}
+  }
+  Return $RealTimeProtectionStatus,$DefinitionStatus
+ }
+
+ $ComputerList = @()
+
+ $AntiVirusProducts | ForEach-Object {
+  $Status=Format-AntivirusIdToStatus $_.productState
+  $ComputerList += New-Object -TypeName PSObject -Property @{
+   'Computername'=$computername
+   'DisplayName'=$_.displayName
+   'Product GUID'=$_.instanceGuid
+   'Product Executable'=$_.pathToSignedProductExe
+   'Reporting Executable'=$_.pathToSignedReportingExe
+   'Definition Status'=$Status[1]
+   'Real-time Protection Status'=$Status[0]
+  }
+ }
+ Return $ComputerList
+}
+Function Get-ProcessWithPath { # Shows all process which contains a path
+ Get-Process -IncludeUserName  | Select-Object StartTime,Name,Id,UserName,Product,Description,Path | Where-Object Path | Sort-Object StartTime | Format-Table
+}
+Function Get-WallpaperForAllUsers { # Check the wallpaper applied for all users (can set a wallpaper for all users)
+ Param (
+  $Wallpaper="C:\Windows\Web\Wallpaper.jpg",
+  [switch]$Set
+ )
+ New-PSDrive 'HKU' Registry 'HKEY_USERS' | Out-Null
+ $RegValueToUpdate="Control Panel\Desktop"
+
+ foreach( $User in $((Get-ChildItem HKU:\).PSChildName | Sort-Object )) {
+  try {$Value=(Get-ItemProperty -ErrorAction SilentlyContinue -Path "HKU:\$user\$RegValueToUpdate")} catch {}
+  if (! $value) {return} else {
+   $CurrentUser=Get-UserFromSID $User
+   $UserRegPath="HKU:\$user\$RegValueToUpdate"
+   $OldValue=(Get-ItemProperty -path $UserRegPath).WallPaper
+   write-host -foregroundcolor "Green" "Value for user `'$CurrentUser`' : $OldValue [$UserRegPath]"
+   if ($Set) {
+    Set-ItemProperty -path $UserRegPath -name 'Wallpaper' -value $Wallpaper
+    $NewValue=(Get-ItemProperty -path $UserRegPath).WallPaper
+    write-host -foregroundcolor "Green" "Value for user `'$CurrentUser`' : $NewValue [$UserRegPath]"
+   }
+  }
+ }
+}
+Function Get-DuplicatePSModules { # Check duplicate Powershell modules as the old versions are not automatically removed (by default only checks one module folder)
+ Param (
+  $ModulePaths=@("$env:USERPROFILE\Documents\PowerShell\Modules"),
+  [Switch]$Remove
+ )
+ #$PSModulePath variable contains too many folder. Specific Apps folders may appear here also.
+
+ $Duplicate_Module_List = @()
+ $OldModuleList = @()
+
+ $ModulePaths | ForEach-Object {
+  Get-ChildItem $_ -Directory | ForEach-Object {
+   $CurrentModule = $_
+   $ModuleVersions = Get-ChildItem $CurrentModule -Directory | Select-Object Name,FullName,@{Label='Version';Expression={[Version]$_.Name}} | Sort-Object Version
+   if ($ModuleVersions.count -gt 1) {
+    $LatestVersion = $($ModuleVersions | Select-Object -Last 1).Name
+    $ModuleVersions | Select-Object -Index 0, ($ModuleVersions.Count -2) | ForEach-Object {
+     $OldModuleList+=[pscustomobject]@{Name = $_.FullName ; LatestVersion = $LatestVersion}
+    }
+   }
+  }
+  If ($Remove) {
+   # Remove-Item $OldModuleList.Name -Recurse -Verbose -Force
+   $OldModuleList | ForEach-Object {
+    Write-Host -ForegroundColor Cyan "Removing $($_.Name)"
+    Remove-Item $_.Name -Recurse -Force
+   }
+  } else {
+   $OldModuleList
+  }
+ }
+}
+Function Get-WebSiteCertificate { # Check the certificate from a remote website (Does not work on PS Core)
+ Param (
+  $URL
+ )
+
+ $ErrorActionPreference='Stop'
+
+ Try {
+ add-type @"
+ using System.Net;
+ using System.Security.Cryptography.X509Certificates;
+ public class TrustAllCertsPolicy : ICertificatePolicy {
+     public bool CheckValidationResult(
+         ServicePoint srvPoint, X509Certificate certificate,
+         WebRequest request, int certificateProblem) {
+         return true;
+     }
+ }
+"@
+if ($([System.Net.ServicePointManager]::CertificatePolicy).ToString() -ne "System.Net.DefaultCertPolicy") {
+ [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+}
+
+  $WebRequest = Invoke-WebRequest $URL -UseBasicParsing -UseDefaultCredentials
+  $ServicePoint = [System.Net.ServicePointManager]::FindServicePoint("$URL")
+
+  $CertificateInfoHash = $ServicePoint.Certificate.GetCertHashString()
+  $CertificateInfoSerialNumber = $ServicePoint.Certificate.GetSerialNumberString()
+  $CertificateInfoEndDate = $ServicePoint.Certificate.GetExpirationDateString()
+  $CertificateInfoStartDate = $ServicePoint.Certificate.GetEffectiveDateString()
+
+  [pscustomobject]@{
+   URL =  $URL;
+   ProtocolVersion = $ServicePoint.ProtocolVersion.ToString();
+   Issuer = $ServicePoint.Certificate.Issuer;
+   Subject = $ServicePoint.Certificate.Subject;
+   StartDate = $CertificateInfoStartDate;
+   EndDate = $CertificateInfoEndDate;
+   Hash = $CertificateInfoHash;
+   Serial = $CertificateInfoSerialNumber;
+  }
+
+  } Catch {
+   write-host -foregroundcolor "red" $error[0]
+  }
+
+}
+Function Get-Weather { # Shows weather
+ Param (
+  $Town = "Bordeaux"
+ )
+ (Invoke-WebRequest http://wttr.in/$Town -UserAgent "curl").Content
+}
+Function Install-ModuleRemote { # Install a Module on a remote machine
+ Param (
+  [Parameter(Mandatory=$true)]$RemoteServer,
+  $ModuleName="PSWindowsUpdate",
+  $PsModuleRequiredVersion="2.1.1.2",
+  $PSMinVersion="5"
+ )
+ $ErrorActionPreference="Stop"
+ try {
+
+  #Check Remote Access
+  write-host -foregroundcolor Blue "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - Checking Remote Access"
+  $PsRemoteResult=$(Try {Test-WSMAN $RemoteServer -ErrorAction Stop | Out-Null; $true} catch {$false})
+  If (! $PsRemoteResult) {Throw "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - WinRM is not accessible"}
+
+  #Open Session
+  write-host -foregroundcolor Blue "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - Opening Session"
+  $SessionInfo=New-PSSession -ComputerName $RemoteServer -Name "UpdateModule$ModuleName"
+
+  #Check Remote PS Version
+  write-host -foregroundcolor Blue "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - Checking PS Version"
+  $PSVersion=invoke-command -Session $SessionInfo -Scriptblock {$psversiontable.PSVersion.Major}
+  if ($PSVersion -lt $PSMinVersion) {Throw "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - Powershell $PSMinVersion or more is required (Current version : $PSVersion)"}
+
+  #Check existing module
+  $RemotePsModuleVersion=invoke-command -ArgumentList $ModuleName -Session $SessionInfo -Scriptblock {
+   $ModuleName=$args[0]
+   # try {(get-command -Module $Using:ModuleName -ErrorAction Stop -WarningAction silentlyContinue)[0].Version -join "" } catch { "N/A" }
+   try {(get-command -Module $ModuleName -ErrorAction Stop -WarningAction silentlyContinue)[0].Version -join "" } catch { "N/A" }
+  }
+  if ($RemotePsModuleVersion -eq $PsModuleRequiredVersion) {
+   write-host -foregroundcolor Yellow "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - PS Module $ModuleName version $PsModuleRequiredVersion is already installed" ; return
+  }
+
+  #Remove existing module
+  write-host -foregroundcolor Blue "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - Removing existing module $ModuleName"
+  invoke-command -Session $SessionInfo -ArgumentList $ModuleName -scriptblock {
+   # $ModuleName=$Using:ModuleName
+   $ModuleName=$args[0]
+   Remove-Module $ModuleName -ErrorAction SilentlyContinue
+   # Uninstall-Module $ModuleName -ErrorAction SilentlyContinue
+   $ModulePath="C:\Program Files\WindowsPowerShell\Modules\$ModuleName"
+   write-host -foregroundcolor Blue "$(get-date -uformat '%Y-%m-%d %T') - Module Path : $ModulePath"
+   if ($(Test-Path $ModulePath)) {
+    Takeown /r /a /d Y /f $ModulePath | Out-Null
+	Remove-Item -Recurse -Force $ModulePath | Out-Null
+   }
+  }
+
+  #Install new module
+  write-host -foregroundcolor Blue "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - Copy new module and import"
+  $progressPreference = 'silentlyContinue'
+  Copy-Item -Path "C:\Program Files\WindowsPowerShell\Modules\$ModuleName\" -Force -Recurse -ToSession $SessionInfo -Destination "C:\Program Files\WindowsPowerShell\Modules\"
+  invoke-command -Session $SessionInfo -scriptblock {
+   Import-Module $ModuleName
+  }
+ } Catch {
+  write-host -foregroundcolor Red "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - ERROR : $($Error[0])"
+ }
+ try { Remove-PSSession $SessionInfo -ErrorAction SilentlyContinue } catch {}
+}
+Function New-Password { # Generate random password.  Will not start with : @ | and will not use : ' %^,<>"~`
+ Param (
+  [int]$Length=16,
+  [ValidateSet("ASCII","ASCII-Limited","AlphaNum")]$Type="ASCII",
+  [Switch]$Clip
+ )
+
+ Switch ($Type) {
+  ASCII {[string[]]$sourcedata=$(For ($a=33;$a -le 126;$a++) {$ascii+=,[char][byte]$a} ; $ascii)} #All ascii characters
+  ASCII-Limited {[string[]]$sourcedata=$(For ($a=48;$a -le 122;$a++) {$ascii+=,[char][byte]$a} ; $ascii)} #Different set of ascii
+  AlphaNum {[string[]]$sourcedata=For ($a=65;$a -le 90;$a++) {$sourcedata+=,[char][byte]$a} ; For ($a=97;$a -le 122;$a++) {$sourcedata+=,[char][byte]$a} ;For ($a=48;$a -le 57;$a++) {$sourcedata+=,[char][byte]$a}} #AlphaNum
+ }
+
+ For ($loop=1; $loop -le $length; $loop++) {
+  $Temp = $($sourcedata | GET-RANDOM)
+  if ($loop -eq 1) {
+   while ("$([char][byte]39)$([char][byte]32)$([char][byte]37)$([char][byte]94)$([char][byte]44)$([char][byte]60)$([char][byte]62)$([char][byte]34)$([char][byte]126)$([char][byte]96)$([char][byte]64)".Contains($Temp)) {
+    $Temp = $($sourcedata | GET-RANDOM)
+   }
+  } else {
+   while ("$([char][byte]39)$([char][byte]32)$([char][byte]37)$([char][byte]94)$([char][byte]44)$([char][byte]60)$([char][byte]62)$([char][byte]34)$([char][byte]126)$([char][byte]96)".Contains($Temp)) {
+    $Temp = $($sourcedata | GET-RANDOM)
+   }
+  }
+  $TempPassword+=$Temp
+ }
+
+ #To send answer to clipboard
+ if ($clip) {$TempPassword | CLIP}
+ return $TempPassword
+}
+Function Optimize-Teams { # Reset Teams entirely
+ Param (
+  [Switch]$NoConfirm
+ )
+ $TeamsPath="$env:APPDATA\Microsoft\teams"
+ $TeamsBinaryPath="$env:LOCALAPPDATA\Microsoft\Teams"
+ Write-Host "Stopping Teams Process" -ForegroundColor Cyan
+ try {
+  $TeamsProcess=Get-Process -ProcessName Teams -ErrorAction SilentlyContinue
+  if ($TeamsProcess) {
+   Stop-Process -Force -ErrorAction Stop $TeamsProcess
+   Start-Sleep 3
+   If ($(Get-Process -ProcessName Teams -ErrorAction SilentlyContinue)) {
+    Throw "Error Stopping Teams process"
+   }
+  }
+  Write-Host "Teams Process Sucessfully Stopped" -ForegroundColor Green
+ } catch {
+  Write-Host "Error Stopping Teams $($Error[0])" -ForegroundColor Red
+ }
+ Write-Host "Clearing Teams Disk Cache" -ForegroundColor Cyan
+ try {
+  $FolderList=@(
+   "$TeamsPath\application cache\cache",
+   "$TeamsPath\blob_storage",
+   "$TeamsPath\databases",
+   "$TeamsPath\cache",
+   "$TeamsPath\gpucache",
+   "$TeamsPath\Indexeddb",
+   "$TeamsPath\Local Storage",
+   "$TeamsPath\tmp"
+  )
+  $FolderList | ForEach-Object {
+   $Folder=Get-ChildItem $_ -ErrorAction SilentlyContinue
+   if ($Folder) {
+    if ($NoConfirm) {
+     Remove-Item -Path $_ -Recurse -Confirm:$false
+    } else {
+     Remove-Item -Path $_ -Recurse
+    }
+   }
+  }
+  Write-Host "Teams Disk Cache Cleaned" -ForegroundColor Green
+ } catch {
+  Write-Host "Error removing Teams data $($Error[0])"
+ }
+
+ Write-Host "Cleanup Complete... Launching Teams" -ForegroundColor Green
+ #Start-Process -FilePath $TeamsBinaryPath\Current\Teams.exe -PassThru
+}
+Function Open-EtcHost { # Opens ETC Host in a notepad
+ notepad c:\windows\system32\drivers\etc\hosts
+}
+Function Remove-SkypeAds { # Remove Skype ADs (may not be usefull anymore)
+ $RegKey="HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\Domains\skype.com\apps"
+ New-Item $RegKey -Force | Out-Null
+ Set-RegKey $RegKey "https" "4" "DWord"
+
+ #not required if done before installing skype
+ $SkypeProfileName = read-host "What is your skype username"
+ while ( ! (Test-Path $env:APPDATA\skype\$SkypeProfileName\) -or ! $SkypeProfileName) {
+  write-colored "Red" "" "`"$SkypeProfileName`" does not exist or a connexion was not done with this account on this computer"
+  $SkypeProfileName = read-host "What is your skype username"
+ }
+ $configpath= "$env:APPDATA\skype\$SkypeProfileName\config.xml"
+
+ (Get-Content $configpath).Replace("<AdvertPlaceholder>1</AdvertPlaceholder>","<AdvertPlaceholder>0</AdvertPlaceholder>") | Set-Content $configpath
+}
+Function Remove-LocalOutlookAddressBooks { # Remove local Outlook Offline Address Books
+ try {
+  remove-item "$($env:LOCALAPPDATA)\Microsoft\Outlook\Offline Address Books\" -recurse -ErrorAction Stop
+ } catch {
+  write-host -foregroundcolor "Red" $error[0]
+ }
+}
+Function Save-Wallpapers { #Copy Spotlight images (Random Backgrounds) file to a folder
+ Param (
+  $Destination="$home\Pictures\Wallpapers"
+ )
+ if ( ! (test-path $Destination) ) { New-Item -type directory "$Destination" 2>&1 | Out-Null}
+ Get-ChildItem $home\AppData\Local\Packages\Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy\LocalState\Assets | Where-Object {$_.length -gt 400kb} | ForEach-Object { Copy-Item -force -path $_.FullName -Destination "$Destination\$($_.Name).jpg" }
+}
+Function Set-LockScreenInfo { # Add information of the lockscreen wallpaper (Machine name etc.). No external software required [Work in progress]
+ Param (
+  $SourceFilename = "$($env:windir)\Web\Wallpaper.jpg",
+  $SupportMail = "toto@toto.com",
+  $SupportPhone = "3615"
+ )
+
+ #Load Var
+ Add-Type -AssemblyName system.drawing
+
+ $DestFilename = "$($env:windir)\system32\oobe\info\backgrounds\backgroundDefault.jpg"
+
+ #If registry key does not exist create it (Requires admin rights)
+ if(!(Test-Path HKLM:\Software\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background )) {
+  New-Item "HKLM:\Software\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\" -Name "Background" -Force
+ }
+
+ # should use : "HKLM\SOFTWARE\Policies\Microsoft\Windows\System" "UseOEMBackground" "1"
+ # Check info https://www.howtogeek.com/112110/how-to-set-a-custom-logon-screen-background-on-windows-7/
+ # Check info https://gallery.technet.microsoft.com/scriptcenter/LSInfo-BGInfo-for-WIndows-43d58172/view/Discussions#content
+
+ #Force OEM Login
+ New-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background" -Name "OEMBackground" -Value 1 -PropertyType "DWord" -Force
+
+ #Create required folders (Requires admin rights)
+ mkdir "$($env:windir)\system32\oobe\info" -Force
+ mkdir "$($env:windir)\system32\oobe\info\backgrounds" -Force
+
+ #Load File
+ $SourceFilename=get-item $SourceFilename
+ $bmp = [System.Drawing.Image]::Fromfile($SourceFilename);
+
+ #Set default font/colors
+ $font = New-Object System.Drawing.Font("Arial",8,[System.Drawing.FontStyle]::Regular)
+ $brushfg = [System.Drawing.Brushes]::Black
+ $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+
+ #Draw
+ $graphics.DrawString("Computername: $($env:COMPUTERNAME)",$font,$brushfg,500,0)
+ $boottime = get-date -uformat '%Y-%m-%d %T' $((Get-CimInstance Win32_OperatingSystem).lastbootuptime)
+ $graphics.DrawString("Last Boot: $($boottime)",$font,$brushfg,500,32)
+ $graphics.DrawString("Support Mail : $SupportMail",$font,[System.Drawing.Brushes]::blue,500,48)
+ $graphics.DrawString("Support Phone : $SupportPhone",$font,[System.Drawing.Brushes]::blue,500,64)
+
+ $graphics.Dispose()
+ $bmp.Save($DestFilename)
+}
+Function Set-CurrentUserLang { # Set User locales
+ param(
+  [ValidateSet("FR","DE","US","Mixed")][String]$Lang='Mixed'
+ )
+
+ $Lang_List=@()
+ #Settings for Mixed : US Lang + FR KeyBoard
+ $Lang_List+=[pscustomobject]@{Lang="Mixed";WinUserLanguageList="en-US";WinSystemLocale="en-US";Culture="fr-FR";WinHomeLocation="84";Input="0409:0000040C"}
+ #Settings for FR : FR for all but Unicode
+ $Lang_List+=[pscustomobject]@{Lang="FR";WinUserLanguageList="fr-FR";WinSystemLocale="en-US";Culture="fr-FR";WinHomeLocation="84";Input="0409:0000040C"}
+ #Settings for US : US for all
+ $Lang_List+=[pscustomobject]@{Lang="US";WinUserLanguageList="en-US";WinSystemLocale="en-US";Culture="en-US";WinHomeLocation="244";Input="0409:00000409"}
+ #Settings for DE : DE for all but Unicode
+ $Lang_List+=[pscustomobject]@{Lang="DE";WinUserLanguageList="de-DE";WinSystemLocale="en-US";Culture="de-DE";WinHomeLocation="94";Input="0407:00000407"}
+
+ $ChosenLang=$Lang_List | Where-Object {$_.Lang -eq $Lang}
+
+ write-host "Setting Language as $($ChosenLang.WinUserLanguageList)"
+ #OS/Menu Language ('-Force' removes all other languages)
+ set-WinUserLanguageList $($ChosenLang.WinUserLanguageList) -Force
+
+ #Set UI Language
+ # Set-WinUILanguageOverride $($ChosenLang.WinUserLanguageList)
+
+ #Language For Non Unicode programs / Default Language
+ Set-WinSystemLocale -SystemLocale $ChosenLang.WinSystemLocale
+
+ #Regional Format (date separator etc.)
+ Set-Culture $ChosenLang.Culture
+
+ #Region
+ Set-WinHomeLocation -GeoId $ChosenLang.WinHomeLocation
+
+ if ($Lang -eq "Mixed") {
+  #Keyboard (to have a different keyboard than language keyboard)
+  $CurrentLang=Get-WinUserLanguageList
+  $CurrentLang[0].InputMethodTips.Clear()
+  $CurrentLang[0].InputMethodTips.Add($ChosenLang.Input)
+  Set-WinUserLanguageList $CurrentLang -Force
+ }
+}
+Function Set-CurrentUserLangToAllUsers { # Set the current local from current user to all user
+ Param (
+  [Parameter(Mandatory=$true)]$UserToCopy
+ )
+
+ ############ [ Variables ] ############
+
+ $TempLocation='C:\Windows\Temp'
+ $DefaultHKEY = "HKU\DEFAULT_USER"
+ $DefaultRegPath = "C:\Users\Default\NTUSER.DAT"
+ $UserList=@(".DEFAULT","DEFAULT_USER","S-1-5-18")
+
+ #Remove all lang files
+ Remove-Object$TempLocation\Lang*.reg
+
+ Write-Colored "Green"  -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Mount REG"
+ #Mount NTUSER.DAT in local Registry
+ reg load $DefaultHKEY $DefaultRegPath | Out-Null
+ #Mount HKU in Registry
+ New-PSDrive 'HKU' Registry 'HKEY_USERS' | Out-Null
+
+ $UserSID=Get-SIDFromUser $UserToCopy
+
+ if (! $UserSID) {
+  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "User $UserToCopy does not exist"
+  return
+ }
+
+ Try {
+  get-item "HKU:\$UserSID\Control Panel\Input Method" | Out-Null
+ } catch {
+  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "The profile of User $UserToCopy is not accessible (Open Session)"
+  return
+ }
+
+ Write-Colored "Green" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Get Current User Config"
+
+ #Export Required Registry Keys from Chosen user
+
+ $CurrentPath="HKEY_USERS\$UserSID"
+
+ try {
+ reg export "$CurrentPath\Control Panel\Input Method" $TempLocation\LangExport_1.reg | Out-Null
+ reg export "$CurrentPath\Control Panel\International" $TempLocation\LangExport_2.reg | Out-Null
+ reg export "$CurrentPath\Keyboard Layout" $TempLocation\LangExport_3.reg | Out-Null
+ } catch {
+  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText $Error[0]
+  return
+ }
+
+ if (! (test-path $TempLocation\LangExport_3.reg)) {
+  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Error during export"
+  Return
+ }
+
+ #Merge Files and Remove 'Registry Editor Line Export Line'
+ (get-content $TempLocation\LangExport_*.reg).Replace('Windows Registry Editor Version 5.00','') | Out-File -Encoding unicode -FilePath $TempLocation\LangExportFull.Reg
+
+ Write-Colored "Green"  -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Remove Current Info for all users and create New LangFile"
+
+ @('Windows Registry Editor Version 5.00') | Out-File -Encoding unicode -FilePath $TempLocation\LangNew.reg
+
+ #Remove all preloard Layout
+ $UserList | ForEach-Object {
+  $CurrentUser=$_
+  Remove-ItemProperty "HKU:\$CurrentUser\Keyboard Layout\Preload\" -Name *
+  (Get-Content $TempLocation\LangExportFull.Reg).replace('[HKEY_CURRENT_USER\', '[HKEY_USERS\'+$CurrentUser+'\') | Out-File -Encoding unicode -FilePath $TempLocation\LangNew.reg -Append
+ }
+
+ Write-Colored "Green"  -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Import new lang file"
+
+ reg import $TempLocation\LangNew.Reg 2>&1 | Out-Null
+
+ # Write-Colored "Green" -ColoredText "Unload NTUSER.DAT"
+ # reg unload $DefaultHKEY | Out-Null
+}
+Function Set-PowershellProfileForAllUsers { # Set a file as the profile for all users
+ Param (
+  $ProfilePath="$env:USERPROFILE\OneDrive\Git\VsCode-Repo\iClic-Perso.ps1"
+ )
+ $ProfileList=$($PROFILE.AllUsersAllHosts,$PROFILE.AllUsersCurrentHost,$PROFILE.CurrentUserCurrentHost)
+ $ProfileList | ForEach-Object {
+  try {
+   Remove-Item $_ -ErrorAction silentlycontinue
+   new-Item -Path $_ -ItemType SymbolicLink -Value $ProfilePath -ErrorAction Stop -Force
+  } catch {
+   write-host -foregroundcolor "Red" $Error[0]
+  }
+ }
+}
+Function Set-Proxy { # Sets or Unsets the proxy
+ Param (
+  [Switch]$Set,
+  [Switch]$UnSet,
+  $Proxy,
+  [switch]$System
+ )
+ $ErrorActionPreference="Stop"
+ $ProxyVariables=@("HTTP_PROXY","HTTPS_PROXY")
+ $ProxyVariables | ForEach-Object {
+  $CurrentProxyVariable=$_
+  if ($System) {
+   try {
+    if ($Set) { [Environment]::SetEnvironmentVariable($CurrentProxyVariable,$Proxy,"Machine") }
+    if ($UnSet) { [Environment]::SetEnvironmentVariable($CurrentProxyVariable,$null,"Machine") }
+   } Catch {
+    write-host -foregroundcolor "Red" $Error[0]
+   }
+   Write-Host -ForegroundColor "Cyan" "$CurrentProxyVariable : $([Environment]::GetEnvironmentVariable($CurrentProxyVariable,"Machine"))"
+  } else {
+   if ($Set) {
+    [Environment]::SetEnvironmentVariable($CurrentProxyVariable,$Proxy)
+    [Environment]::SetEnvironmentVariable($CurrentProxyVariable,$Proxy,[System.EnvironmentVariableTarget]::User)
+   }
+   if ($UnSet) {
+    [Environment]::SetEnvironmentVariable($CurrentProxyVariable,$null,[System.EnvironmentVariableTarget]::User)
+    [Environment]::SetEnvironmentVariable($CurrentProxyVariable,$null)
+   }
+   Write-Host -ForegroundColor "Cyan" "$CurrentProxyVariable current session : $([Environment]::GetEnvironmentVariable($CurrentProxyVariable))"
+   Write-Host -ForegroundColor "Cyan" "$CurrentProxyVariable Persistent: $([Environment]::GetEnvironmentVariable($CurrentProxyVariable))"
+  }
+ }
+}
+Function Show-ConsoleColors { # Print all the console possible colors
+ $colors = [enum]::GetValues([System.ConsoleColor])
+ Foreach ($bgcolor in $colors){
+  Foreach ($fgcolor in $colors) { Write-Host "$fgcolor|"  -ForegroundColor $fgcolor -BackgroundColor $bgcolor -NoNewLine }
+  Write-Host " on $bgcolor"
+ }
+}
+Function Split-FirstAndLastName { # Split a firstname lastname to 2 objects
+ Param (
+  $FullName
+ )
+ if ( ! $FullName ) {return}
+ #Take All but last space
+ $FirstName=$FullName.substring(0,$FullName.lastindexof(" "))
+ #Take only what's after last space
+ $LastName=$FullName.substring($FullName.lastindexof(" ")+1)
+ write-output "$FirstName,$LastName"
+}
+Function Wait-ProcessTermination { # Script used to wait for the end of a process
+ Param (
+  [Parameter(Mandatory=$true)]$Process,
+  $Message
+ )
+ $InProgress=1 ; Start-Sleep -s 1
+ while ( $InProgress -ne "0" ) {
+  $InProgress=(Get-Process | Where-Object { $_.ProcessName -match $Process.split(".")[0] } | Measure-Object).count
+  write-host -nonewline "`r$(get-date -uformat "%Y-%m-%d %T") - $Message"
+  Start-Sleep -s 1
+ }
+}
+# Non standard verbs
+Function ScreenOff { # Turns of screen (no additional software required)
+ (Add-Type '[DllImport("user32.dll")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1,0x0112,0xF170,2)
+}
+Function SignPSScript { # Sign Powershell Scripts
+ Param (
+  $ScriptName
+ )
+ $CodeSignCert = (@(Get-ChildItem Cert:\CurrentUser\My -CodeSign) | Sort-Object NotAfter)[-1]
+ if ( ! $CodeSignCert ) {write-host -ForegroundColor "Red" "No code signing certificate found" ; return}
+ Set-AuthenticodeSignature $ScriptName $CodeSignCert -TimestampServer http://timestamp.digicert.com -HashAlgorithm SHA256
+}
+Function Update { # Update machine (Windows Update / Chocolatey / Office / Store Apps / PS Modules)
+ if ( ! (Assert-IsAdmin) ) {Write-Colored "red" -Color "You must be admin to run this command" ; return}
+
+ write-host -foregroundcolor Cyan "$(get-date -uformat '%Y-%m-%d %T') - Updating Modules"
+ try {
+  update-module -ErrorAction Ignore
+ } Catch {
+  write-host -ForegroundColor "Magenta" "$(get-date -uformat '%Y-%m-%d %T') - $($Error[0])"
+ }
+ write-host -foregroundcolor Cyan "$(get-date -uformat '%Y-%m-%d %T') - Checking Windows Updates"
+ Get-WU -Install
+
+ write-host -foregroundcolor Cyan "$(get-date -uformat '%Y-%m-%d %T') - Office 365 Update"
+ try {
+  $OfficeBinary = "$env:CommonProgramFiles\Microsoft Shared\ClickToRun\OfficeC2RClient.exe"
+  start-process $OfficeBinary -ArgumentList "/update user updatepromptuser=true forceappshutdown=true displaylevel=true" -wait -NoNewWindow
+ } Catch {
+  write-host -ForegroundColor "Magenta" "$(get-date -uformat '%Y-%m-%d %T') - Error during Office 365 Update"
+ }
+
+ write-host -foregroundcolor Cyan "$(get-date -uformat '%Y-%m-%d %T') - Updating store Apps"
+ try {
+  Get-CimInstance -Namespace "Root\cimv2\mdm\dmmap" -ClassName "MDM_EnterpriseModernAppManagement_AppManagement01" -ErrorAction Stop | Invoke-CimMethod -MethodName UpdateScanMethod -ErrorAction Stop
+ } Catch {
+  write-host -ForegroundColor "Magenta" "$(get-date -uformat '%Y-%m-%d %T') - Error during Windows Store Update"
+ }
+
+ write-host -foregroundcolor Cyan "$(get-date -uformat '%Y-%m-%d %T') - Upgrading choco packages"
+ try {
+  get-command "Choco" -ErrorAction Stop | Out-Null
+  Choco Upgrade All -r
+ } Catch {
+  write-host -ForegroundColor "Magenta" "$(get-date -uformat '%Y-%m-%d %T') - Choco Not Present"
+ }
+}
+Function LaunchAsUser { # Launch Script as another user
+ Param (
+  [Parameter(Mandatory=$true)]$script,
+  [Parameter(Mandatory=$true)]$user,
+  [Parameter(Mandatory=$true)]$pass
+ )
+ $secpasswd = ConvertTo-SecureString $pass -AsPlainText -Force
+ $credential = New-Object System.Management.Automation.PSCredential($user, $secpasswd)
+ Start-Process -NoNewWindow powershell.exe -Credential $credential $script
+}
+
+# Misc Functions (Require Additionnal Tools)
+Function Reset-GraphicCard { # Disables/Enables device [Requires Nirsoft DevManView]
+ Param (
+  $AppPath="C:\Apps\NirSoft",
+  $GraphicCardName = "NVIDIA GeForce GTX 1080"
+ )
+ . "$AppPath\DevManView.exe" /disable_enable $GraphicCardName
+}
+Function LoginHome { # Open SSH Tunnel using Bitvise
+ Param (
+  $Path="$($env:OneDriveConsumer)\BitVise\BitVisePerso.tlp"
+ )
+ if ( ! (test-path $Path)) { write-Colored "Red" -ColoredText "Unavailable path : $Path" ; return }
+ # Use Pageant for Certificate Password
+ bvssh -profile="$Path" -loginonstartup
+}
+Function Encode { # Encodes Video using FFMPEG [Requires FFMPEG]
+ Param (
+  $ffmpegbinary=$(get-command ffmpeg -ErrorAction SilentlyContinue),
+  $Source,
+  $Destination,
+  [int]$QualityLevel=28,
+  [Switch]$NoSound
+ )
+
+ Try {
+  if (! $ffmpegbinary) {Throw "FFmpeg Binary not in path"}
+  if (test-path $Source) {Throw "Source Path Not Available"}
+  if (test-path $Destination) {Throw "Destination Path Not Available"}
+
+  if ($NoSound) {
+   ffmpeg.exe -i $Source -c:v libx265 -crf $QualityLevel -an $Destination
+  } else {
+   ffmpeg.exe -i $Source -c:v libx265 -crf $QualityLevel -c:a aac -b:a 128k $Destination
+  }
+ } catch {
+  Write-Host -ForegroundColor Red $Error[0]
+ }
+}
+Function Logcat { # Get Logcat from android device [Requires ADB]
+ if ( ! (Assert-IsCommandAvailable adb) ) {return}
+ adb logcat $args -T 100 | Format-TypeLogcat
+}
+Function MenuNmap { # Menu to help with default nmap scans [Requires NMAP]
+
+ Param (
+  $Server,
+  $Port=443,
+  $VLAN,
+  [switch]$VPN=$False,
+  [switch]$NoPing=$False
+ )
+
+ $ExitValue=$true
+ Clear-Host
+
+ if ($VPN) {
+  $AdditionalCommandLine+='--unprivileged'
+  $AdditionalMessage+=' [UnPrivileged]'
+ }
+
+ if ($NoPing) {
+  $AdditionalCommandLine+=' -Pn'
+  $AdditionalMessage+=' [NoPing]'
+ }
+
+ while ($ExitValue) {
+  $Function_List=@()
+  $Function_List+=New-Object PSObject -Property @{Name="Change Destination Server";Function='$Server=Read-host ServerName'}
+  $Function_List+=New-Object PSObject -Property @{Name="Change Destination Port";Function='$Port=Read-host Port'}
+  $Function_List+=New-Object PSObject -Property @{Name="Change Destination VLAN and MASK";Function='$VLAN=Read-host "VLAN/MASK"'}
+  $Function_List+=New-Object PSObject -Property @{Name="Full Vuln Scan (Warning : Heavy load)";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine -v --script vuln $Server;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="Full Scan (Warning : Medium load)";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine -A -T4 $Server;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="Service/Daemon Version (Warning : Medium load)";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine -sV $Server;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="Standard TCP Test";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine -sV $Server;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="Standard UDP Test";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine -sT $Server;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="SSH Checks Auth Methods";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine --script ssh-auth-methods $Server -p $Port;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="SSH Checks Algorithms";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine --script ssh2-enum-algos $Server -p $Port;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="HTTPS/SSL Checks Cipher";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine --script ssl-enum-ciphers $Server -p $Port;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="SMB Protocols";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine --script smb-protocols $Server -p $Port;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="RDP Protocol";
+   Function='While (! $Server) {$Server=Read-host ServerName};nmap $AdditionalCommandLine --script rdp-enum-encryption $Server -p $Port;Read-Host'}
+  $Function_List+=New-Object PSObject -Property @{Name="Scan VLAN";
+   Function='while (! $VLAN) {$VLAN=Read-host "VLAN/MASK"} ; nmap $AdditionalCommandLine -sP $VLAN;Read-Host'}
+
+  Write-StarLine
+
+  write-Centered "NMAP$AdditionalMessage"
+  Write-Colored -Color "Green" -NonColoredText "[Current Server " -ColoredText $Server -NoNewLine
+  Write-Colored -Color "Green" -NonColoredText "] [Current Port " -ColoredText $Port -NoNewLine
+  Write-Colored -Color "Green" -NonColoredText "] [Current VLAN/Mask " -ColoredText $VLAN -NoNewLine
+  Write-Colored -Color "Green" -NonColoredText "]"
+
+  Write-StarLine
+  $count=0 ; $Function_List | ForEach-Object { $count++ ; write-host -nonewline "[$count] - " ; write-host -foregroundcolor "Cyan" $_.Name }
+  Write-StarLine
+
+  #Read Answer
+  try { [int]$ExitValue = Read-Host } catch {}
+
+  if ($ExitValue -eq 0) {return}
+
+  #Run Command if different than 0
+  try {
+   $CommandNumber=$ExitValue - 1
+   $Command=$Function_List[$CommandNumber].Function
+   write-host -ForegroundColor "Magenta" "[Running function '$($Function_List[$CommandNumber].Name)' ($Command)]"
+   write-host
+   invoke-expression -ErrorAction Stop $Command
+   Clear-Host
+  } catch {write-host -foregroundcolor "Red" "No command found ($($Error[0]))"}
+ }
+}
+Function Get-UnapprovedProtocolAndCipher { # Remotely checks unsecure Ciphers [Requires NMAP]
+ Param (
+  $Computer=$Env:COMPUTERNAME,
+  $Port=443
+ )
+ nmap --script ssl-enum-ciphers --unprivileged -p $Port $Computer | Select-String -NotMatch " - A","Starting Nmap","Host is up","NULL","compressors"
+}
+
+#Security (Check Admin Mods)
+Function Get-LocalGroupMod { # Get Information on the modification of local groups
+ Get-WinEvent -FilterHashtable @{ProviderName='Microsoft-Windows-Security-Auditing';ID=$(4732,4733)} | Select-Object RecordId,
+ @{Label='DateTime';Expression={get-date -uformat '%Y-%m-%d %T' $_.TimeCreated -ErrorAction SilentlyContinue}},
+ @{Label='Machine';Expression={($_.MachineName -Split ('\.'))[0]}},
+ @{Label='User';Expression={try { $sid=$_.Properties[1].value ; $user=[wmi]"Win32_SID.SID='$sid'" ; $user.AccountName } catch { return $sid }}},
+ @{Label='Type';Expression={if ($_.ID -eq 4732) {'User Added'} elseif ($_.ID -eq 4733) {'User Removed'} }},
+ @{Label='Group';Expression={Get-UserFromSID $_.Properties[2].value}}
+}
+Function Get-InstalledApps { # List all installed apps with required information
+ $32BitsInstall = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName | Select-Object DisplayName,
+  DisplayVersion, Publisher, InstallDate,UninstallString
+ $64BitsInstall = Get-ItemProperty HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName | Select-Object DisplayName,
+  DisplayVersion, Publisher, InstallDate,UninstallString
+ $32BitsInstall + $64BitsInstall  | Sort-Object DisplayName
+}
+Function Get-InstalledAppsFromEvents { # Check all installed apps using event logs to see who installed what/when with what account
+ Get-WinEvent -FilterHashtable @{ProviderName='MsiInstaller';ID=$(1033,1034,1035,1036,1037)} | Select-Object RecordId,
+ @{Label='DateTime';Expression={get-date -uformat '%Y-%m-%d %T' $_.TimeCreated -ErrorAction SilentlyContinue}},
+ @{Label='Machine';Expression={($_.MachineName -Split ('\.'))[0]}},
+ @{Label='User';Expression={try { $sid=$_.UserId ; $user=[wmi]"Win32_SID.SID='$sid'" ; $user.AccountName } catch { return $sid }}},
+ @{Label='Type';Expression={
+  if ($_.ID -eq 1033) {'Application Installed'}
+  elseif ($_.ID -eq 1034) {'Application Removed'}
+  elseif ($_.ID -eq 1035) {'Application Changed'}
+  elseif ($_.ID -eq 1036) {'Application Updated'}
+  elseif ($_.ID -eq 1036) {'Application Update Removed'}}},
+ @{Label='Name';Expression={$_.Properties[0].value}},
+ @{Label='Manufacturer';Expression={$_.Properties[4].value}},
+ @{Label='Version';Expression={$_.Properties[1].value}},
+ @{Label='LanguageCode';Expression={$_.Properties[2].value}}
+}
+Function Get-LocalAdmin { # Prints local Admins
+ (Get-LocalGroupMember ([wmi]"Win32_SID.SID='S-1-5-32-544'").AccountName).Name
+}
+Function Get-LocalSecurityPolicy { # Show local security policies and which users have which local policies applied
+ Param (
+  $RightName
+ )
+
+ #Check Current User LocalSecurityPolicy : whoami /priv
+ #Check Current User LocalSecurityPolicy (Full) : whoami /all
+
+ $TempFile="$($env:Temp)\LogOnAsRightsExport.ini"
+ $ExportResult=secedit /export /areas USER_RIGHTS /cfg $TempFile
+ if ( ! $ExportResult.Contains('The task has completed successfully.') ) {
+  Write-Host -Foregroundcolor Red $($ExportResult.Trim())
+  Return
+ }
+
+ $ExportFileContent=Get-IniContent $TempFile
+
+ if ($RightName) {
+  #Filtered rights
+  $($ExportFileContent.'Privilege Rights'.$RightName.Trim() -Replace "\*","" -Split "," | ForEach-Object { Get-UserFromSID $_ }) -Join(",")
+ } else {
+  #Print All Rights
+  $ExportFileContent.'Privilege Rights'.GetEnumerator() | ForEach-Object {
+   [pscustomobject]@{
+    Name=$_.Name
+    Rights=$(($_.Value -Replace "\*","" -Split ",").Trim() | ForEach-Object { Get-UserFromSID $_ }) -Join(",")
+   }
+  }
+ }
+}
+
+#Certificates
+Function Get-LocalCertificate { # Print all local certificates
+ Param (
+  $CertPath=@('LocalMachine','CurrentUser')
+ )
+ $CertPath | ForEach-Object {
+  $Location=$_
+  Get-ChildItem CERT:\$Location\My | Select-Object @{LABEL="Location";EXPRESSION={$Location}},@{LABEL="Name";EXPRESSION={$_.Subject -replace "^CN=|^E=|,.*$"}},
+   Thumbprint,HasPrivateKey,
+   @{LABEL="KeyUsage";EXPRESSION={($_.EnhancedKeyUsageList -split "," -replace "\(.*\)|{|}","").trim() -join ","}},
+   @{Label='ExportableKey';Expression={$_.PrivateKey.Key.ExportPolicy}},
+   Issuer,NotAfter,@{N="Template";E={($_.Extensions | Where-Object {$_.oid.Friendlyname -match "Certificate Template Information"}).Format(0) -replace "(.+)?=(.+)\((.+)?", '$2'}}
+ }
+}
+Function Get-EncryptionCertificate { # Retrive certificat that can be used for document encruption
+ $Certificate=Get-ChildItem CERT:\CurrentUser\My | Select-Object Thumbprint,HasPrivateKey,Issuer,NotAfter,
+ @{Name="Name";Expression={$_.Subject -replace "^CN=|^E=|,.*$"}},
+ @{Name="KeyUsage";Expression={($_.EnhancedKeyUsageList -split "," -replace "\(.*\)|{|}","").trim() -join ","}},
+ @{Name="Template";Expression={($_.Extensions | Where-Object {$_.oid.Value -match "1.3.6.1.4.1.311.21.7"}).Format(0) -replace "(.+)?=(.+)\((.+)?", '$2'}} `
+  | Where-Object {$_.KeyUsage -like '*Document Encryption*'} | Sort-Object NotAfter | Select-Object -Last 1
+ return $Certificate
 }
