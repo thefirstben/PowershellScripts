@@ -8797,6 +8797,12 @@ Function New-AppRegistrationBlank { # Create a single App Registration completel
   Write-Host -ForegroundColor Red "Error creating App Registration $AppRegistrationName : $($Error[0])"
  }
 }
+Function New-ServicePrincipal {
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationName
+ )
+ New-AppRegistrationBlank -CreateAssociatedServicePrincipal -AppRegistrationName $AppRegistrationName
+}
 # App Registration [Only]
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
@@ -8806,8 +8812,8 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="UPN")][String]$OwnerUPN,
-  [parameter(Mandatory=$true,ParameterSetName="ObjectID")][String]$OwnerObjectID,
+  [parameter(Mandatory = $true,ParameterSetName = "UPN")][String]$OwnerUPN,
+  [parameter(Mandatory = $true,ParameterSetName = "ObjectID")][String]$OwnerObjectID,
   [Parameter(Mandatory = $true,ParameterSetName = 'UPN')]
   [Parameter(Mandatory = $true,ParameterSetName = 'ObjectID')]$AppRegistrationID  #Owner or App Registration ID is required, both param cannot be set, UPN will be slower
  )
