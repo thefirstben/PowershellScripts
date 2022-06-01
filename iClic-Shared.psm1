@@ -23,6 +23,7 @@
 # To pass variable from a function to the inside of a function use Splatting:
 #   https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_splatting
 #   Example with AZ Cli : Get-AzureServicePrincipal
+#   Example with standard PowerShell cmdlet : Get-NetStat
 # Create Objects
 #   $Lic_List=@()
 #   $Lic_List+=[pscustomobject]@{Name="Windows Server 2016 Datacenter";Key="1"}
@@ -30,6 +31,8 @@
 # Add comment only if verbose is set
 #  $PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent
 # Added --only-show-errors on all Az AD Cmdlets until the migration is dones to Microsoft Graph
+# Azure Query filter
+#  az account list --all --query "[?id=='3a35c9d6-efd6-4654-9640-4578146ad6a5'].{id:id, name:name}"
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -1074,7 +1077,7 @@ Function Assert-IsDLLInRegistry {
    [pscustomobject]@{CLSID=$CLSID;ValueFound=$ValueFound;Value=$Value}
   }
  } else {
-  $Dump=reg query HKLM\$RegPath /s /f $DllName
+  reg query HKLM\$RegPath /s /f $DllName | Out-Null
   $Result=$LastExitCode
   if ($Result) { return $False } else { Return $True }
  }
@@ -1479,7 +1482,7 @@ Function Get-OSInfo {
   Write-Colored $defaultblue (Align "TimeZone" $TabSize " : ") (([TimeZoneInfo]::Local).DisplayName)
 
   #NLA (If Error Message NLA will be marked as KO)
-  $NLA_Config=(Get-CimInstance "Win32_TSGeneralSetting "-Namespace root\cimv2\terminalservices -Filter "TerminalName='RDP-tcp'").UserAuthenticationRequired 2> $null
+  $NLA_Config=(Get-CimInstance "Win32_TSGeneralSetting "-Namespace root\cimv2\terminalservices -Filter "TerminalName='RDP-tcp'").UserAuthenticationRequired 2>$null
   if ( $NLA_Config) {Write-colored darkgreen (Align "NLA" $TabSize " : ") "OK"} else { Write-colored red (Align "NLA" $TabSize " : ") "KO"}
 
   #SCCM
@@ -2130,9 +2133,7 @@ Function Get-EthernetConf {
  $fontcolor="Cyan"
  $ErrorActionPreference="Stop"
  try {
-  #List only Ethernet Card with a detected IP and MAC Address
-  # $NetworkInfo=Get-CimInstance Win32_NetworkAdapterConfiguration -property * | where-object {$_.IPAddress -and $_.MACAddress }
-  #List only Ethernet Card with a detected IP only (with VPN, no MAC appear)
+  # Because of a bug, it will not list PPP (VPN) connections : https://docs.microsoft.com/en-US/troubleshoot/windows/win32/win32-networkadapterconfiguration-unable-retrieve-information
   $NetworkInfo=Get-CimInstance Win32_NetworkAdapter -property * | where-object MACAddress | Sort-Object NetConnectionStatus
 
   $NetworkInfo | foreach-object {
@@ -2258,11 +2259,14 @@ Function Get-EthernetConf {
 Function Get-IP {
  Param (
   [Switch]$ShowDisconnected,
-  [Switch]$ShowDriverInfo
+  [Switch]$ShowDriverInfo, # Slower
+  [Switch]$ShowBindings # Slower
  )
- $alignsize=30
+ $alignsize=35
  $fontcolor="Cyan"
  $ErrorActionPreference="Stop"
+
+ # Get Interface info
 
  $InterfaceList=[System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object Name -ne 'Loopback Pseudo-Interface 1' | ForEach-Object {
   if (($_.OperationalStatus -eq "Down") -and ! ($ShowDisconnected)) {Return}
@@ -2274,6 +2278,7 @@ Function Get-IP {
    Name=$_.Name
    Index=$IpMetricInfo.ifIndex
    Metric=$IpMetricInfo.InterfaceMetric
+   AutomaticMetric=$IpMetricInfo.AutomaticMetric
    Description=$_.Description
    NetworkInterfaceType=$_.NetworkInterfaceType
    IP=$IpProperties.UnicastAddresses | Where-Object PrefixOrigin -ne WellKnown | Select-Object Address,IPv4Mask,PrefixLength,PrefixOrigin,SuffixOrigin
@@ -2289,15 +2294,34 @@ Function Get-IP {
   }
  }
 
+ # Get all DNS info not be available on interface
+ $DNSInfo = Get-DnsClient
+
+ # Get all Route info
+ $RouteInfo = Get-NetRoute
+
+
  $InterfaceList | Sort-Object OperationalStatus,Metric | ForEach-Object {
   Write-StarLine -character "-"
   if ($_.Mac.ToString().Trim() -ne "") {Write-Centered -Color 'Magenta' $_.Mac} else {Write-Centered -Color 'Magenta' $_.Name}
   Write-StarLine -character "-"
+
+  # Interface info
   write-colored $fontcolor (Align "Interface Name " $alignsize " : ") $_.Name
   write-colored $fontcolor (Align "Interface Description " $alignsize " : ") $_.Description
   write-colored $fontcolor (Align "Interface Type " $alignsize " : ") $_.NetworkInterfaceType
-  write-colored $fontcolor (Align "Interface Metric " $alignsize " : ") $_.Metric
+  write-colored $fontcolor (Align "Interface Metric " $alignsize " : ") "$($_.Metric)$(if ($_.AutomaticMetric) {" (Automatic)"})"
   write-colored $fontcolor (Align "Interface Index " $alignsize " : ") $_.Index
+  if ($_.OperationalStatus -eq "Up") {$StatusColor = "Green"} elseif ($_.OperationalStatus -eq "Down") {$StatusColor = "Red"} else {$StatusColor = "DarkYellow"}
+  write-colored $StatusColor (Align "Interface Status " $alignsize " : ") $_.OperationalStatus
+  if ($_.InterfaceSpeed) { write-colored $fontcolor (Align "Interface Speed " $alignsize " : ") $_.InterfaceSpeed }
+  if ($_.DNSSuffix) {write-colored $fontcolor (Align "Interface DNS Suffix " $alignsize " : ") $_.DNSSuffix}
+  $RouteInfoForThisInterface = $RouteInfo | Where-Object ifIndex -eq $_.Index
+  if ($RouteInfoForThisInterface) {
+   write-colored $fontcolor (Align "Number of routes " $alignsize " : ") $RouteInfoForThisInterface.Count
+  }
+
+  # Driver info
   if ($ShowDriverInfo) {
    Try {
     $AdapterInfo=Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop | Select-Object DriverProvider,DriverVersionString,NdisVersion,DriverDescription,DriverDate
@@ -2306,10 +2330,16 @@ Function Get-IP {
     write-colored $fontcolor (Align "Driver Ndis Version " $alignsize " : ") $AdapterInfo.NdisVersion
    } Catch {}
   }
-  if ($_.OperationalStatus -eq "Up") {$StatusColor = "Green"} elseif ($_.OperationalStatus -eq "Down") {$StatusColor = "Red"} else {$StatusColor = "DarkYellow"}
-  write-colored $StatusColor (Align "Operational Status " $alignsize " : ") $_.OperationalStatus
-  if ($_.InterfaceSpeed) { write-colored $fontcolor (Align "InterfaceSpeed " $alignsize " : ") $_.InterfaceSpeed }
-  if ($_.DNSSuffix) {write-colored $fontcolor (Align "DNSSuffix " $alignsize " : ") $_.DNSSuffix}
+
+    # Driver info
+    if ($ShowBindings) {
+     Try {
+      $AdapterBindings = ( Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop  | Get-NetAdapterBinding | Where-Object Enabled ).ComponentID -join ","
+      write-colored $fontcolor (Align "Enabled bindings " $alignsize " : ") $AdapterBindings
+     } Catch {}
+    }
+
+  # Network Category
   if ($_.IP) {
    If (Assert-IsCommandAvailable Get-NetConnectionProfile) {
     try {
@@ -2325,6 +2355,8 @@ Function Get-IP {
      write-colored $StatusColor (Align "Internet Access (IPv6)" $alignsize " : ") $ConnectionProfile.IPv6Connectivity
     } Catch {}
    }
+
+   # IP information
    $count=0
    $countIPv6=0
    $_.IP | Sort-Object PrefixLength | ForEach-Object {
@@ -2350,22 +2382,8 @@ Function Get-IP {
     }
    }
   }
-  if ($_.DNS) {
-   write-colored $fontcolor -NonColoredText (Align "DNS" $alignsize " : ") -NoNewLine
-   $count=0
-   $_.DNS | ForEach-Object {
-    if ($count -eq 0) {write-colored -Color $fontcolor -ColoredText $_ -NoNewLine} else {write-colored -Color $fontcolor -ColoredText " | $($_)" -NoNewLine}
-    $count++
-   }
-   Write-Host
-  }
-  if ($_.WINS) {
-   $count=0
-   $_.DNS | ForEach-Object {
-    $count++
-    write-colored $fontcolor (Align "WINS ($count)" $alignsize " : ") $_
-   }
-  }
+
+  # Gateway information
   if ($_.Gateway) {
    $_.Gateway | ForEach-Object {
     $IPTypeCheck = ([IPAddress]$_).AddressFamily
@@ -2373,10 +2391,48 @@ Function Get-IP {
     write-colored $fontcolor -NonColoredText (Align "Gateway $IPType" $alignsize " : ") -ColoredText $_
    }
   }
-  if ($_.DHCP) {write-colored $fontcolor (Align "DHCP " $alignsize " : ") $_.DHCP}
+
+  # WINS information
+  if ($_.WINS) {
+   $count=0
+   $_.DNS | ForEach-Object {
+    $count++
+    write-colored $fontcolor (Align "WINS Server ($count)" $alignsize " : ") $_
+   }
+  }
+
+  # DHCP information
+  if ($_.DHCP) {write-colored $fontcolor (Align "DHCP Server" $alignsize " : ") $_.DHCP}
+
+  # DNS information
+  if ($_.DNS) {
+   write-colored $fontcolor -NonColoredText (Align "DNS Server " $alignsize " : ") -NoNewLine
+   $count=0
+   $_.DNS | ForEach-Object {
+    if ($count -eq 0) {write-colored -Color $fontcolor -ColoredText $_ -NoNewLine} else {write-colored -Color $fontcolor -ColoredText " | $($_)" -NoNewLine}
+    $count++
+   }
+   Write-Host
+  }
+  $DNSInfoForThisInterface = $DNSInfo | Where-Object InterfaceIndex -eq $_.Index
+  if ($DNSInfoForThisInterface) {
+   if ($DNSInfoForThisInterface.Suffix) {
+    write-colored $fontcolor (Align "DNS Suffix " $alignsize " : ") $DNSInfoForThisInterface.Suffix
+   }
+   $DNSSuffixSearchListCount = 0
+   $DNSInfoForThisInterface.SuffixSearchList | ForEach-Object {
+    write-colored $fontcolor (Align "DNS SuffixSearchList [$DNSSuffixSearchListCount]" $alignsize " : ") $DNSInfoForThisInterface.SuffixSearchList[$DNSSuffixSearchListCount]
+    $DNSSuffixSearchListCount++
+   }
+   if ($DNSInfoForThisInterface.RegisterThisConnectionsAddress) {$StatusColor = "Green"} else { $StatusColor="Red" }
+   write-colored $StatusColor (Align "DNS RegisterConnectionsAddress " $alignsize " : ") $DNSInfoForThisInterface.RegisterThisConnectionsAddress
+   if ($DNSInfoForThisInterface.UseSuffixWhenRegistering) {$StatusColor = "Red"} else { $StatusColor="Green" }
+   write-colored $StatusColor (Align "DNS UseSuffixWhenRegistering " $alignsize " : ") $DNSInfoForThisInterface.UseSuffixWhenRegistering
+  }
   if ($_.Sent) {write-colored $fontcolor (Align "Sent | Received " $alignsize " : ") "$($_.Sent) | $($_.Received)"}
  }
 
+ # NRPT Information
  $NRPTPolicies = Get-DnsClientNrptPolicy -Effective
  if ($NRPTPolicies) {
   Write-StarLine -character "-"
@@ -2645,27 +2701,22 @@ Function Get-NetworkStatistics {
  }
 Function Get-NetStat {
  Param (
-   $PathFilter="*"
+   $PathFilter="*",
+   $LocalAddress,
+   $LocalPort,
+   $RemoteAddress,
+   $RemotePort,
+   [ValidateSet('Bound','Closed','CloseWait','Closing','DeleteTCB','Established','FinWait1','FinWait2','LastAck','Listen','SynReceived','SynSent','TimeWait')]$State
   )
-  Get-NetTCPConnection | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,AppliedSetting,
+  $NetConnectionParams = $PSBoundParameters
+  $NetConnectionParams.Remove('PathFilter') | Out-Null
+  Get-NetTCPConnection @NetConnectionParams | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,AppliedSetting,
    @{name="ProcessInfo";expression={Get-Process -PID $_.OwningProcess | `
     Select-Object ID,ProcessName,Path}} | `
     Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,AppliedSetting,
      @{name="PID";expression={$_.ProcessInfo.ID}},
      @{name="ProcessName";expression={$_.ProcessInfo.ProcessName}},
      @{name="ProcessPath";expression={$_.ProcessInfo.Path}} | Where-Object {$_.ProcessPath -like $PathFilter}
-}
-Function Get-EstablishedConnections {
- Param (
-  $PathFilter="*"
- )
- Get-NetTCPConnection -State Established | Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,AppliedSetting,
- @{name="ProcessInfo";expression={Get-Process -PID $_.OwningProcess | `
- Select-Object ID,ProcessName,Path}} | `
-  Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,AppliedSetting,
-   @{name="PID";expression={$_.ProcessInfo.ID}},
-   @{name="ProcessName";expression={$_.ProcessInfo.ProcessName}},
-   @{name="ProcessPath";expression={$_.ProcessInfo.Path}} | Where-Object {$_.ProcessPath -like $PathFilter}
 }
 Function Get-PortInfo {
  Param (
@@ -2683,7 +2734,7 @@ Function Open-Port {
   $Port = 80,
   $IPSource = 'any'
  )
- #Found hre https://gallery.technet.microsoft.com/scriptcenter/Listen-Port-Powershell-8deb99e4
+ #Found here https://gallery.technet.microsoft.com/scriptcenter/Listen-Port-Powershell-8deb99e4
  $endpoint = new-object System.Net.IPEndPoint ([system.net.ipaddress]::$IPSource, $port)
  $listener = new-object System.Net.Sockets.TcpListener $endpoint
  $listener.server.ReceiveTimeout = 3000
@@ -2810,13 +2861,13 @@ Function Set-RegKey {
 # Services, Tasks, GPO
 Function Get-ServicesSpecific {
  Param (
-  $servername=$env:COMPUTERNAME
+  $ServerName=$env:COMPUTERNAME
  )
  try {
-  if ($servername -eq $env:COMPUTERNAME) {
+  if ($ServerName -eq $env:COMPUTERNAME) {
    $result=Get-CimInstance Win32_Service -ErrorAction Stop
   } else {
-   $result=Get-CimInstance Win32_Service -ErrorAction Stop -ComputerName $servername
+   $result=Get-CimInstance Win32_Service -ErrorAction Stop -ComputerName $ServerName
   }
    $result=$result | Where-Object {
    (($_.startmode -eq 'Auto') -or ($_.state -eq 'Running')) -and
@@ -2828,14 +2879,14 @@ Function Get-ServicesSpecific {
  if (! ($result)) {
   Write-Colored "darkgreen" -coloredtext "No service found"
  } else {
-  $result | ForEach-Object { Format-TypeServices $._ $servername -formattable }
+  $result | ForEach-Object { Format-TypeServices $._ $ServerName -formattable }
  }
 }
-Function Get-ServicesFiltered {
+Function Get-ServicesFiltered { # Search specific service(s), can do actions on all the services (Start/Stop)
  Param (
   [Switch]$Start,
   [Switch]$Stop,
-  $Services=@('Null')
+  $Services=@('')
  )
 
  #For VmWare : $Services=@('Vmware')
@@ -4208,8 +4259,8 @@ Function Get-WindowsUpdateConfig {
   Set-ItemProperty "$MsUpdateReg\AU" -Name 'UseWUServer' -Value 0
  }
 
- $WINDOWSUPDATE = Get-ItemProperty $MsUpdateReg 2> $null
- $WINDOWSUPDATE_WU_AU = Get-ItemProperty "$MsUpdateReg\AU" 2> $null
+ $WINDOWSUPDATE = Get-ItemProperty $MsUpdateReg 2>$null
+ $WINDOWSUPDATE_WU_AU = Get-ItemProperty "$MsUpdateReg\AU" 2>$null
 
  if ( $WINDOWSUPDATE_WU_AU.UseWUServer -eq 1 ) {
   $COLOR="darkgreen";$WINDOWSUPDATE_WU_AU_UseWUServer_Status="Yes"
@@ -4221,7 +4272,7 @@ Function Get-WindowsUpdateConfig {
  write-host "WUStatusServer : $($WINDOWSUPDATE.WUStatusServer)"
  write-host "Target Group   :" $WINDOWSUPDATE.TargetGroup
  # User
- $WINDOWSUPDATE=Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate" 2> $null
+ $WINDOWSUPDATE=Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\WindowsUpdate" 2>$null
  if ( $WINDOWSUPDATE.DisableWindowsUpdateAccess ) {
   $Color="red" ; $WINDOWSUPDATESTATUS="Disabled"
  } else {
@@ -4366,7 +4417,7 @@ Function Get-WU {
     if ($Updates.Count -gt 1) {$plural="s"}
     Write-Colored -filepath $ScriptLog -PrintDate -NonColoredText "| $ServerName | $Action in progress | " -ColoredText "$($Updates.Count) update$plural found"
 
-    $ReturnResult=$Updates | Select-Object @{name="ServerName";expression={$ServerName}}, Title, MsrcSeverity, RebootRequired,
+    $ReturnResult = $Updates | Select-Object @{name="ServerName";expression={$ServerName}}, Title, MsrcSeverity, RebootRequired,
      @{name="MinDlSize";expression={Format-FileSize $_.MinDownloadSize}},
      @{name="MaxDlSize";expression={Format-FileSize $_.MaxDownloadSize}}, SupportUrl, Description ,
      @{name="KB";expression={$_.KBArticleIDs | ForEach-Object { "KB$($_)" }}},
@@ -4382,7 +4433,7 @@ Function Get-WU {
      $ReturnInfo=""
      $Downloader = $UpdateSession.CreateUpdateDownloader()
      $Downloader.Updates = $Updates
-     $ReturnInfo=$Downloader.Download()
+     $ReturnInfo = $Downloader.Download()
      Write-Colored -filepath $ScriptLog -PrintDate -NonColoredText "| $ServerName | $Action in progress | " -ColoredText "Downloading result : $($ReturnInfo.ResultCode) ($($ReturnInfo.HResult))"
 
      Write-Colored -filepath $ScriptLog -PrintDate -NonColoredText "| $ServerName | $Action in progress | " -ColoredText "Installing $($Updates.Count) update$plural"
@@ -4446,7 +4497,7 @@ Function Enable-WSUS {
 }
 
 # WSUS
-Function Install-WSUS {
+Function Install-WSUS { # Install WSUS Service on a Server
  Param (
   $DataFolder="E:\WSUS"
  )
@@ -4460,7 +4511,123 @@ Function Install-WSUS {
  # WSUS Post Install (Must be run from the server)
  Start-Process -NoNewWindow "C:\Program Files\Update Services\Tools\wsusutil.exe" -ArgumentList "postinstall","CONTENT_DIR=$WSUSDataLocation"
 }
-Function Remove-WSUSSuperseeded {
+Function Set-WSUSConfig { # Fully configure WSUS using commandlines
+ Param (
+  $ProxyInfo,
+  [Parameter(Mandatory=$true)]$ProductsToEnable, # List of products to enable, works with wildcards : @("Product1","Product2","Product3*")
+  [Parameter(Mandatory=$true)]$ComputerTargetGroups, # Filter on specific groups, does not work with wildcards : @("All Computers")
+  [Parameter(Mandatory=$true)]$UpdateClassifications, # Filter selected classification, does not work with wildcards : @('Critical Updates', 'Definition Updates' , 'Security Updates')
+  [Parameter(Mandatory=$true)]$AutoApproveRuleName, # Name of AutoApproval Rule
+  $TimeOfSync = (New-TimeSpan -Hours 0 -Minutes 0), # Default Midnite
+  [Parameter(Mandatory=$true)]$NumberOfSync = 3 # Number of Synchronisation per day
+ )
+
+ # Get WSUS Name
+ $WsusServer = Get-WSUSServer
+
+ # Connect to WSUS server configuration
+ $wsusConfig = $WsusServer.GetConfiguration()
+
+ # Set to download updates from Microsoft Updates
+ Set-WsusServerSynchronization -SyncFromMU | Out-Null
+
+ # Set Update Languages to English
+ $wsusConfig.AllUpdateLanguagesEnabled = $false
+ $wsusConfig.SetEnabledUpdateLanguages("en")
+
+ #If Proxy is required
+ if ($ProxyInfo) {
+  $wsusConfig.ProxyName=$ProxyInfo[0]
+  $wsusConfig.ProxyServerPort=$ProxyInfo[1]
+  $wsusConfig.UseProxy=$true
+ }
+
+ # Save WSUS Config settings
+ $wsusConfig.Save()
+
+ # Get WSUS Subscription
+ $subscription = $WsusServer.GetSubscription()
+ $subscription.StartSynchronizationForCategoryOnly()
+
+ # Perform initial synchronization to get latest categories
+ While ($subscription.GetSynchronizationStatus() -ne 'NotProcessing') {
+  Write-Host "`r$(get-date -uformat '%Y-%m-%d %T') Subscription Sync In Progress - Please Wait - May take multiple minutes" -NoNewline
+  Start-Sleep -Seconds 1
+ }
+
+ # Configure the Classifications (Disable Drivers by default)
+ Get-WsusClassification | Where-Object { $_.Classification.Title -notlike "*driver*" } | Set-WsusClassification
+
+ # Get all available products
+ $ProductList = $WsusServer | Get-WsusProduct
+
+ # To List products names : $ProductList.Product.Title
+
+ # Disable all products
+ $ProductList | Set-WsusProduct -Disable
+
+ # Create Object for all required Products
+ $ProductsToEnableObj = $ProductsToEnable | foreach-object {
+  $CurrentProductName = $_
+  $ProductList | Where-Object { $_.product.title -like $CurrentProductName }
+ }
+
+ # Enable only required products
+ $ProductsToEnableObj | Set-WsusProduct
+
+ #Configure Synchronizations
+ $subscription.SynchronizeAutomatically=$true
+
+ #Set Auto Approvals
+ # List current rules :
+ #  $ApprovalRules = $WsusServer.GetInstallApprovalRules()
+ #   Get configured target groups : $ApprovalRules.GetComputerTargetGroups()
+ #   Get configured classifications : $ApprovalRules.GetUpdateClassifications()
+
+ # Get Available Computer Target Groups
+ #  $WsusServer.GetComputerTargetGroups()
+ # Get Available Classigication
+ #  $WsusServer.GetUpdateClassifications()
+
+ # Create Approval Rule
+ $ApprovalRule = $WsusServer.CreateInstallApprovalRule($AutoApproveRuleName)
+
+ # Create Classification Object
+ $ClassificationForAutoApproval = $WsusServer.GetUpdateClassifications() | Where-Object {$_.Title -in $UpdateClassifications}
+ $ClassificationForAutoApprovalObj = New-Object Microsoft.UpdateServices.Administration.UpdateClassificationCollection
+ $ClassificationForAutoApprovalObj.AddRange($ClassificationForAutoApproval)
+ $ApprovalRule.SetUpdateClassifications($ClassificationForAutoApprovalObj)
+
+ #Create Target Group Object
+ $TargetGroupForAutoApproval = $WsusServer.GetComputerTargetGroups() | Where-Object Name -in $ComputerTargetGroups
+ $TargetGroupForAutoApprovalObj = New-Object Microsoft.UpdateServices.Administration.ComputerTargetGroupCollection
+ $TargetGroupForAutoApprovalObj.AddRange($TargetGroupForAutoApproval)
+ $ApprovalRule.SetComputerTargetGroups($TargetGroupForAutoApprovalObj)
+
+ $ApprovalRule.Enabled = $True # Set Rule as Enabled
+ $ApprovalRule.Save()          # Save Rule
+ $ApprovalRule.ApplyRule()     # Apply Rule
+
+ # Set synchronization scheduled
+ $subscription.SynchronizeAutomaticallyTimeOfDay=$TimeOfSync
+ $subscription.NumberOfSynchronizationsPerDay=$NumberOfSync
+ $subscription.Save()
+
+ # Launch Sync
+ $subscription.StartSynchronization()
+
+ # Monitor Progress of Synchronisation
+ Start-Sleep -Seconds 15 # Wait for sync to start before monitoring
+ while ($subscription.GetSynchronizationProgress().ProcessedItems -ne $subscription.GetSynchronizationProgress().TotalItems) {
+  $ProgressPercentage=[System.Math]::Round($subscription.GetSynchronizationProgress().ProcessedItems * 100/($subscription.GetSynchronizationProgress().TotalItems),2)
+  Write-Host "`r$(get-date -uformat '%Y-%m-%d %T') Sync In Progress - $ProgressPercentage %    " -NoNewline
+  Start-Sleep -Seconds 1
+ }
+
+ write-host
+ write-host "WSUS Configuration Done"
+}
+Function Remove-WSUSSuperseeded { # Decline all superseeded updates
  Param (
   $WsusServerInfo=$(Get-WSUSServer),
   [Boolean]$useSecureConnection = $False,
@@ -4484,154 +4651,39 @@ Function Remove-WSUSSuperseeded {
  }
  write-host Total Declined Updates: $count
 }
-Function Set-WSUSConfig {
- Param (
-  $ProxyInfo
- )
- $wsus=Get-WSUSServer
-
- #Connect to WSUS server configuration
- $wsusConfig = $wsus.GetConfiguration()
-
- # Set to download updates from Microsoft Updates
- Set-WsusServerSynchronization -SyncFromMU | Out-Null
-
- # Set Update Languages to English and save configuration settings
- $wsusConfig.AllUpdateLanguagesEnabled = $false
- $wsusConfig.SetEnabledUpdateLanguages("en")
-
- #If Proxy is required
- if ($ProxyInfo) {
-  $wsusConfig.ProxyName=$ProxyInfo[0]
-  $wsusConfig.ProxyServerPort=$ProxyInfo[1]
-  $wsusConfig.UseProxy=$true
- }
-
- $wsusConfig.Save()
-
- #Get WSUS Subscription
- $subscription = $wsus.GetSubscription()
- $subscription.StartSynchronizationForCategoryOnly()
-
- # Perform initial synchronization to get latest categories
- While ($subscription.GetSynchronizationStatus() -ne 'NotProcessing') {
-  Write-Host "`r$(get-date -uformat '%Y-%m-%d %T') Subscription Sync In Progress - Please Wait" -NoNewline
-  Start-Sleep -Seconds 1
- }
-
- #Disable Products
- Get-WsusServer | Get-WsusProduct | Where-Object -FilterScript { $_.product.title -match "Office" } | Set-WsusProduct -Disable
- Get-WsusServer | Get-WsusProduct | Where-Object -FilterScript { $_.product.title -match "Windows" } | Set-WsusProduct -Disable
- Get-WsusServer | Get-WsusProduct | Where-Object -FilterScript { $_.product.title -match "Language Packs" } | Set-WsusProduct -Disable
- #Enable Products
- Get-WsusServer | Get-WsusProduct | Where-Object -FilterScript { $_.product.title -match "Windows Server 2016" } | Set-WsusProduct
- Get-WsusServer | Get-WsusProduct | Where-Object -FilterScript { $_.product.title -match "Windows 10 Fall Creators" } | Set-WsusProduct
- Get-WsusServer | Get-WsusProduct | Where-Object -FilterScript { $_.product.title -match "Windows 10 Creators" } | Set-WsusProduct
-
- #Configure the Classifications
- Get-WsusClassification | Where-Object {
-  # When using IN cannot load profile on 2003
-  # $_.Classification.Title -in ( 'Critical Updates', 'Definition Updates', 'Feature Packs', 'Security Updates', 'Service Packs', 'Update Rollups', 'Updates') } | Set-WsusClassification
-  ( 'Critical Updates', 'Definition Updates', 'Feature Packs', 'Security Updates', 'Service Packs', 'Update Rollups', 'Updates') -contains $_.Classification.Title } | Set-WsusClassification
-
- #Configure Synchronizations
- $subscription.SynchronizeAutomatically=$true
-
- #Set synchronization scheduled for midnight each night
- $subscription.SynchronizeAutomaticallyTimeOfDay= (New-TimeSpan -Hours 0)
- $subscription.NumberOfSynchronizationsPerDay=1
- $subscription.Save()
-
- #Launch Sync
- $subscription.StartSynchronization()
-
- #Monitor Progress of Synchronisation
- Start-Sleep -Seconds 15 # Wait for sync to start before monitoring
- while ($subscription.GetSynchronizationProgress().ProcessedItems -ne $subscription.GetSynchronizationProgress().TotalItems) {
-  $ProgressPercentage=[System.Math]::Round($subscription.GetSynchronizationProgress().ProcessedItems * 100/($subscription.GetSynchronizationProgress().TotalItems),2)
-  Write-Host "`r$(get-date -uformat '%Y-%m-%d %T') Sync In Progress - $ProgressPercentage %    " -NoNewline
-  Start-Sleep -Seconds 1
- }
-
- write-host
- write-host "Done"
-}
-Function Get-WSUSUpdatesStatus {
- Param (
-  $ServerOU=$(Get-ADOUFromServer),
-  $Output="C:\Temp\WindowsUpdate"
- )
- $count=0
- $CurrentDate=get-date -uformat '%Y-%m-%d'
- $serverlist=(Get-ADComputer -SearchBase $ServerOU -filter *).Name
- $GlobalUpdateList=@()
- # $GlobalUpdateList="$($output)_$($CurrentDate)_UpdateList.csv"
- # write-output "ServerName;UpdateCount;Uptime;Access" | Out-File $GlobalUpdateList -Encoding UTF8
- $GlobalServerList=@()
-
- $StartDate=get-date -uformat "%Y-%m-%d %T"
- "$StartDate - Start of process"
-
- $serverlist | ForEach-Object {
-  $count++
-  Progress "Checking server $count/$($serverlist.count) : " $_
-  $ServerInfo = New-Object PSObject
-  $ServerInfo | Add-Member NoteProperty ServerName $_
-  try {
-   if (Test-RemotePowershell $_) {
-    $serverupdatelist=get-windowsupdate -ErrorAction Stop -computername $_
-    $GlobalUpdateList += $serverupdatelist
-    # $serverupdatelist | Out-File -append $GlobalUpdateList -Encoding UTF8
-    $ServerInfo | Add-Member NoteProperty UpdateCount $serverupdatelist.count
-    $ServerInfo | Add-Member NoteProperty UpdateSize $(($serverupdatelist | Measure-Object -Sum MaxDownloadSize).Sum)
-    $ServerInfo | Add-Member NoteProperty Uptime $(Get-UptimePerso $_)
-    $ServerInfo | Add-Member NoteProperty Access "OK"
-   } else {
-    $ServerInfo | Add-Member NoteProperty UpdateCount "-"
-    $ServerInfo | Add-Member NoteProperty UpdateSize "-"
-    $ServerInfo | Add-Member NoteProperty Uptime "-"
-    $ServerInfo | Add-Member NoteProperty Access $error[0]
-   }
-  } catch {
-   $ServerInfo | Add-Member NoteProperty UpdateCount "-"
-   $ServerInfo | Add-Member NoteProperty UpdateSize "-"
-   $ServerInfo | Add-Member NoteProperty Uptime "-"
-   $ServerInfo | Add-Member NoteProperty Access $error[0]
-  }
-  $GlobalServerList += $ServerInfo
- }
- $GlobalServerList | Export-Csv "$($output)_$($CurrentDate)_ServerList.csv" -Encoding Unicode -NoTypeInformation -Delimiter ","
- $GlobalUpdateList | Export-Csv "$($output)_$($CurrentDate)_UpdateList.csv" -Encoding Unicode -NoTypeInformation -Delimiter ","
-
- $EndDate=$(get-date -uformat "%Y-%m-%d %T")
- $Duration=(New-TimeSpan -Start $StartDate -End $EndDate)
- "$EndDate - Process finished in {0:g}" -f $Duration
-}
-Function Get-WSUSConfiguredCategories {
+Function Get-WSUSConfiguredCategories { # List all enabled categories on a WSUS Server
  Param (
   $wsusServer=$(Get-WsusServer)
  )
  $wsusSubscription = $wsusServer.GetSubscription()
- $wsusSubscription.GetUpdateCategories() | Select-Object Title
+ $wsusSubscription.GetUpdateCategories() | select Title,Description
 }
-Function Get-WSUSConfiguredClassifications {
+Function Get-WSUSConfiguredClassifications { # List all enabled classification on a WSUS Server
  Param (
   $wsusServer=$(Get-WsusServer)
  )
  $wsusSubscription = $wsusServer.GetSubscription()
- $wsusSubscription.GetUpdateClassifications() | Select-Object Title
+ $wsusSubscription.GetUpdateClassifications() | Select-Object Title,Description
 }
-Function Get-WSUSConfiguredApprovalRules {
+Function Get-WSUSConfiguredApprovalRules { # List all approval rules on a WSUS Server
  Param (
   $wsusServer=$(Get-WsusServer)
  )
  $ApprovalRulesList=@()
  $wsusServer.GetInstallApprovalRules() | ForEach-Object {
-  $ApprovalRulesList+=[pscustomobject]@{Name=$_.Name;TargetGroups=$($_.GetComputerTargetGroups().Name -join ",");UpdateClassification=$_.GetUpdateClassifications().Title -join ","}
+  $ApprovalRulesList+=[pscustomobject]@{
+   Name=$_.Name;
+   TargetGroups=$_.GetComputerTargetGroups().Name -join ",";
+   UpdateClassification=$_.GetUpdateClassifications().Title -join ","
+   Enabled=$_.Enabled
+   Action=$_.Action
+   Deadline=$_.Deadline
+   CanSetDeadline=$_.CanSetDeadline
+  }
  }
  return $ApprovalRulesList
 }
-Function Connect-WSUS {
+Function Connect-WSUS { # Open connection to WSUS service
  Param (
   [Parameter(Mandatory=$true)]$WsusServer, #WSUS FQDN
   [Switch]$NoSSL,
@@ -4657,14 +4709,14 @@ Function Connect-WSUS {
 
  return $wsus
 }
-Function Get-WSUSUpdatesFull {
+Function Get-WSUSUpdatesFull { # List all Updates on WSUS Servers
  Param (
   $wsus=$(Connect-WSUS)
  )
  $updates = $wsus.GetUpdates()
  return $updates
 }
-Function Get-WSUSUpdatesWaitingForApproval {
+Function Get-WSUSUpdatesWaitingForApproval { # List all updates waiting for approval from
  Param (
   $ServerGroup="FR-G-ORG-Servers WSUS"
  )
@@ -5558,7 +5610,6 @@ Function Get-Cipher {
    $CipherListFull=(Get-TlsCipherSuite).Name
   } else {
    $CipherListFull=(Get-ItemProperty -ErrorAction Stop -path 'HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Configuration\Local\SSL\00010002' -Name 'Functions').Functions
-   $CipherListToReplace=$CipherListFull
   }
   #Print Cipher List
   $CipherListFull
@@ -5681,7 +5732,7 @@ Function RunRemoteWMI {
  #Run app remotely using WMI
  $Arguments=@{
   CommandLine=$processName;
-  CurrentDirectory = $null;
+  # CurrentDirectory = $null;
  }
  $process = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $Arguments -ComputerName $server
  write-host "Return value : $($process.ReturnValue) | PID : $($process.ProcessID)"
@@ -6258,7 +6309,7 @@ Function Set-MSDTC {
  Restart-Service -displayname "Distributed Transaction Coordinator"
 }
 Function Get-MSDTC {
- $MSDTC_Security=Get-ItemProperty "HKLM:\Software\Microsoft\MSDTC\Security" 2> $null
+ $MSDTC_Security=Get-ItemProperty "HKLM:\Software\Microsoft\MSDTC\Security" 2>$null
 
  Format-TypeMSDTC $MSDTC_Security.NetworkDtcAccess "Network DTC Access"
  Format-TypeMSDTC $MSDTC_Security.NetworkDtcAccessClients "Client And Administration | Allow Remote Clients"
@@ -6269,7 +6320,7 @@ Function Get-MSDTC {
  Format-TypeMSDTC $MSDTC_Security.NetworkDtcAccessInbound "Transaction Manager Communication | Allow Inbound"
  Format-TypeMSDTC $MSDTC_Security.NetworkDtcAccessOutbound "Transaction Manager Communication | Allow Outbound"
 
- $MSDTC=Get-ItemProperty "HKLM:\Software\Microsoft\MSDTC" 2> $null
+ $MSDTC=Get-ItemProperty "HKLM:\Software\Microsoft\MSDTC" 2>$null
 
  $NoAuthenticatioNRequired=1
  if ( $MSDTC.AllowOnlySecureRpcCalls ) {$NoAuthenticatioNRequired=$NoAuthenticatioNRequired-1}
@@ -7478,9 +7529,9 @@ Function Clear-Temp { # Clean all temp folder of a machine - Can be used for any
       if ($CurrentError.CategoryInfo.Reason -eq "UnauthorizedAccessException") {
        write-colored -Color "DarkYellow" -NonColoredText "`r" -ColoredText "Changing rights for file $CurrentFile"
        #Change Owner To Admin Group
-       $Dump=Set-Rights $CurrentFile -ChangeOwner
+       Set-Rights $CurrentFile -ChangeOwner | Out-Null
        #Reenable Inheritance
-       $Dump=Set-Rights $CurrentFile -GlobalInheritance Add -Commit
+       Set-Rights $CurrentFile -GlobalInheritance Add -Commit  | Out-Null
        #Change Rights to Admin Group
        # $Dump=Set-Rights $CurrentFile -User $(Get-UserFromSID('S-1-5-32-544')) -UserRights FullControl -UserInheritance None -Commit
        Remove-Item $CurrentFile -Force -ErrorAction Stop
@@ -7792,7 +7843,6 @@ Function Get-DuplicatePSModules { # Check duplicate Powershell modules as the ol
  )
  #$PSModulePath variable contains too many folder. Specific Apps folders may appear here also.
 
- $Duplicate_Module_List = @()
  $OldModuleList = @()
 
  $ModulePaths | ForEach-Object {
@@ -7840,7 +7890,7 @@ if ($([System.Net.ServicePointManager]::CertificatePolicy).ToString() -ne "Syste
  [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
 }
 
-  $WebRequest = Invoke-WebRequest $URL -UseBasicParsing -UseDefaultCredentials
+  # $WebRequest = Invoke-WebRequest $URL -UseBasicParsing -UseDefaultCredentials
   $ServicePoint = [System.Net.ServicePointManager]::FindServicePoint("$URL")
 
   $CertificateInfoHash = $ServicePoint.Certificate.GetCertHashString()
@@ -7967,7 +8017,7 @@ Function Optimize-Teams { # Reset Teams entirely
   [Switch]$NoConfirm
  )
  $TeamsPath="$env:APPDATA\Microsoft\teams"
- $TeamsBinaryPath="$env:LOCALAPPDATA\Microsoft\Teams"
+ # $TeamsBinaryPath="$env:LOCALAPPDATA\Microsoft\Teams"
  Write-Host "Stopping Teams Process" -ForegroundColor Cyan
  try {
   $TeamsProcess=Get-Process -ProcessName Teams -ErrorAction SilentlyContinue
@@ -8628,7 +8678,13 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  Param (
   [Parameter(Mandatory=$true)]$UPN
  )
- az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:objectId}' --only-show-errors | ConvertFrom-Json
+ az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id}' --only-show-errors | ConvertFrom-Json
+}
+Function Get-AzureADUserFromMail { # Find Azure Ad User info from email
+ Param (
+  [Parameter(Mandatory=$true)]$Mail
+ )
+ az ad user list --output json --filter "mail eq '$Mail'" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id}' --only-show-errors | ConvertFrom-Json
 }
 Function Get-AzureAppRegistrationNameFromID { # Find App Registration Name from the ID
  Param (
@@ -8666,7 +8722,7 @@ Function Get-AzureUserIDStartingWith { # Get all AAD Users starting with somethi
  )
  az ad user list --query '[].{objectId:objectId,displayName:displayName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
 }
-# Rights Management
+# User Rights Management
 Function Get-AzureADUserRBACRights { # Get all User RBAC Rights on one Subscriptions (Works with Users, Service Principals and groups)
  Param (
   [Parameter(Mandatory=$true)]$UserName,
@@ -8678,7 +8734,7 @@ Function Get-AzureADUserRBACRights { # Get all User RBAC Rights on one Subscript
  if (! $SubscriptionName) { $SubscriptionName = $Subscription }
  if (! $UserDisplayName) { $UserDisplayName = $UserName }
 
- az role assignment list --all --assignee $UserName `
+ az role assignment list --only-show-errors --all --assignee $UserName `
   --include-classic-administrators --include-groups `
   --include-inherited --subscription $SubscriptionID `
   --query '[].{principalName:principalName, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup} '`
@@ -8721,13 +8777,14 @@ Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to 
   }
  }
 }
-# Global User rights Checks
+# User Global rights Checks
 Function Get-AzureADUserRBACRightsForAllSubscription { # Get RBAC Rights of ONE user on ALL Subscriptions - Script takes about 2 seconds per subscription
  Param (
   [Parameter(Mandatory)]$UserUPN,
   [Parameter(Mandatory)]$UserDisplayName
  )
  Get-AzureSubscriptions | ForEach-Object {
+  Progress -Message "Checking RBAC rights for user $UserDisplayName [$UserUPN] on subscription " "$($_.Name) $($_.ID)" -PrintTime
   Get-AzureADUserRBACRights -SubscriptionID $_.ID -SubscriptionName $_.Name -UserName $UserUPN -UserDisplayName $UserDisplayName
  }
 }
@@ -8797,11 +8854,59 @@ Function New-AppRegistrationBlank { # Create a single App Registration completel
   Write-Host -ForegroundColor Red "Error creating App Registration $AppRegistrationName : $($Error[0])"
  }
 }
-Function New-ServicePrincipal {
+Function New-ServicePrincipal { # Create an Enterprise App linked to existing App Registration
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationName
  )
  New-AppRegistrationBlank -CreateAssociatedServicePrincipal -AppRegistrationName $AppRegistrationName
+}
+Function New-AzureAppSP_NONSSO { # Create App Registration with all required info : Associated SP, Permission, Owners etc. (Check function for more info)
+ Param (
+  [Parameter(Mandatory=$true)]$ObjectsToCreate
+ )
+
+ #Object Example
+ # $SP_ToCreate = @()
+ # $SP_ToCreate += [pscustomobject]@{
+ #  Name="App_Name";
+ #  CreateServicePrincipal=$True;
+ #  AppRegistrationOwner=$True;
+ #  ServicePrincipalOwner=$True;
+ #  BackendAPI_ID=""; # Object ID of the Enterprise App containing the Rights to Add (seen in the App Roles of the App Reg)
+ #  RightsToAdd=""; # Name of Right to add [AppRole] : User.Read for example
+ #  OwnersID="" # List of Owner object IDs
+ # }
+
+ $ObjectsToCreate | ForEach-Object {
+  if ($_.CreateServicePrincipal) {
+   $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name -CreateAssociatedServicePrincipal
+   $SP_AppID = Get-AzureServicePrincipalIDFromName -Name $_.Name
+  } else {
+   $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name
+  }
+  $AppRegistrationOwner = $_.AppRegistrationOwner
+  $ServicePrincipalOwner = $_.ServicePrincipalOwner
+  $BackendAPI_ID = $_.BackendAPI_ID
+  # Owner Management
+  $_.OwnersID | ForEach-Object {
+   if ($AppRegistrationOwner) {
+    Add-AzureAppRegistrationOwner -OwnerObjectID $_ -AppRegistrationID $App_AppID
+   }
+   if ($SP_AppID -and $ServicePrincipalOwner) {
+    Add-AzureServicePrincipalOwner -OwnerObjectID $_ -ServicePrincipalID $SP_AppID
+   }
+  }
+  # Permission Management
+  $_.RightsToAdd | ForEach-Object {
+   if (! $BackendAPI_ID) {Return}
+   Add-AppRegistrationPermission -AppID $App_AppID -PolicyID $BackendAPI_ID -RightName $_
+
+   Progress -Message "Check API Permissions on " -Value $App_AppID -PrintTime
+
+   #Check Rights :
+   Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $App_AppID
+  }
+ }
 }
 # App Registration [Only]
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
@@ -8812,13 +8917,13 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
-  [parameter(Mandatory = $true,ParameterSetName = "UPN")][String]$OwnerUPN,
-  [parameter(Mandatory = $true,ParameterSetName = "ObjectID")][String]$OwnerObjectID,
-  [Parameter(Mandatory = $true,ParameterSetName = 'UPN')]
-  [Parameter(Mandatory = $true,ParameterSetName = 'ObjectID')]$AppRegistrationID  #Owner or App Registration ID is required, both param cannot be set, UPN will be slower
+  [parameter(Mandatory=$true,ParameterSetName="UPN")][String]$OwnerUPN,
+  [parameter(Mandatory=$true,ParameterSetName="ObjectID")][String]$OwnerObjectID,
+  [Parameter(Mandatory=$true,ParameterSetName='UPN')]
+  [Parameter(Mandatory=$true,ParameterSetName='ObjectID')]$AppRegistrationID  #Owner or App Registration ID is required, both param cannot be set, UPN will be slower
  )
  if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).objectId } else { $UserObjectID = $OwnerObjectID }
- Write-Host -ForegroundColor "Cyan" "Adding  owner for user $UserObjectID on App Registration $AppRegistrationID"
+ Write-Host -ForegroundColor "Cyan" "Adding owner for user $UserObjectID on App Registration $AppRegistrationID"
  Try {
   az ad app owner add --id $AppRegistrationID --owner-object-id $UserObjectID --only-show-errors
  } Catch {
@@ -8863,26 +8968,26 @@ Function Get-AzureAppRegistrationAPIPermissionsSingle { # Check permission for a
   [Parameter(Mandatory=$true)]$AppRegistrationID
  )
  $AppRegistrationName = Get-AzureAppRegistrationNameFromID -ID $AppRegistrationID
- $AppRegistrationPermissions = Get-AzureAppRegistrationPermissions -ServicePrincipalID $AppRegistrationID -ServicePrincipalName $AppRegistrationName
+ $AppRegistrationPermissions = Get-AzureAppRegistrationPermissions -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
  if ($AppRegistrationPermissions) {
   Convert-AzureServicePrincipalPermissionsGUIDToReadable -ServicePrincipalObjectWithGUIDPermissions $AppRegistrationPermissions
  }
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID,
-  $ServicePrincipalName
+  [Parameter(Mandatory=$true)]$AppRegistrationID,
+  $AppRegistrationName
  )
- if (!$ServicePrincipalName) {$ServicePrincipalName = $ServicePrincipalID}
- $PermissionListJson = az ad app permission list --id $ServicePrincipalID --only-show-errors -o json | convertfrom-json
+ if (!$AppRegistrationName) {$AppRegistrationName = $AppRegistrationID}
+ $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
  ($PermissionListJson | Select-Object @{name="Rules";expression={
    $Rules_List=@()
    $PolicyID = $_.resourceAppId
-   $PolicyExpiration = $_.expiryTime
+   # $PolicyExpiration = $_.expiryTime
    $_.resourceAccess | ForEach-Object {
     $Rules_List+=[pscustomobject]@{
-     ServicePrincipalName=$ServicePrincipalName;
-     ServicePrincipalID=$ServicePrincipalID;
+     AppRegistrationName=$AppRegistrationName;
+     AppRegistrationID=$AppRegistrationID;
      PolicyID=$PolicyID;
      RuleID=$_.ID;
      RuleType=$_.Type}
@@ -8910,7 +9015,7 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
   $AppRegistrationListCount++
   Write-Colored -Color "Cyan" -FilePath $LogFile -NonColoredText "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -ColoredText $_.DisplayName
   Try {
-   $Permission = Get-AzureAppRegistrationPermissions -ServicePrincipalID $_.AppID -ServicePrincipalName $_.DisplayName
+   $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName
    #Added this otherwise Export-CSV sends an error if the app registration has no rights
    if ($Permission) {
     $Permission | Export-CSV $ExportFile -Append
@@ -8942,6 +9047,36 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
  Convert-AzureServicePrincipalPermissionsGUIDToReadable -ServicePrincipalObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
 }
+Function Add-AppRegistrationPermission {
+ Param (
+  [Parameter(Mandatory=$true)]$AppID,
+  [Parameter(Mandatory=$true)]$PolicyID,
+  [Parameter(Mandatory=$true)]$RightName
+ )
+ # Find Rights ID depending on backend_API_ID
+ $RightsToAdd_ID = (Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $PolicyID | Where-Object "Value" -eq $RightName).RuleID
+ if (! $RightsToAdd_ID) {
+  Write-Host -Foregroundcolor "Red" "$RightName was not found in API $PolicyID, please check"
+  return
+ } else {
+  $RightsToAdd_ID = $RightsToAdd_ID + "=Role"
+ }
+
+ # Add Rights
+ Progress -Message "Adding API Permissions on $AppID : " -Value $RightName -PrintTime
+ az ad app permission add --only-show-errors --id $AppID --api $PolicyID --api-permissions $RightsToAdd_ID
+
+ # Commit Rights
+ Progress -Message "Commit API Permissions on $AppID : " -Value $RightName -PrintTime
+ az ad app permission grant --only-show-errors --id $AppID --api $PolicyID | Out-Null
+
+ Progress -Message "Waiting 5 Seconds after commit to be able to Grant Admin Consent on " -Value $AppID -PrintTime
+ Start-Sleep -Seconds 5
+
+ # Grant Admin Consent
+ Progress -Message "Grant API Permissions on $AppID : " -Value $RightName -PrintTime
+ az ad app permission admin-consent --only-show-errors --id $AppID
+}
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  Param (
@@ -8958,7 +9093,7 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
  )
 
  if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).objectId } else { $UserObjectID = $OwnerObjectID }
- Write-Host -ForegroundColor "Cyan" "Adding  owner for user $UserObjectID on Service Principal $ServicePrincipalID"
+ Write-Host -ForegroundColor "Cyan" "Adding owner for user $UserObjectID on Service Principal $ServicePrincipalID"
 
  $Body = '{\"@odata.id\":\"https://graph.microsoft.com/v1.0/directoryObjects/'+$UserObjectID+'\"}'
 
@@ -8973,7 +9108,7 @@ Function Get-AzureServicePrincipalAPIExposed { # List Service Principal Exposed 
  )
  az ad sp show --id $AppID --query "oauth2Permissions[]" --only-show-errors | ConvertFrom-Json
 }
-Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission
+Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example)
  Param (
   [Parameter(Mandatory=$true)]$ServicePrincipalID
  )
@@ -9044,7 +9179,9 @@ Function Convert-AzureServicePrincipalPermissionsGUIDToReadable { #Converts all 
    ServicePrincipalName=$_.ServicePrincipalName
    ServicePrincipalID=$_.ServicePrincipalID
    PolicyName=$Policy.PolicyName
+   PolicyID=$Policy.PolicyID
    Value=$Policy.Value
+   ValueID=$Policy.RuleID
    PermissionType=$Policy.PermissionType
    Description=$Policy.Description
    # Type=$Policy.Type => This value is empty
@@ -9105,6 +9242,15 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
    @{name="Scope";expression={$AdminUnitID = $_.administrativeUnitId ; ($AdminUnitList | Where-Object { $_.ID -eq $AdminUnitID } ).displayName} }
  }
 }
+Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role (Using PIM API v3)
+ $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
+ $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
+ While ($CurrentResult.'@odata.nextLink') {
+  $NextRequest = $CurrentResult.'@odata.nextLink'
+  $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
+  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
+ }
+}
 Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID
  Param (
   $UserObjectID
@@ -9124,7 +9270,7 @@ Function Get-AzureADAdministrativeUnit {
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description | Sort-Object DisplayName
 }
 #Schema Extensions
-Function Get-AzureADExtension {
+Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  #How to filter by Type :
  # ($result | ? targetTypes -Contains "user").count
  # ($result | ? targetTypes -Contains "Group").count
@@ -9181,7 +9327,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret+=[pscustomobject]@{Cert=$TLSCERT;Key=$TLSKEY}
  $Secret
 }
-Function Get-AzureADUserInfo { # Show user information
+Function Get-AzureADUserInfo { # Show user information From AAD
  Param (
   [Parameter(Mandatory)]$UPNorID,
   [Switch]$Detailed
@@ -9191,4 +9337,13 @@ Function Get-AzureADUserInfo { # Show user information
  } else {
   az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object objectId,userPrincipalName,displayName 2>null
  }
+}
+Function Get-AzureADUSerCustomAttributes { # Show user information From O365
+ Param (
+  [Parameter(Mandatory)]$UPN
+ )
+ #Check if a session is already opened otherwise open it
+ if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
+
+ Get-EXORecipient -Identity $UPN -PropertySets Custom
 }
