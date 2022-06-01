@@ -4516,7 +4516,7 @@ Function Set-WSUSConfig { # Fully configure WSUS using commandlines
   $ProxyInfo,
   [Parameter(Mandatory=$true)]$ProductsToEnable, # List of products to enable, works with wildcards : @("Product1","Product2","Product3*")
   [Parameter(Mandatory=$true)]$ComputerTargetGroups, # Filter on specific groups, does not work with wildcards : @("All Computers")
-  [Parameter(Mandatory=$true)]$UpdateClassifications, # Filter selected classification, does not work with wildcards : @('Critical Updates', 'Definition Updates' , 'Security Updates')
+  [Parameter(Mandatory=$true)]$UpdateClassificationsIDs, # Filter selected classification, does not work with wildcards, uses ID because of potential Language issues : @('e6cf1350-c01b-414d-a61f-263d14d133b4', 'e0789628-ce08-4437-be74-2495b842f43b' , '68c5b0a3-d1a6-4553-ae49-01d3a7827828')
   [Parameter(Mandatory=$true)]$AutoApproveRuleName, # Name of AutoApproval Rule
   $TimeOfSync = (New-TimeSpan -Hours 0 -Minutes 0), # Default Midnite
   [Parameter(Mandatory=$true)]$NumberOfSync = 3 # Number of Synchronisation per day
@@ -4589,18 +4589,34 @@ Function Set-WSUSConfig { # Fully configure WSUS using commandlines
  # Get Available Classigication
  #  $WsusServer.GetUpdateClassifications()
 
+ # Remove existing Approval Rule if it exists
+ $ExistingApprovalRule = $WsusServer.GetInstallApprovalRules() | Where-Object Name -eq $AutoApproveRuleName
+ if ($ExistingApprovalRule) {
+  $WsusServer.DeleteInstallApprovalRule($ExistingApprovalRule.ID)
+ }
+
  # Create Approval Rule
  $ApprovalRule = $WsusServer.CreateInstallApprovalRule($AutoApproveRuleName)
 
  # Create Classification Object
- $ClassificationForAutoApproval = $WsusServer.GetUpdateClassifications() | Where-Object {$_.Title -in $UpdateClassifications}
+ $ClassificationForAutoApproval = $WsusServer.GetUpdateClassifications() | Where-Object Id -in $UpdateClassifications
  $ClassificationForAutoApprovalObj = New-Object Microsoft.UpdateServices.Administration.UpdateClassificationCollection
+ Write-Host -ForegroundColor Cyan "Adding Update classifications : $($ClassificationForAutoApproval.Title -join ";")"
+ if (! $ClassificationForAutoApproval) {
+  Write-Host -ForegroundColor Red "Error adding classifications"
+  Return
+ }
  $ClassificationForAutoApprovalObj.AddRange($ClassificationForAutoApproval)
  $ApprovalRule.SetUpdateClassifications($ClassificationForAutoApprovalObj)
 
  #Create Target Group Object
  $TargetGroupForAutoApproval = $WsusServer.GetComputerTargetGroups() | Where-Object Name -in $ComputerTargetGroups
  $TargetGroupForAutoApprovalObj = New-Object Microsoft.UpdateServices.Administration.ComputerTargetGroupCollection
+ Write-Host -ForegroundColor Cyan "Adding Target Groups : $($TargetGroupForAutoApproval.Name -join ";")"
+ if (! $TargetGroupForAutoApproval) {
+  Write-Host -ForegroundColor Red "Error adding groups"
+  Return
+ }
  $TargetGroupForAutoApprovalObj.AddRange($TargetGroupForAutoApproval)
  $ApprovalRule.SetComputerTargetGroups($TargetGroupForAutoApprovalObj)
 
@@ -4620,7 +4636,7 @@ Function Set-WSUSConfig { # Fully configure WSUS using commandlines
  Start-Sleep -Seconds 15 # Wait for sync to start before monitoring
  while ($subscription.GetSynchronizationProgress().ProcessedItems -ne $subscription.GetSynchronizationProgress().TotalItems) {
   $ProgressPercentage=[System.Math]::Round($subscription.GetSynchronizationProgress().ProcessedItems * 100/($subscription.GetSynchronizationProgress().TotalItems),2)
-  Write-Host "`r$(get-date -uformat '%Y-%m-%d %T') Sync In Progress - $ProgressPercentage %    " -NoNewline
+  Write-Host "`r$(get-date -uformat '%Y-%m-%d %T') Sync In Progress $($subscription.GetSynchronizationProgress().ProcessedItems)/$($subscription.GetSynchronizationProgress().TotalItems) - $ProgressPercentage %    " -NoNewline
   Start-Sleep -Seconds 1
  }
 
