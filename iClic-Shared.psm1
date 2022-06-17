@@ -2895,7 +2895,7 @@ Function Get-ServicesFiltered { # Search specific service(s), can do actions on 
  $ServicesList=Get-CimInstance Win32_Service
  $Result=$Services | ForEach-Object {
   $ServiceName=$_
-  $ServicesList | Where-Object {$_.DisplayName -like "*$ServiceName*"}
+  $ServicesList | Where-Object {$_.Name -like "*$ServiceName*"}
  }
 
  if ( ! $result) {Write-colored "Red" -ColoredText "$Services Services Not Found" ; return}
@@ -3782,12 +3782,22 @@ Function Get-ValueFromGUID {
 }
 Function Get-ADUserGUID {
  Param (
-  [Parameter(Mandatory=$true)]$user
+  $user=$env:ComputerName
  )
  Try {
  ([GUID]((Get-ADUser $user -property mS-DS-ConsistencyGuid)."mS-DS-ConsistencyGuid")).GUID
  } Catch {
   write-host -ForegroundColor 'Red' "User $User does not have a GUID"
+ }
+}
+Function Get-ADComputerGUID {
+ Param (
+  $Computer=$env:ComputerName
+ )
+ Try {
+ ([GUID]((Get-ADComputer $Computer -property mS-DS-ConsistencyGuid)."mS-DS-ConsistencyGuid")).GUID
+ } Catch {
+  write-host -ForegroundColor 'Red' "Computer $Computer does not have a GUID"
  }
 }
 
@@ -4599,7 +4609,7 @@ Function Set-WSUSConfig { # Fully configure WSUS using commandlines
  $ApprovalRule = $WsusServer.CreateInstallApprovalRule($AutoApproveRuleName)
 
  # Create Classification Object
- $ClassificationForAutoApproval = $WsusServer.GetUpdateClassifications() | Where-Object Id -in $UpdateClassifications
+ $ClassificationForAutoApproval = $WsusServer.GetUpdateClassifications() | Where-Object Id -in $UpdateClassificationsIDs
  $ClassificationForAutoApprovalObj = New-Object Microsoft.UpdateServices.Administration.UpdateClassificationCollection
  Write-Host -ForegroundColor Cyan "Adding Update classifications : $($ClassificationForAutoApproval.Title -join ";")"
  if (! $ClassificationForAutoApproval) {
@@ -4672,7 +4682,7 @@ Function Get-WSUSConfiguredCategories { # List all enabled categories on a WSUS 
   $wsusServer=$(Get-WsusServer)
  )
  $wsusSubscription = $wsusServer.GetSubscription()
- $wsusSubscription.GetUpdateCategories() | select Title,Description
+ $wsusSubscription.GetUpdateCategories() | select-object Title,Description
 }
 Function Get-WSUSConfiguredClassifications { # List all enabled classification on a WSUS Server
  Param (
@@ -7822,6 +7832,7 @@ Function Get-AntiVirus { # Get Current antivirus used (Only if the antivirus res
    'Reporting Executable'=$_.pathToSignedReportingExe
    'Definition Status'=$Status[1]
    'Real-time Protection Status'=$Status[0]
+   'TimeStamp'=Format-Date $_.timestamp
   }
  }
  Return $ComputerList
@@ -8665,7 +8676,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
 
  if ( ! $ShowAllColumns ) {
   $Arguments += '--query'
-  $Arguments += '"[].{objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled}"'
+  $Arguments += '"[].{objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired}"'
  }
  if ($filter) {
   $Arguments += "--filter"
@@ -8702,28 +8713,6 @@ Function Get-AzureADUserFromMail { # Find Azure Ad User info from email
  )
  az ad user list --output json --filter "mail eq '$Mail'" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id}' --only-show-errors | ConvertFrom-Json
 }
-Function Get-AzureAppRegistrationNameFromID { # Find App Registration Name from the ID
- Param (
-  [Parameter(Mandatory)]$ID
- )
- az ad app list --only-show-errors --query "[?appId == '$ID'].{DisplayName:displayName}" --all -o tsv
-}
-Function Get-AzureAppRegistrationIDFromName { # Find App Registration 'Application ID' from the Name
- Param (
-  [Parameter(Mandatory)]$Name
- )
- # Using AZ AD Cmdlet are 5 times slower than Az Rest
- # az ad app list --query "[?displayName == '$Name'].{appId:appId}" --all -o tsv
-
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=appid,displayName&`$filter=displayName eq '$Name'" --headers Content-Type=application/json | ConvertFrom-Json).Value.AppID
-}
-Function Get-AzureServicePrincipalIDFromName { # Find Service Principal 'Object ID' from the Name
- Param (
-  [Parameter(Mandatory)]$Name
- )
- # az ad sp list --query "[?displayName == '$Name'].{objectId:objectId}" --all -o tsv
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=ID,displayName&`$filter=displayName eq '$Name'" --headers Content-Type=application/json | ConvertFrom-Json).Value.ID
-}
 Function Get-AzureSubscriptionNameFromID { #Retrieve name of Subscription from the ID
  Param (
   [Parameter(Mandatory=$true)]$SubscriptionID
@@ -8736,7 +8725,7 @@ Function Get-AzureUserIDStartingWith { # Get all AAD Users starting with somethi
   [Parameter(Mandatory=$true)]$SearchValue,
   [ValidateSet("displayName","userPrincipalName")]$Type = "displayName"
  )
- az ad user list --query '[].{objectId:objectId,displayName:displayName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
+ az ad user list --query '[].{objectId:Id,displayName:displayName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
 }
 # User Rights Management
 Function Get-AzureADUserRBACRights { # Get all User RBAC Rights on one Subscriptions (Works with Users, Service Principals and groups)
@@ -8783,7 +8772,7 @@ Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to 
  )
 
  #Get Group ObjectID
- $GroupObjectID = (az ad group show -g $AAD_ID -o json --only-show-errors | ConvertFrom-Json).objectId
+ $GroupObjectID = (az ad group show -g $AAD_ID -o json --only-show-errors | ConvertFrom-Json).ID
  az group list -o json | ConvertFrom-Json | select-object Name,Location,tag,id | where-object name -like $RGFilter| ForEach-Object {
   $ScopeID = $_.ID
   $RolesToAdd | ForEach-Object {
@@ -8823,52 +8812,67 @@ Function Get-AzureADAllUserRBACRightsForAllSubscription { # Get RBAC Rights of A
  }
 }
 # App Registration / Service Principal creation
+Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions from App Registration
+ Param (
+  [Parameter(Mandatory=$true)]$AppID,
+  $TempFile = "$($env:TEMP)\Oauth2Permission.json"
+ )
+  #Generate a Json file containing the current permission, to be able to disable it (can't remove before disabling)
+
+  #Step 1 : Get current permission in PS Object
+  $CurrentOAuthPerm = (az ad app show --id $AppID --only-show-errors -o json | ConvertFrom-Json).oauth2Permissions
+
+  if ($CurrentOAuthPerm) {
+   #Step 2 : Disable Permission in PS Object
+   $CurrentOAuthPerm[0].isEnabled = "False"
+   #Step 3 : Convert back to Json and send to file
+   ConvertTo-Json -InputObject @($CurrentOAuthPerm) | Out-File -FilePath $TempFile
+
+   #Set the permission to the defined disabled permissions
+   az ad app update --only-show-errors --id $AppID --set oauth2Permissions=$TempFile
+
+   #Remove permissions
+   az ad app update --only-show-errors --id $appId --set oauth2Permissions='[]'
+
+   #Cleanup
+   Remove-Item $TempFile
+   Write-Host -ForegroundColor Magenta "OAuth2Permissions remove from App Registration $AppID"
+  } else {
+   Write-Host -ForegroundColor Green "No OAuth2Permissions found on App Registration $AppID"
+  }
+}
 Function New-AppRegistrationBlank { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationName,
   [Switch]$CreateAssociatedServicePrincipal
  )
  Try {
-  #Create App Registration
-  $AppReg = az ad app create --only-show-errors --display-name $AppRegistrationName
-  #Get App Registration ID
-  $AppID = ($AppReg |ConvertFrom-json).AppID
-
-  #Generate a Json file containing the current permission, to be able to disable it (can't remove before disabling)
-
-  #Step 1 : Get current permission in PS Object
-  $CurrentOAuthPerm = (az ad app show  --id $AppID --only-show-errors -o json | ConvertFrom-Json).oauth2Permissions
-
-  if ($CurrentOAuthPerm[0]) {
-   #Step 2 : Disable Permission in PS Object
-   $CurrentOAuthPerm[0].isEnabled = "False"
-   #Step 3 : Convert back to Json and send to file
-   ConvertTo-Json -InputObject @($CurrentOAuthPerm) | Out-File -FilePath $env:TEMP\Oauth2Permission.json
-
-   #Set the permission to the defined disabled permissions
-   az ad app update --only-show-errors --id $AppID --set oauth2Permissions=@$env:TEMP\Oauth2Permission.json
-
-   #Remove permissions
-   az ad app update --only-show-errors --id $appId --set oauth2Permissions='[]'
-
-   #Cleanup
-   Remove-Item $env:TEMP\Oauth2Permission.json
-
+  $AppID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID
+  if ($AppID) {
+   Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID : $AppID"
+  } else {
+   #Create App Registration
+   $AppReg = az ad app create --only-show-errors --display-name $AppRegistrationName --sign-in-audience 'AzureADMyOrg'
+   #Get App Registration ID
+   $AppID = ($AppReg |ConvertFrom-json).AppID
+   #Remove default Oauth2 Permissions if any
+   Remove-AppRegistrationOAuth2Permissions -AppID $AppID
    #Print Result
    Write-Host -ForegroundColor Green "Created clean AppRegistration `"$AppRegistrationName`" with ID : $AppID"
-
-   if ($CreateAssociatedServicePrincipal) {
-    Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with ID : $AppID"
-    $ServicePrincipalCreation = az ad sp create --id $AppID --only-show-errors
-    Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID $(($ServicePrincipalCreation | ConvertFrom-JSON).objectId)"
-   }
-  } else {
-   Write-Host -ForegroundColor DarkYellow "AppRegistration `"$AppRegistrationName`" Already exists with ID : $AppID"
   }
-  return $AppID
  } Catch {
   Write-Host -ForegroundColor Red "Error creating App Registration $AppRegistrationName : $($Error[0])"
  }
+ Try {
+  if ($CreateAssociatedServicePrincipal) {
+   Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with ID : $AppID"
+   $ServicePrincipalCreation = az ad sp create --id $AppID --only-show-errors
+   Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID $(($ServicePrincipalCreation | ConvertFrom-JSON).ID)"
+  }
+ } Catch {
+  Write-Host -ForegroundColor Red "Error creating Associated Service Principal $AppRegistrationName : $($Error[0])"
+ }
+ return $AppID
 }
 Function New-ServicePrincipal { # Create an Enterprise App linked to existing App Registration
  Param (
@@ -8897,6 +8901,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
   if ($_.CreateServicePrincipal) {
    $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name -CreateAssociatedServicePrincipal
    $SP_AppID = Get-AzureServicePrincipalIDFromName -Name $_.Name
+   $SP_AppID = (Get-AzureServicePrincipalInfo -DisplayName $_.Name).ID
   } else {
    $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name
   }
@@ -8924,12 +8929,43 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
   }
  }
 }
+# App Registration / Service Principal check
+Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
+ Param (
+  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
+  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
+  [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
+  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain"
+ )
+ if ($AppID) {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'" --headers Content-Type=application/json | ConvertFrom-Json).value
+ } elseif ($ID) {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ } elseif ($DisplayName) {
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ }
+}
+Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
+ Param (
+  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
+  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
+  [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
+  $ValuesToShow = "*" # Format is : value1,value2
+ )
+ if ($AppID) {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'" --headers Content-Type=application/json | ConvertFrom-Json).value
+ } elseif ($ID) {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ } elseif ($DisplayName) {
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ }
+}
 # App Registration [Only]
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationID
  )
- az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object objectId,userPrincipalName,displayName
+ az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object ID,userPrincipalName,displayName
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
@@ -8938,7 +8974,7 @@ Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
   [Parameter(Mandatory=$true,ParameterSetName='UPN')]
   [Parameter(Mandatory=$true,ParameterSetName='ObjectID')]$AppRegistrationID  #Owner or App Registration ID is required, both param cannot be set, UPN will be slower
  )
- if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).objectId } else { $UserObjectID = $OwnerObjectID }
+ if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).ID } else { $UserObjectID = $OwnerObjectID }
  Write-Host -ForegroundColor "Cyan" "Adding owner for user $UserObjectID on App Registration $AppRegistrationID"
  Try {
   az ad app owner add --id $AppRegistrationID --owner-object-id $UserObjectID --only-show-errors
@@ -8953,7 +8989,7 @@ Function Remove-AzureAppRegistrationOwner { # Add an owner to an App Registratio
  )
  $Verbose = $PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent
  Try {
-  $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).objectId
+  $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).ID
   if ($Verbose) {
    Write-Host -ForegroundColor "Cyan" "Removing user $OwnerUPN as owner of AppID $AppRegistrationID"
   }
@@ -8983,10 +9019,10 @@ Function Get-AzureAppRegistrationAPIPermissionsSingle { # Check permission for a
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationID
  )
- $AppRegistrationName = Get-AzureAppRegistrationNameFromID -ID $AppRegistrationID
+ $AppRegistrationName = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).DisplayName
  $AppRegistrationPermissions = Get-AzureAppRegistrationPermissions -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
  if ($AppRegistrationPermissions) {
-  Convert-AzureServicePrincipalPermissionsGUIDToReadable -ServicePrincipalObjectWithGUIDPermissions $AppRegistrationPermissions
+  Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AppRegistrationPermissions
  }
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
@@ -9063,7 +9099,7 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
  Convert-AzureServicePrincipalPermissionsGUIDToReadable -ServicePrincipalObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
 }
-Function Add-AppRegistrationPermission {
+Function Add-AppRegistrationPermission { # Add rights on App Registration
  Param (
   [Parameter(Mandatory=$true)]$AppID,
   [Parameter(Mandatory=$true)]$PolicyID,
@@ -9084,14 +9120,49 @@ Function Add-AppRegistrationPermission {
 
  # Commit Rights
  Progress -Message "Commit API Permissions on $AppID : " -Value $RightName -PrintTime
- az ad app permission grant --only-show-errors --id $AppID --api $PolicyID | Out-Null
+ az ad app permission grant --only-show-errors --id $AppID --api $PolicyID --scope $RightName | Out-Null
 
- Progress -Message "Waiting 5 Seconds after commit to be able to Grant Admin Consent on " -Value $AppID -PrintTime
- Start-Sleep -Seconds 5
+ Progress -Message "Waiting 10 Seconds after commit to be able to Grant Admin Consent on " -Value $AppID -PrintTime
+ Start-Sleep -Seconds 10
 
  # Grant Admin Consent
  Progress -Message "Grant API Permissions on $AppID : " -Value $RightName -PrintTime
  az ad app permission admin-consent --only-show-errors --id $AppID
+}
+Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all GUID of Object containing Service Principal Permission List with GUID to Readable Names
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationObjectWithGUIDPermissions,
+  $IDConversionTable #Send Conversion Table for faster treatment
+ )
+ # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
+ if ( ! $IDConversionTable ) {
+  $IDConversionTable = @()
+  $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_ }
+ } else {
+  $IDConversionTable = $IDConversionTable | select-object -ExcludeProperty ServicePrincipalName,ServicePrincipalID
+ }
+
+ $AppRegistrationObjectWithGUIDPermissions | ForEach-Object {
+  $CurrentPolicy = $_.PolicyID ;
+  $CurrentRule = $_.RuleID  ;
+  $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule)}
+  # Some policies have multiple of the same set of PolicyID and RuleID .... If there are multiple result, will take the admin result or the first result
+  if ($Policy.Count -gt 1) {
+   Write-Host -Foregroundcolor "Magenta" "WARNING : PolicyID $CurrentPolicy with RuleID $CurrentRule contains multiple result"
+   if ($Policy | Where-Object Type -eq "Admin") {$Policy = $Policy | Where-Object Type -eq "Admin" } else {$Policy = $Policy[0]}
+  }
+  [pscustomobject]@{
+   AppRegistrationName=$_.AppRegistrationName
+   AppRegistrationID=$_.AppRegistrationID
+   PolicyName=$Policy.PolicyName
+   PolicyID=$Policy.PolicyID
+   Value=$Policy.Value
+   ValueID=$Policy.RuleID
+   PermissionType=$Policy.PermissionType
+   Description=$Policy.Description
+   # Type=$Policy.Type => This value is empty
+  }
+ }
 }
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
@@ -9104,11 +9175,10 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
  Param (
   [parameter(Mandatory=$true,ParameterSetName="UPN")][String]$OwnerUPN,
   [parameter(Mandatory=$true,ParameterSetName="ObjectID")][String]$OwnerObjectID,
-  [Parameter(Mandatory = $true,ParameterSetName = 'UPN')]
-  [Parameter(Mandatory = $true,ParameterSetName = 'ObjectID')]$ServicePrincipalID  #Owner or Object ID is required, both param cannot be set, UPN will be slower
+  [Parameter(Mandatory = $true,ParameterSetName = 'UPN')][Parameter(Mandatory = $true,ParameterSetName = 'ObjectID')]$ServicePrincipalID  #Owner or Object ID is required, both param cannot be set, UPN will be slower
  )
 
- if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).objectId } else { $UserObjectID = $OwnerObjectID }
+ if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).ID } else { $UserObjectID = $OwnerObjectID }
  Write-Host -ForegroundColor "Cyan" "Adding owner for user $UserObjectID on Service Principal $ServicePrincipalID"
 
  $Body = '{\"@odata.id\":\"https://graph.microsoft.com/v1.0/directoryObjects/'+$UserObjectID+'\"}'
@@ -9134,7 +9204,7 @@ Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to na
  $PolicyContent = $PolicyListJson | Select-Object @{name="oauth2Permissions";expression={
   $oauth2Permissions_List=@()
   $AppID = $_.appId
-  $_.oauth2Permissions | ForEach-Object {
+  $_.oauth2PermissionScopes | ForEach-Object {
    $oauth2Permissions_List+=[pscustomobject]@{
     PolicyName = $PolicyName
     PolicyID = $AppID;
@@ -9204,6 +9274,72 @@ Function Convert-AzureServicePrincipalPermissionsGUIDToReadable { #Converts all 
   }
  }
 }
+Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add or overwrite existing
+ Param (
+  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
+  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
+  [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
+  [parameter(Mandatory=$true)]$Tags,
+  [switch]$Overwrite,
+  [switch]$ShowResult
+ )
+ Try {
+
+  # Add all Tags to a new array
+  $TagsToAdd = @()
+  $Tags | Foreach-Object { $TagsToAdd += $_ }
+
+  # Get current params to send to other function
+  $FunctionParams = $PSBoundParameters
+  $FunctionParams.Remove('Tags') | Out-Null
+  $FunctionParams.Remove('Overwrite') | Out-Null
+  $FunctionParams.Remove('ShowResult') | Out-Null
+
+  # Get Current Tags
+  $SP_Info = Get-AzureServicePrincipalInfo @FunctionParams
+
+  write-colored -Color Cyan -PrintDate -NonColoredText "Current Tags on Service Principal `'$($SP_Info.displayName)`' : " $($SP_Info.Tags -join ",")
+
+  # Add existing tags to object, if any, except if overwrite
+  if (! $Overwrite) {
+   If ($SP_Info.Tags) { $TagsToAdd += $SP_Info.Tags }
+  }
+
+  # Remove duplicates
+  $TagsToAddUnique = $TagsToAdd | Select-Object -Unique
+
+  if ($SP_Info.Tags -eq $TagsToAddUnique) {
+   write-colored -Color Magenta -PrintDate -ColoredText "Tag to add and current tags are the same : $($TagsToAddUnique -Join ",")"
+   return
+  }
+
+  # Change format for required format
+  $TagsToAddUnique | Foreach-Object {
+   $TagsToAd_Converted_tmp += "\`"$($_)\`","
+  }
+
+  write-colored -Color Cyan -PrintDate -NonColoredText "Tags that will be added to Service Principal `'$($SP_Info.displayName)`' : " $($TagsToAddUnique -Join ",")
+
+  # Generate Body
+  $TagsToAdd_Converted_prefix = '{"tags":['
+  $TagsToAdd_Converted_suffix = ']}'
+  $Body = ($TagsToAdd_Converted_prefix + $TagsToAd_Converted_tmp + $TagsToAdd_Converted_suffix) -replace ",]}","]}"
+
+  write-colored -Color Cyan -PrintDate -NonColoredText "Body sent to Graph API : " $Body
+
+  az rest --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($SP_Info.ID)" `
+   --method PATCH `
+   --headers "Content-Type=application/json" `
+   --body $body
+
+  If ($ShowResult) {
+   $SP_Info = Get-AzureServicePrincipalInfo @FunctionParams
+   write-colored -Color Cyan -PrintDate -NonColoredText "New Tags on Service Principal `'$($SP_Info.displayName)`' : " $($SP_Info.Tags -join ",")
+  }
+ } catch {
+  write-host -foregroundcolor "Red" -Object $Error[0]
+ }
+}
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
@@ -9222,7 +9358,7 @@ $RoleAssignementConverted=@()
   $RoleInfo = $RoleDefinitionList | Where-Object roleTemplateId -eq $RoleID
 
   $RoleAssignementConverted+=[pscustomobject]@{
-   UserObjectID = $UserInfo.objectId;
+   UserObjectID = $UserInfo.ID;
    UserUPN = $UserInfo.userPrincipalName;
    UserDisplayName = $UserInfo.displayName;
    RoleName = $RoleInfo.displayName;
@@ -9249,11 +9385,13 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
 
   Progress -Message "Checking Role (Scoped Members) : " -Value $CurrentRole -PrintTime
   #Scoped Members
-  (az rest --method GET --uri https://graph.microsoft.com/v1.0/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
+  (az rest --method GET --uri https://graph.microsoft.com/v1.0/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
+  @{name="UserInfo";expression={Get-AzureADUserInfo -UPNorID $_.roleMemberInfo.ID}},* | Select-Object `
    @{name="AdministrativeRole";expression={$CurrentRole}},
    @{name="displayName";expression={$_.roleMemberInfo.DisplayName}},
    @{name="id";expression={$_.roleMemberInfo.ID}},
-   userPrincipalName,mail,
+   @{name="userPrincipalName";expression={$_.UserInfo.userPrincipalName}},
+   @{name="mail";expression={$_.UserInfo.mail}},
    @{name="RoleDescription";expression={$RoleDescription}},
    @{name="Scope";expression={$AdminUnitID = $_.administrativeUnitId ; ($AdminUnitList | Where-Object { $_.ID -eq $AdminUnitID } ).displayName} }
  }
@@ -9279,7 +9417,7 @@ Function Get-AzureADUserAssignedRoleFromUPN { # Slow - Only for Single User usag
  Param (
   [Parameter(Mandatory)]$UserUPN
  )
- Convert-AzureADRoleAssignements (Get-AzureADUserAssignedRole -UserObjectID (Get-AzureADUserInfo $UserUPN).objectId)
+ Convert-AzureADRoleAssignements (Get-AzureADUserAssignedRole -UserObjectID (Get-AzureADUserInfo $UserUPN).ID)
 }
 #Administrative Unit Management
 Function Get-AzureADAdministrativeUnit {
@@ -9309,7 +9447,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
  if ($UsingObjectID){
   (az ad group member check --group $Group --member-id $UserName -o json --only-show-errors | ConvertFrom-Json).Value
  } else {
-  (az ad group member check --group $Group --member-id (Get-AzureUserIDStartingWith $UserName).ObjectID -o json --only-show-errors | ConvertFrom-Json).Value
+  (az ad group member check --group $Group --member-id (Get-AzureUserIDStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
  }
 }
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
@@ -9343,18 +9481,19 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret+=[pscustomobject]@{Cert=$TLSCERT;Key=$TLSKEY}
  $Secret
 }
-Function Get-AzureADUserInfo { # Show user information From AAD
+Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta for Detailed to get all values)
  Param (
   [Parameter(Mandatory)]$UPNorID,
   [Switch]$Detailed
  )
- if ($Detailed) {
-  az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json 2>null
+ if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
+  # az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json 2>null
+  az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
  } else {
-  az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object objectId,userPrincipalName,displayName 2>null
+  az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object id,userPrincipalName,displayName 2>null
  }
 }
-Function Get-AzureADUSerCustomAttributes { # Show user information From O365
+Function Get-AzureADUserCustomAttributes { # Show user information From O365
  Param (
   [Parameter(Mandatory)]$UPN
  )
@@ -9362,4 +9501,11 @@ Function Get-AzureADUSerCustomAttributes { # Show user information From O365
  if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
 
  Get-EXORecipient -Identity $UPN -PropertySets Custom
+}
+Function Set-ADComputerObjectIDAsMSDSConsistencyGUID {
+ Param (
+  [Parameter(Mandatory=$true)]$ComputerToMigrate
+ )
+ $ComputerToMigrateGUID = (Get-ADComputer -Identity $ComputerToMigrate).ObjectGUID
+ Set-ADComputer -Identity $ComputerToMigrate -Replace @{'mS-DS-ConsistencyGuid'=$ComputerToMigrateGUID}
 }
