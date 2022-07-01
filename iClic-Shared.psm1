@@ -2861,21 +2861,30 @@ Function Set-RegKey {
 # Services, Tasks, GPO
 Function Get-ServicesSpecific {
  Param (
-  $ServerName=$env:COMPUTERNAME
+  $ServerName = $env:COMPUTERNAME,
+  [Switch]$Filter
  )
  try {
   if ($ServerName -eq $env:COMPUTERNAME) {
-   $result=Get-CimInstance Win32_Service -ErrorAction Stop
+   $result = Get-CimInstance Win32_Service -ErrorAction Stop
   } else {
-   $result=Get-CimInstance Win32_Service -ErrorAction Stop -ComputerName $ServerName
+   $result = Get-CimInstance Win32_Service -ErrorAction Stop -ComputerName $ServerName
   }
-   $result=$result | Where-Object {
-   (($_.startmode -eq 'Auto') -or ($_.state -eq 'Running')) -and
-   $_.PathName -notlike '*C:\WINDOWS\System32\*' -and
-   $_.PathName -notlike '*C:\WINDOWS\SysWow64\*' -and
-   $_.PathName -notlike '*C:\WINDOWS\servicing\*' -and
-   $_.PathName -notlike '*C:\WINDOWS\Microsoft.Net\*' }
- } catch {write-colored "red" -coloredtext $error[0] ; return}
+  if ($Filter) {
+   $result = $result | Where-Object {
+    $_.PathName -notlike "$env:windir\system32\svchost.exe*" -and
+    $_.PathName -notlike "$env:windir\system32\SearchIndexer.exe*" -and
+    $_.PathName -notlike "$env:windir\system32\SgrmBroker.exe*" -and
+    $_.PathName -notlike "$env:windir\system32\lsass.exe" -and
+    $_.PathName -notlike "$env:windir\system32\sppsvc.exe" -and
+    $_.PathName -notlike "$env:windir\system32\SecurityHealthService.exe" -and
+    $_.PathName -notlike "$env:windir\System32\spoolsv.exe"
+   }
+  }
+  $result = $result | Where-Object { (($_.startmode -eq 'Auto') -or ($_.state -eq 'Running')) }
+ } catch {
+  write-colored "red" -coloredtext $error[0] ; return
+ }
  if (! ($result)) {
   Write-Colored "darkgreen" -coloredtext "No service found"
  } else {
@@ -8720,12 +8729,12 @@ Function Get-AzureSubscriptionNameFromID { #Retrieve name of Subscription from t
  (Get-AzureSubscriptions | Where-Object id -eq $SubscriptionID).Name
 }
 # Search Functions
-Function Get-AzureUserIDStartingWith { # Get all AAD Users starting with something
+Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
  param (
   [Parameter(Mandatory=$true)]$SearchValue,
   [ValidateSet("displayName","userPrincipalName")]$Type = "displayName"
  )
- az ad user list --query '[].{objectId:Id,displayName:displayName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
+ az ad user list --query '[].{objectId:id,displayName:displayName,userPrincipalName:userPrincipalName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
 }
 # User Rights Management
 Function Get-AzureADUserRBACRights { # Get all User RBAC Rights on one Subscriptions (Works with Users, Service Principals and groups)
@@ -9447,7 +9456,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
  if ($UsingObjectID){
   (az ad group member check --group $Group --member-id $UserName -o json --only-show-errors | ConvertFrom-Json).Value
  } else {
-  (az ad group member check --group $Group --member-id (Get-AzureUserIDStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
+  (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
  }
 }
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
