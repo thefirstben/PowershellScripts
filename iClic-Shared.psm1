@@ -323,6 +323,7 @@ Function Align { # Align function depending on the window size
  if ($variable.length -lt $size) {$variable=$variable+(" "*($size-$variable.length))+$ending}
  return $variable
 }
+
 # Write functions
 Function Write-Centered { # Function to print text centered on the powershell screen
  Param (
@@ -868,11 +869,11 @@ Function Get-LastReboots { # 'last reboot' equivalent
   Write-Host -Foreground 'Red' $Error[0]
  }
 
-#  It is also possible to do this using XML :
-#  $xml=@'
-# <QueryList><Query Id="0" Path="System"><Select Path="System">*[System[(EventID=6005)]]</Select></Query></QueryList>
-# '@
-#   Get-WinEvent -FilterXml $xml -MaxEvents $MaxEvents -ComputerName $Server | Select-Object @{Name="Reboots";Expression={Format-Date $_.TimeCreated}}
+ #  It is also possible to do this using XML :
+ #  $xml=@'
+ # <QueryList><Query Id="0" Path="System"><Select Path="System">*[System[(EventID=6005)]]</Select></Query></QueryList>
+ # '@
+ #   Get-WinEvent -FilterXml $xml -MaxEvents $MaxEvents -ComputerName $Server | Select-Object @{Name="Reboots";Expression={Format-Date $_.TimeCreated}}
 }
 
 # SID Convert
@@ -963,11 +964,11 @@ Function WaitForKeyPressAdvanced {
  Write-Blank
 }
 Function WaitForKeyPress {
-write-centered "Press a key to continue" "Red"
-#Below function looses focus when pressing on ALT (ALT+TAB for example)
-# $x = $host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-#Below function should work correctly
-[void][System.Console]::ReadKey($FALSE)
+ write-centered "Press a key to continue" "Red"
+ #Below function looses focus when pressing on ALT (ALT+TAB for example)
+ # $x = $host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+ #Below function should work correctly
+ [void][System.Console]::ReadKey($FALSE)
 }
 
 # Check
@@ -1308,11 +1309,11 @@ Function Test-URL {
   }
  }
 
-#To pass credential
-# $user="user"
-# $pass="password"
-# $secpasswd = ConvertTo-SecureString $pass -AsPlainText -Force
-# $credential = New-Object System.Management.Automation.PSCredential($user, $secpasswd)
+ #To pass credential
+ # $user="user"
+ # $pass="password"
+ # $secpasswd = ConvertTo-SecureString $pass -AsPlainText -Force
+ # $credential = New-Object System.Management.Automation.PSCredential($user, $secpasswd)
 }
 Function Test-RemotePowershell {
  Param (
@@ -1516,10 +1517,27 @@ Function Get-OSInfo {
    Write-Colored $defaultblue (Align "Secure Boot" $TabSize " : ") $(Try {Confirm-SecureBootUEFI -ErrorAction Stop} catch {$False})
   }
 
+  #Fast Boot
+  $FastBootBinary = Try {
+   (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power').HiberbootEnabled
+  } catch {
+   ""
+  }
+  if ($FastBootBinary -eq 0) {
+   $FastBoot = 'Disabled'
+  } elseif ( $FastBootBinary -eq 1 ) {
+   $FastBoot = 'Enabled'
+  } else {
+   $FastBoot = "Unknown"
+  }
+  Write-Colored $defaultblue (Align "Fast Boot" $TabSize " : ") $FastBoot
+
   #SMB1 Check
-  $SMB1Enabled=(Get-SmbServerConfiguration).EnableSMB1Protocol
-  if ($SMB1Enabled) {$SMBColor = "Red"} else {$SMBColor = "Green"}
-  Write-Colored $SMBColor (Align "SMB1 Enabled" $TabSize " : ") $SMB1Enabled
+  if (Assert-IsAdmin) {
+   $SMB1Enabled=(Get-SmbServerConfiguration).EnableSMB1Protocol
+   if ($SMB1Enabled) {$SMBColor = "Red"} else {$SMBColor = "Green"}
+   Write-Colored $SMBColor (Align "SMB1 Enabled" $TabSize " : ") $SMB1Enabled
+  }
 
   #Credential Guard
   Try {
@@ -1561,14 +1579,14 @@ Function Get-OSInfo {
  }
 }
 Function Get-LocalDomainInfo {
-$TabSize=20
-Write-Colored $defaultblue (Align "Server Hostname" $TabSize " : ") $env:computerName
-Write-Colored $defaultblue (Align "Server FQDN" $TabSize " : ") ([System.Net.Dns]::GetHostByName(($env:computerName))).HostName
-Write-Colored $defaultblue (Align "Server Domain" $TabSize " : ") (Get-CimInstance WIN32_ComputerSystem).Domain
-Write-Colored $defaultblue (Align "User DNS Domain" $TabSize " : ") $env:USERDNSDOMAIN
-Write-Colored $defaultblue (Align "User Domain" $TabSize " : ") $env:USERDOMAIN
-Write-Colored $defaultblue (Align "User Domain Roaming" $TabSize " : ") $env:USERDOMAIN_ROAMINGPROFILE
-Write-Colored $defaultblue (Align "Logon Server" $TabSize " : ") $env:LOGONSERVER
+ $TabSize=20
+ Write-Colored $defaultblue (Align "Server Hostname" $TabSize " : ") $env:computerName
+ Write-Colored $defaultblue (Align "Server FQDN" $TabSize " : ") ([System.Net.Dns]::GetHostByName(($env:computerName))).HostName
+ Write-Colored $defaultblue (Align "Server Domain" $TabSize " : ") (Get-CimInstance WIN32_ComputerSystem).Domain
+ Write-Colored $defaultblue (Align "User DNS Domain" $TabSize " : ") $env:USERDNSDOMAIN
+ Write-Colored $defaultblue (Align "User Domain" $TabSize " : ") $env:USERDOMAIN
+ Write-Colored $defaultblue (Align "User Domain Roaming" $TabSize " : ") $env:USERDOMAIN_ROAMINGPROFILE
+ Write-Colored $defaultblue (Align "Logon Server" $TabSize " : ") $env:LOGONSERVER
 }
 Function Get-DomainInfo {
  Param (
@@ -1663,41 +1681,41 @@ Function Get-LicenseStatus {
  write-blank
 }
 Function Get-ActivationStatus {
-# Script found : https://social.technet.microsoft.com/wiki/contents/articles/5675.determine-windows-activation-status-with-powershell.aspx
-[CmdletBinding()]
-    param(
-        [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
-        [string]$DNSHostName = $Env:COMPUTERNAME
-    )
-    process {
-        try {
-            $wpa = Get-CimInstance SoftwareLicensingProduct -ComputerName $DNSHostName `
-            -Filter "ApplicationID = '55c92734-d682-4d71-983e-d6ec3f16059f'" `
-            -Property LicenseStatus -ErrorAction Stop
-        } catch {
-            $status = New-Object ComponentModel.Win32Exception ($_.Exception.ErrorCode)
-            $wpa = $null
-        }
-        $out = New-Object psobject -Property @{
-            ComputerName = $DNSHostName;
-            Status = [string]::Empty;
-        }
-        if ($wpa) {
-            :outer foreach($item in $wpa) {
-                switch ($item.LicenseStatus) {
-                    0 {$out.Status = "Unlicensed"}
-                    1 {$out.Status = "Licensed"; break outer}
-                    2 {$out.Status = "Out-Of-Box Grace Period"; break outer}
-                    3 {$out.Status = "Out-Of-Tolerance Grace Period"; break outer}
-                    4 {$out.Status = "Non-Genuine Grace Period"; break outer}
-                    5 {$out.Status = "Notification"; break outer}
-                    6 {$out.Status = "Extended Grace"; break outer}
-                    default {$out.Status = "Unknown value"}
-                }
-            }
-        } else {$out.Status = $status.Message}
-        $out
-    }
+ # Script found : https://social.technet.microsoft.com/wiki/contents/articles/5675.determine-windows-activation-status-with-powershell.aspx
+ [CmdletBinding()]
+ param(
+     [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+     [string]$DNSHostName = $Env:COMPUTERNAME
+ )
+ process {
+     try {
+         $wpa = Get-CimInstance SoftwareLicensingProduct -ComputerName $DNSHostName `
+         -Filter "ApplicationID = '55c92734-d682-4d71-983e-d6ec3f16059f'" `
+         -Property LicenseStatus -ErrorAction Stop
+     } catch {
+         $status = New-Object ComponentModel.Win32Exception ($_.Exception.ErrorCode)
+         $wpa = $null
+     }
+     $out = New-Object psobject -Property @{
+         ComputerName = $DNSHostName;
+         Status = [string]::Empty;
+     }
+     if ($wpa) {
+         :outer foreach($item in $wpa) {
+             switch ($item.LicenseStatus) {
+                 0 {$out.Status = "Unlicensed"}
+                 1 {$out.Status = "Licensed"; break outer}
+                 2 {$out.Status = "Out-Of-Box Grace Period"; break outer}
+                 3 {$out.Status = "Out-Of-Tolerance Grace Period"; break outer}
+                 4 {$out.Status = "Non-Genuine Grace Period"; break outer}
+                 5 {$out.Status = "Notification"; break outer}
+                 6 {$out.Status = "Extended Grace"; break outer}
+                 default {$out.Status = "Unknown value"}
+             }
+         }
+     } else {$out.Status = $status.Message}
+     $out
+ }
 }
 Function Get-HostContent {
  $FilePath="$env:SystemRoot\system32\drivers\etc\hosts"
@@ -1709,14 +1727,14 @@ Function Set-HostContent {
  notepad $FilePath
 }
 Function Get-LangSettings {
-$alignsize=20
-Write-Colored $defaultblue (Align "OS Language" $alignsize " : " ) $PsUICulture
-#get-culture | format-list -property * => Get all Regional Properties
-$RegionalInfo = get-culture
-$RegionalInfoFull=$RegionalInfo.Name+" [ "+$RegionalInfo.DisplayName+" ]"
-Write-Colored $defaultblue (Align "Regional Settings" $alignsize " : " ) $RegionalInfoFull
+  $alignsize=20
+  Write-Colored $defaultblue (Align "OS Language" $alignsize " : " ) $PsUICulture
+  #get-culture | format-list -property * => Get all Regional Properties
+  $RegionalInfo = get-culture
+  $RegionalInfoFull=$RegionalInfo.Name+" [ "+$RegionalInfo.DisplayName+" ]"
+  Write-Colored $defaultblue (Align "Regional Settings" $alignsize " : " ) $RegionalInfoFull
 
-#$PsCulture => Get Only Name of Regional Settings
+  #$PsCulture => Get Only Name of Regional Settings
 }
 Function Get-LangForAllUser {
  if ( ! (Assert-IsAdmin) ) {Write-Colored "red" -ColoredText "You must be admin to run this command" ; return}
@@ -1836,10 +1854,10 @@ Function Get-AdditionnalFeatures {
  Get-CimInstance Win32_Product| Select-Object Name, Vendor, InstallDate | Sort-Object Vendor,Name
 }
 Function Get-NetFrameworkVersion {
-#More info here : https://docs.microsoft.com/en-us/dotnet/framework/migration-guide/how-to-determine-which-versions-are-installed
-Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP' -recurse |
-Get-ItemProperty -name Version,Release -EA 0 | Where-Object { $_.PSChildName -match '^(?![SW])\p{L}'} |
-Select-Object @{Name="Type";Expression={$_.PSChildName}}, Version, Release, @{
+ #More info here : https://docs.microsoft.com/en-us/dotnet/framework/migration-guide/how-to-determine-which-versions-are-installed
+ Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP' -recurse |
+ Get-ItemProperty -name Version,Release -EA 0 | Where-Object { $_.PSChildName -match '^(?![SW])\p{L}'} |
+ Select-Object @{Name="Type";Expression={$_.PSChildName}}, Version, Release, @{
   name="Product"
   expression={
    switch -regex ($_.Release) {
@@ -5690,13 +5708,10 @@ Function Update-ProtocolsAndCipher {
  #Init Var
  $CipherListToRemove=@()
  $CipherListToReplace=@()
- [Boolean]$Marker=$False
+ $Marker=0
 
  #Starting with Windows 10 or Windows 2016 we can use Disable-TlsCipherSuite / Get-CipherSuite
  $AdvancedCmdLine=$(get-command Get-TlsCipherSuite -ErrorAction SilentlyContinue)
-
- #To test old method:
- # $AdvancedCmdLine=""
 
  write-host -ForegroundColor DarkGreen "Current Cipher List"
  if ($AdvancedCmdLine) {
@@ -5713,7 +5728,7 @@ Function Update-ProtocolsAndCipher {
   write-host -foregroundcolor "DarkGreen" "Checking cipher `'$Cipher`' : " -NoNewline
   if ($CipherListFull | Where-Object {$_ -like "$Cipher"}) {
    write-host -foregroundcolor "DarkYellow" "Cipher will be removed"
-   $Marker=$True
+   $Marker++
    if ($AdvancedCmdLine) {
     $CipherListToRemove += $CipherListFull | Where-Object {$_ -like "$Cipher"}
    } else {
@@ -5724,7 +5739,7 @@ Function Update-ProtocolsAndCipher {
   }
  }
 
- if (! $Marker) {
+ if ($Marker -gt 0) {
   write-host -ForegroundColor "Green" "Nothing to do"
  } else {
   if ($AdvancedCmdLine) {
@@ -6154,28 +6169,28 @@ Function Set-REGModsMachine {
  Set-ItemProperty -force -path $RegKey -Name "VerboseStatus" -Value "1" -Type DWord | Out-Null
 }
 Function Set-REGModsMachineRemoveMyPCFolders {
-#64Bits Remove All User Folders In This PC
-#Music
-remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}]"
-remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}]"
-#Downloads
-remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{088e3905-0323-4b02-9826-5d99428e115f}]"
-remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{088e3905-0323-4b02-9826-5d99428e115f}]"
-#Pictures
-remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}]"
-remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}]"
-#Videos
-remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}]"
-remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}]"
-#Documents
-remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{d3162b92-9365-467a-956b-92703aca08af}]"
-remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{d3162b92-9365-467a-956b-92703aca08af}]"
-#Desktop
-remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}]"
-remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}]"
+ #64Bits Remove All User Folders In This PC
+ #Music
+ remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}]"
+ remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{3dfdf296-dbec-4fb4-81d1-6a3438bcf4de}]"
+ #Downloads
+ remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{088e3905-0323-4b02-9826-5d99428e115f}]"
+ remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{088e3905-0323-4b02-9826-5d99428e115f}]"
+ #Pictures
+ remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}]"
+ remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{24ad3ad4-a569-4530-98e1-ab02f9417aa8}]"
+ #Videos
+ remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}]"
+ remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{f86fa3ab-70d2-4fc7-9c99-fcbf05467f3a}]"
+ #Documents
+ remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{d3162b92-9365-467a-956b-92703aca08af}]"
+ remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{d3162b92-9365-467a-956b-92703aca08af}]"
+ #Desktop
+ remove-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}]"
+ remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}]"
 }
 Function Set-REGModsMachineDisableAdminShares {
-Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" LocalAccountTokenFilterPolicy 1
+ Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" LocalAccountTokenFilterPolicy 1
 }
 Function Clear-IconCache {
  Stop-Process explorer.exe
@@ -6225,16 +6240,6 @@ Function Set-FirewallRules {
  Set-NetFirewallRule -DisplayGroup "Remote Event Log Management" -Enabled True -PassThru | Out-Null
  # Set-NetFirewallRule -DisplayGroup 'Windows Management Instrumentation (WMI)' -Enabled true -PassThru | Out-Null
  Set-NetFirewallRule -DisplayGroup "File and Printer Sharing" -Enabled True -PassThru | Out-Null
-}
-Function Enable-PowerSettingsUnhideAll {
- if (!$IsLinux -and !$IsMacOS) {
-  # Unlock Power Plans by disabling "Connected Standby"
-  Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name 'CSEnabled' -Value 0 -Force
-
-  # Unlock hidden options
-  $PowerSettings = Get-ChildItem -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings' -Recurse -Depth 1 | Where-Object { $_.PSChildName -NotLike 'DefaultPowerSchemeValues' -and $_.PSChildName -NotLike '0' -and $_.PSChildName -NotLike '1' }
-  ForEach ($item in $PowerSettings) { $path = $item -replace "HKEY_LOCAL_MACHINE","HKLM:"; Set-ItemProperty -Path $path -Name 'Attributes' -Value 2 -Force }
- }
 }
 Function Set-RDPNLA {
  if ( ! (Assert-IsAdmin) ) {Write-Colored -Color "red" -ColoredText "You must be admin to run this command" ; return}
@@ -6391,6 +6396,16 @@ Function Get-PowerSettingsAdvanced {
  # List all possible Power Options
  # To UnHide an Option : powercfg -attributes $ID -ATTRIB_HIDE
  Get-CimInstance -ClassName Win32_PowerSetting -Namespace root\cimv2\power | Select-Object ElementName,@{name="ID";expression={$_.InstanceID.split("\")[1] -replace '}','' -replace '{',''}},Description | Sort-Object ElementName
+}
+Function Enable-PowerSettingsUnhideAll {
+ if (!$IsLinux -and !$IsMacOS) {
+  # Unlock Power Plans by disabling "Connected Standby"
+  Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -Name 'CSEnabled' -Value 0 -Force
+
+  # Unlock hidden options
+  $PowerSettings = Get-ChildItem -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerSettings' -Recurse -Depth 1 | Where-Object { $_.PSChildName -NotLike 'DefaultPowerSchemeValues' -and $_.PSChildName -NotLike '0' -and $_.PSChildName -NotLike '1' }
+  ForEach ($item in $PowerSettings) { $path = $item -replace "HKEY_LOCAL_MACHINE","HKLM:"; Set-ItemProperty -Path $path -Name 'Attributes' -Value 2 -Force }
+ }
 }
 
 # Sound
@@ -6657,59 +6672,59 @@ Function Get-KPIWsus {
   $Path="C:\Temp\KPI"
  )
 
-$OutputFileWSUS="$Path\WSUS-$(get-date -uformat '%Y-%m-%d').csv"
+ $OutputFileWSUS="$Path\WSUS-$(get-date -uformat '%Y-%m-%d').csv"
 
-$StartDate=$(get-date -uformat "%Y-%m-%d %T")
+ $StartDate=$(get-date -uformat "%Y-%m-%d %T")
 
-$ServerList=(Get-ADGroupMember $WsusServersADGroup).Name
+ $ServerList=(Get-ADGroupMember $WsusServersADGroup).Name
 
-$ServerList | ForEach-Object {
+ $ServerList | ForEach-Object {
 
- $WsusServer=$_
+  $WsusServer=$_
 
- #BEGIN REMOTE BLOC
- Write-Host -ForegroundColor Magenta "Remotely Checking WSUS Server $WsusServer"
- $ExtractTMP=Invoke-Command -ComputerName $WsusServer -ScriptBlock {
-  #Load Assembly
-  [void][reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration")
-  #Create Objects
-  $computerscope = New-Object Microsoft.UpdateServices.Administration.ComputerTargetScope
-  $updatescope = New-Object Microsoft.UpdateServices.Administration.UpdateScope
- try {
-  #Create WSUS connection Object
-  $AdminProxyObj = New-Object Microsoft.UpdateServices.Administration.AdminProxy
-  $wsus = $AdminProxyObj.GetUpdateServerInstance()
-  #Getting Computer Summary
-  $wsus.GetSummariesPerComputerTarget($updatescope,$computerscope) | Select-Object *,
-   @{Label='ComputerTarget';Expression={($wsus.GetComputerTarget([guid]$_.ComputerTargetId))}},
-   @{Label='NeededCount';Expression={($_.DownloadedCount + $_.NotInstalledCount)}}
- } catch {
-  write-host -foregroundcolor "red" "$WsusServer : $($error[0])" ; return
+  #BEGIN REMOTE BLOC
+  Write-Host -ForegroundColor Magenta "Remotely Checking WSUS Server $WsusServer"
+  $ExtractTMP=Invoke-Command -ComputerName $WsusServer -ScriptBlock {
+   #Load Assembly
+   [void][reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration")
+   #Create Objects
+   $computerscope = New-Object Microsoft.UpdateServices.Administration.ComputerTargetScope
+   $updatescope = New-Object Microsoft.UpdateServices.Administration.UpdateScope
+   try {
+    #Create WSUS connection Object
+    $AdminProxyObj = New-Object Microsoft.UpdateServices.Administration.AdminProxy
+    $wsus = $AdminProxyObj.GetUpdateServerInstance()
+    #Getting Computer Summary
+    $wsus.GetSummariesPerComputerTarget($updatescope,$computerscope) | Select-Object *,
+     @{Label='ComputerTarget';Expression={($wsus.GetComputerTarget([guid]$_.ComputerTargetId))}},
+     @{Label='NeededCount';Expression={($_.DownloadedCount + $_.NotInstalledCount)}}
+   } catch {
+    write-host -foregroundcolor "red" "$WsusServer : $($error[0])" ; return
+   }
+  }
+  #END REMOTE BLOC
+
+  $Extract=$ExtractTMP | Select-Object @{Label='Server';Expression={$WsusServer}},
+   @{Label='ComputerName';Expression={Progress "KPIWsus - $WsusServer - Checking Computer: " "$($_.ComputerTarget.fulldomainname)";$_.ComputerTarget.fulldomainname.split(".")[0].toupper()}},
+   UnknownCount,NotApplicableCount,NotInstalledCount,DownloadedCount,InstalledCount,InstalledPendingRebootCount,FailedCount,NeededCount,
+   @{Label='LastUpdated';Expression={Format-Date $_.LastUpdated}},
+   @{Label='IPAddress';Expression={$_.ComputerTarget.IPAddress}},
+   @{Label='Make';Expression={$_.ComputerTarget.Make}},
+   @{Label='Model';Expression={$_.ComputerTarget.Model}},
+   @{Label='OSArchitecture';Expression={$_.ComputerTarget.OSArchitecture}},
+   @{Label='ClientVersion';Expression={$_.ComputerTarget.ClientVersion}},
+   @{Label='OSFamily';Expression={$_.ComputerTarget.OSFamily}},
+   @{Label='OSDescription';Expression={$_.ComputerTarget.OSDescription}},
+   @{Label='ComputerRole';Expression={$_.ComputerTarget.ComputerRole}},
+   @{Label='LastSyncTime';Expression={Format-Date $_.ComputerTarget.LastSyncTime}},
+   @{Label='LastSyncResult';Expression={Format-Date $_.ComputerTarget.LastSyncResult}},
+   @{Label='LastReportedStatusTime';Expression={Format-Date $_.ComputerTarget.LastReportedStatusTime}},
+   @{Label='RequestedTargetGroupName';Expression={$_.ComputerTarget.RequestedTargetGroupName}}
+
+  $result=$result+$Extract
+  ProgressClear
+  write-host
  }
-}
-#END REMOTE BLOC
-
-$Extract=$ExtractTMP | Select-Object @{Label='Server';Expression={$WsusServer}},
- @{Label='ComputerName';Expression={Progress "KPIWsus - $WsusServer - Checking Computer: " "$($_.ComputerTarget.fulldomainname)";$_.ComputerTarget.fulldomainname.split(".")[0].toupper()}},
- UnknownCount,NotApplicableCount,NotInstalledCount,DownloadedCount,InstalledCount,InstalledPendingRebootCount,FailedCount,NeededCount,
- @{Label='LastUpdated';Expression={Format-Date $_.LastUpdated}},
- @{Label='IPAddress';Expression={$_.ComputerTarget.IPAddress}},
- @{Label='Make';Expression={$_.ComputerTarget.Make}},
- @{Label='Model';Expression={$_.ComputerTarget.Model}},
- @{Label='OSArchitecture';Expression={$_.ComputerTarget.OSArchitecture}},
- @{Label='ClientVersion';Expression={$_.ComputerTarget.ClientVersion}},
- @{Label='OSFamily';Expression={$_.ComputerTarget.OSFamily}},
- @{Label='OSDescription';Expression={$_.ComputerTarget.OSDescription}},
- @{Label='ComputerRole';Expression={$_.ComputerTarget.ComputerRole}},
- @{Label='LastSyncTime';Expression={Format-Date $_.ComputerTarget.LastSyncTime}},
- @{Label='LastSyncResult';Expression={Format-Date $_.ComputerTarget.LastSyncResult}},
- @{Label='LastReportedStatusTime';Expression={Format-Date $_.ComputerTarget.LastReportedStatusTime}},
- @{Label='RequestedTargetGroupName';Expression={$_.ComputerTarget.RequestedTargetGroupName}}
-
- $result=$result+$Extract
- ProgressClear
- write-host
-}
 
  #Get Status per group:
  # $wsus.GetUpdateApprovals($updatescope) | Select-Object @{L='ComputerTargetGroup';E={$_.GetComputerTargetGroup().Name}},@{L='UpdateTitle';E={($wsus.GetUpdate([guid]$_.UpdateId.UpdateId.Guid)).Title}},GoLiveTime,AdministratorName,Deadline,Action,IsOptional,State
@@ -7118,12 +7133,36 @@ Function Install-GIT { # Download and install latest GIT [User version] (Non Adm
  Param (
   $InstallDestination="C:\Apps\Git"
  )
+
+ $Binary = "Git.exe"
+ $Installer = "Git_Installer.exe"
+
+ # Check current version
+ if (Assert-IsCommandAvailable $Binary -NoError) {
+  $CurrentVersion = Invoke-Expression -Command "$Binary version" -ErrorAction SilentlyContinue
+  if ($CurrentVersion) {
+   Write-Colored -NonColoredText "Current installed version : " -ColoredText $CurrentVersion -PrintDate
+  }
+ }
+
  try {
-  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/download/win).links | Where-Object { ($_ -like  "*64-bit*") -and ($_ -notlike "*Portable*") }).href
-  $SetupFileName = Get-FileFromURL $DownloadLink -OutputFile 'Git.exe'
+  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/download/win).links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href
+  #Check Newest Version :
+  $NewestVersion = ($DownloadLink -split "/" | Select-Object -Last 1) -replace '-64-bit.exe','' -replace 'Git-',''
+  Write-Colored -NonColoredText "Newest version : " -ColoredText $NewestVersion -PrintDate
+
+  if ($CurrentVersion) {
+   $Answer = Question -message "Install newest version ?" -defaultChoice '1'
+   if (! $Answer) {
+    Return
+   }
+  }
+
+  $SetupFileName = Get-FileFromURL $DownloadLink -OutputFile $Installer
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
-  Invoke-Expression  "& { ./$SetupFileName /verysilent /Log /suppressmsgboxes /norestart /forcecloseapplications /restartapplications /lang=EN /dir='$InstallDestination' }"
+  Invoke-Expression  "& { ./$SetupFileName /verysilent /Log /suppressmsgboxes /norestart /forcecloseapplications /restartapplications /CURRENTUSER /lang=EN /dir='$InstallDestination' }"
   Wait-ProcessTermination -Process $SetupFileName -Message "Waiting for the end of the installation"
+  Write-Blank
   Remove-Item $SetupFileName
   Add-ToPath "$InstallDestination\cmd"
  } Catch {
@@ -7346,7 +7385,7 @@ Function Install-Filezilla { # Download and install latest Filezilla [ZIP]
 
  #Must add intermediate link to follow link
  $DownloadLink = ((Invoke-WebRequest $RootURL/download.php?show_all=1).links  | Where-Object { ($_ -like  "*$ProductName-*64.zip*")}).href
- $SetupFileName = Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
+ Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
  New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
  Expand-Archive -Path "$ProductName.zip" -DestinationPath $InstallDestination -Force
  Remove-Item "$ProductName.zip"
@@ -8716,7 +8755,14 @@ Function Get-AzureEnvironment { # Get Current Environment used by Az Cli
 }
 # Global Extracts
 Function Get-AzureSubscriptions { # Get all subscription of a Tenant
- az account list --all --query '[].{id:id, name:name}' -o json | convertfrom-json | select-object id,name
+ Param (
+  [Switch]$ShowAll
+ )
+ if ($ShowAll) {
+  az account list --all --query '[].{id:id, name:name, state:state}' -o json | convertfrom-json | select-object id,name,state
+ } else {
+  az account list --all --query '[].{id:id, name:name, state:state}' -o json | convertfrom-json | Where-Object {$_.state -eq 'Enabled'} | select-object id,name,state
+ }
 }
 Function Get-AzureAppRegistration {  # Get all App Registration of a Tenant
  az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
@@ -8724,13 +8770,18 @@ Function Get-AzureAppRegistration {  # Get all App Registration of a Tenant
 Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
  Param (
   $Filter,
-  [Switch]$ShowAllColumns
+  [Switch]$ShowAllColumns,
+  [Switch]$Fast
  )
  $Arguments = '--output', 'json', '--all', '--only-show-errors'
 
  if ( ! $ShowAllColumns ) {
   $Arguments += '--query'
-  $Arguments += '"[].{objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired}"'
+  if ($Fast) {
+   $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
+  } else {
+   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired}"'
+  }
  }
  if ($filter) {
   $Arguments += "--filter"
@@ -8740,11 +8791,14 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
 }
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
-  [Switch]$Fast
+  [parameter(Mandatory = $true, ParameterSetName="Fast")][Switch]$Fast,
+  [parameter(Mandatory = $true, ParameterSetName="Advanced")][Switch]$Advanced
  )
  # Get rights of all AAD users (takes some minutes with 50k+ users)
  if ($Fast) {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName}' --output json --only-show-errors | ConvertFrom-Json
+ } elseif ($Advanced) {
+  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
  } else {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
  }
@@ -8752,6 +8806,86 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
 Function Get-AzurePublicIPs {
  Get-AzureSubscriptions | foreach-object {
   az network public-ip list --subscription $_.id -o json | convertfrom-json | Select-Object @{Name="SubscriptionName";Expression={$_.Name}},location,resourceGroup,ipAddress,linkedPublicIpAddress
+ }
+}
+Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking resources of subscription : " -Value $subscriptionName -PrintTime
+  az account set --subscription $subscriptionId
+  $CurrentSubscriptionResources = az resource list --output json | ConvertFrom-Json
+  $CurrentSubscriptionResources | ForEach-Object {
+   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
+   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+  }
+  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ }
+}
+Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (Checks ACLs)
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking Keyvaults of subscription : " -Value $subscriptionName -PrintTime
+  az account set --subscription $subscriptionId
+  $CurrentSubscriptionResources = az keyvault list --output json | ConvertFrom-Json
+  $CurrentSubscriptionResources | ForEach-Object {
+   Progress -Message "Checking Keyvaults of subscription : $subscriptionName : " -Value $_.Name -PrintTime
+   # $PublicAccess = az keyvault show --name $_.name --query '{publicNetworkAccess:properties.publicNetworkAccess}' -o tsv
+   $KV_Properties = az keyvault show --name $_.name --query '{properties:properties}' -o json | ConvertFrom-Json
+   $PublicMode = if (($KV_Properties.properties.publicNetworkAccess -eq "Enabled") -or ($KV_Properties.properties.networkAcls.defaultAction -eq "Allow")) {
+    "Public"
+   } elseif ($_.properties.publicNetworkAccess -eq "Disabled") {
+    "Private"
+   } else {
+    "Public Filtered"
+   }
+   $_ | Add-Member -NotePropertyName RBAC_Enabled -NotePropertyValue $KV_Properties.properties.enableRbacAuthorization
+   $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $PublicMode # Check if it's enough
+   # $_ | Add-Member -NotePropertyName Network_Public_Mode -NotePropertyValue $KV_Properties.properties.publicNetworkAccess
+   $_ | Add-Member -NotePropertyName Network_Bypass -NotePropertyValue $KV_Properties.properties.networkAcls.bypass
+   $_ | Add-Member -NotePropertyName Network_Open_IP -NotePropertyValue $KV_Properties.properties.networkAcls.ipRules.count
+   $_ | Add-Member -NotePropertyName Network_Open_VNET -NotePropertyValue $KV_Properties.properties.networkAcls.virtualNetworkRules.count
+   $_ | Add-Member -NotePropertyName Network_Default_Action -NotePropertyValue $KV_Properties.properties.networkAcls.defaultAction
+   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
+   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+  }
+  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllKeyvaults_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ }
+}
+Function Get-AzureStorageAccounts { # Get all Azure Storage Accounts for all Subscriptions (Checks ACLs)
+ # Filter Example : | select SubscriptionName,resourceGroup,name,AD_Authentication,minimumTlsVersion,enableHttpsTrafficOnly,Network_Public_Mode,Network_Public_Blob_Mode,Network_Bypass,Network_Default_Action,Network_Private_Endpoint_Name | ft
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking Storage Accounts of subscription : " -Value $subscriptionName -PrintTime
+  az account set --subscription $subscriptionId
+  $CurrentSubscriptionResources = az storage account list -o json | ConvertFrom-Json
+  $CurrentSubscriptionResources | ForEach-Object {
+   Progress -Message "Checking Storage Account of subscription : $subscriptionName : " -Value $_.Name -PrintTime
+   $PublicMode = if (($_.publicNetworkAccess -eq "Enabled") -or ($_.networkRuleSet.defaultAction -eq "Allow")) {
+    "Public"
+   } elseif ($_.publicNetworkAccess -eq "Disabled") {
+    "Private"
+   } else {
+    "Public Filtered"
+   }
+   $_ | Add-Member -NotePropertyName AD_Authentication -NotePropertyValue $_.azureFilesIdentityBasedAuthentication.directoryServiceOptions
+   $_ | Add-Member -NotePropertyName requireInfrastructureEncryption -NotePropertyValue $_.encryption.requireInfrastructureEncryption
+   # $_ | Add-Member -NotePropertyName Network_Public_Mode -NotePropertyValue $_.publicNetworkAccess
+   $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $PublicMode # Check if it's enough
+   $_ | Add-Member -NotePropertyName Network_Public_Blob_Mode -NotePropertyValue $_.allowBlobPublicAccess
+   $_ | Add-Member -NotePropertyName Network_Bypass -NotePropertyValue $_.networkRuleSet.bypass
+   $_ | Add-Member -NotePropertyName Network_Open_IP -NotePropertyValue $_.networkRuleSet.ipRules.count
+   $_ | Add-Member -NotePropertyName Network_Open_VNET -NotePropertyValue $_.networkRuleSet.virtualNetworkRules.count
+   $_ | Add-Member -NotePropertyName Network_Open_Resources -NotePropertyValue $_.networkRuleSet.resourceAccessRules.count
+   $_ | Add-Member -NotePropertyName Network_Default_Action -NotePropertyValue $_.networkRuleSet.defaultAction
+   $_ | Add-Member -NotePropertyName Network_Private_Endpoint_Name -NotePropertyValue $_.privateEndpointConnections.Name
+   $_ | Add-Member -NotePropertyName Network_Private_Endpoint_ID -NotePropertyValue $_.privateEndpointConnections.ID
+   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
+   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+  }
+  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllStorageAccounts_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 # Convert Methods
@@ -8782,7 +8916,7 @@ Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
  az ad user list --query '[].{objectId:id,displayName:displayName,userPrincipalName:userPrincipalName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
 }
 # User Rights Management
-Function Get-AzureADUserRBACRights { # Get all User RBAC Rights on one Subscriptions (Works with Users, Service Principals and groups)
+Function Get-AzureADUserRBACRights-Old { # Get all User RBAC Rights on one Subscriptions (Works with Users, Service Principals and groups)
  Param (
   [Parameter(Mandatory=$true)]$UserName,
   [Parameter(Mandatory=$true)]$SubscriptionID,
@@ -8806,6 +8940,157 @@ Function Get-AzureADUserRBACRights { # Get all User RBAC Rights on one Subscript
     @{Name="ResourceName";Expression={$_.scope.split("/")[-1]}},
     scope,principalName
 }
+Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If not Subscription are defined then it will check all subscriptions
+ [CmdletBinding(DefaultParameterSetName='ShowAll')]
+ Param (
+  [parameter(Mandatory = $true, ParameterSetName="UserAndSubID")]
+  [parameter(Mandatory = $true, ParameterSetName="UserAndSubName")]
+  [parameter(Mandatory = $true, ParameterSetName="UserPrincipalName")]$UserPrincipalName,
+  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubID")]
+  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubName")]
+  [parameter(Mandatory = $true, ParameterSetName="UserDisplayName")]$UserDisplayName,
+  [parameter(Mandatory = $true, ParameterSetName="UserAndSubID")]
+  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubID")]
+  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubID")]
+  [parameter(Mandatory = $true, ParameterSetName="SubscriptionID")]$SubscriptionID,
+  [parameter(Mandatory = $true, ParameterSetName="UserAndSubName")]
+  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubName")]
+  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubName")]
+  [parameter(Mandatory = $true, ParameterSetName="SubscriptionName")]$SubscriptionName,
+  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubID")]
+  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubName")]
+  [parameter(Mandatory = $true, ParameterSetName="GroupName")]$GroupName,
+  [Switch]$ConvertDisplayName, # Will add about 2 seconds per rights
+  [Switch]$IncludeInherited,
+  [parameter(Mandatory = $false, ParameterSetName="ShowAll")][Switch]$ShowAll
+ )
+
+ # For the parameters, it's either Subscription Name OR Subscription ID - And - User Name or User DisplayName
+
+ # Get all subscriptions information
+ Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime
+ $AllSubscription = Get-AzureSubscriptions
+
+ if ($ConvertDisplayName) { # If it's requested to convert all display names it will add initial time to the
+  Progress -Message "Current step " -Value "Retreiving all Users (remove switch 'ConvertDisplayName' to ignore this step)" -PrintTime
+  $AllUsers = Get-AzureADUsers -Advanced
+  Progress -Message "Current step " -Value "Retreiving all Service Principal (remove switch 'ConvertDisplayName' to ignore this step)" -PrintTime
+  $AllServicePrincipals = Get-AzureServicePrincipal -Fast
+ }
+
+ # If Subscription name is given, find Subscription ID
+ if ($SubscriptionName) {
+  $SubscriptionID = ($AllSubscription | Where-Object id -eq $SubscriptionName).ID
+ }
+ # If Subscription ID is given, find Subscription Name
+ if ($SubscriptionID) {
+  $SubscriptionName = ($AllSubscription | Where-Object id -eq $SubscriptionID).Name
+ }
+
+ if ( ($UserPrincipalName) -and (! $UserDisplayName ) ) {
+  $UserDisplayName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=displayName&`$filter=userPrincipalName eq '$UserPrincipalName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.displayName
+ }
+ if ( $UserDisplayName ) {
+  $UserPrincipalName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=userPrincipalName&`$filter=displayName eq '$UserDisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.userPrincipalName
+ }
+ if ($GroupName) {
+  $UserPrincipalName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).value.id
+ }
+
+ # Set default arguments
+ $Arguments =
+  '--only-show-errors',
+  '--all',
+  '--include-classic-administrators',
+  '--include-groups',
+  '--query' , '"[].{principalName:principalName, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup}"',
+  '--output', 'json'
+
+ # Add Arguments if value is set
+ if ( $UserPrincipalName ) {
+  $Arguments += '--assignee' , $UserPrincipalName
+ }
+
+ if ( $IncludeInherited ) {
+  $Arguments += '--include-inherited'
+ }
+
+ if ( $SubscriptionID ) { # If Subscription ID is found filter on only found subscription, otherwise check all subscriptions
+  $SubscriptionToCheck = $AllSubscription | where-object ID -eq $SubscriptionID
+ } else {
+  $SubscriptionToCheck = $AllSubscription
+ }
+
+ $GlobalStatus = @()
+ $SubscriptionToCheck | ForEach-Object {
+
+  $CurrentSubscriptionName = $_.Name
+  $CurrentSubscriptionID = $_.ID
+
+  $ArgumentsOfCurrentSubscription = $Arguments
+  $ArgumentsOfCurrentSubscription += '--subscription' , $CurrentSubscriptionID
+
+  Progress -Message "Checking subscription : " -Value $CurrentSubscriptionName -PrintTime
+
+  $CurrentSubscription = az role assignment list @ArgumentsOfCurrentSubscription | ConvertFrom-Json | `
+  Select-object `
+   @{Name="PrincipalName";Expression={ if (! $_.principalName) { "Identity not found" } else { $_.principalName } }},
+   @{Name="UserUPN";Expression={ if ($UserPrincipalName) { $UserPrincipalName } else { "Only used when filtering by user" } }},
+   @{Name="UserDisplay";Expression={
+    if ($UserDisplayName) {
+     $UserDisplayName
+    } else {
+     if ($ConvertDisplayName) {
+      if ($_.principalType -eq "User") {
+       ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).displayName
+      } elseif ($_.principalType -eq "ServicePrincipal") {
+       ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).displayName
+      } elseif ($_.principalType -eq "Group") {
+       "Group"
+        # Add here to get info on groups (for example to do a recursive search of users)
+      } else {
+       ""
+      }
+     } else {
+      "Only available when using ConvertDisplayName option or when filtering by user"
+     }
+    }
+   }},
+   @{Name="UserMail_Or_SPType";Expression={
+    if ($ConvertDisplayName) {
+     if ($_.principalType -eq "User") {
+      ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).mail
+     } elseif ($_.principalType -eq "ServicePrincipal") {
+      ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).servicePrincipalType
+     } elseif ($_.principalType -eq "Group") {
+      "Group"
+       # Add here to get info on groups (for example to do a recursive search of users)
+     } else {
+      ""
+      # Add here to get info on groups (for example to do a recursive search of users)
+     }
+    } else {
+     "Only available when using ConvertDisplayName option"
+    }
+   }},
+   @{Name="Subscription";Expression={$CurrentSubscriptionName}},
+   @{Name="SubscriptionID";Expression={$CurrentSubscriptionID}},
+   resourceGroup,principalType,roleDefinitionName,
+   @{Name="ResourceName";Expression={
+    $Scope_Split = $_.scope.split("/")[-1]
+    if ($Scope_Split -eq $CurrentSubscriptionID ) {
+     "Subscription"
+    } else {
+     $Scope_Split
+    }
+   }}, scope
+  $GlobalStatus += $CurrentSubscription
+ }
+ #Print result
+ ProgressClear
+ # $GlobalStatus | Sort-Object -Unique id
+ $GlobalStatus
+}
 Function Remove-AzureADUserRBACRights { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
  Param (
   [Parameter(Mandatory=$true)]$UserName,
@@ -8813,7 +9098,7 @@ Function Remove-AzureADUserRBACRights { # Remove all User RBAC Rights on one Sub
   $SubscriptionName,
   $UserDisplayName
  )
- $CurrentRights = Get-AzureADUserRBACRights -UserDisplayName $UserDisplayName -UserName $UserName -SubscriptionID $SubscriptionID -SubscriptionName $SubscriptionName
+ $CurrentRights = Get-AzureADUserRBACRights -UserDisplayName $UserDisplayName -UserPrincipalName $UserName -SubscriptionID $SubscriptionID -SubscriptionName $SubscriptionName
  $CurrentRights | ForEach-Object {
   az role assignment delete --assignee $UserName --role $_.roleDefinitionName --scope $_.scope
  }
@@ -8836,7 +9121,7 @@ Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to 
   }
  }
 }
-# User Global rights Checks
+# User Global rights Checks -> Replaced by new Get-AzureADUserRBACRights
 Function Get-AzureADUserRBACRightsForAllSubscription { # Get RBAC Rights of ONE user on ALL Subscriptions - Script takes about 2 seconds per subscription
  Param (
   [Parameter(Mandatory)]$UserUPN,
@@ -8844,7 +9129,7 @@ Function Get-AzureADUserRBACRightsForAllSubscription { # Get RBAC Rights of ONE 
  )
  Get-AzureSubscriptions | ForEach-Object {
   Progress -Message "Checking RBAC rights for user $UserDisplayName [$UserUPN] on subscription " "$($_.Name) $($_.ID)" -PrintTime
-  Get-AzureADUserRBACRights -SubscriptionID $_.ID -SubscriptionName $_.Name -UserName $UserUPN -UserDisplayName $UserDisplayName
+  Get-AzureADUserRBACRights -SubscriptionID $_.ID -SubscriptionName $_.Name -UserPrincipalName $UserUPN -UserDisplayName $UserDisplayName
  }
 }
 Function Get-AzureADAllUserRBACRightsForAllSubscription { # Get RBAC Rights of ALL users on ALL Subscriptions - Script takes about 2 seconds per user / per subscription
@@ -8861,7 +9146,7 @@ Function Get-AzureADAllUserRBACRightsForAllSubscription { # Get RBAC Rights of A
   $SubscriptionList | ForEach-Object {
    $Subscription = $_.name
    Progress -Message "Currently checking user " -Value "$UserDisplayName [$UserNameUpn] on subscription $Subscription" -PrintTime
-   Get-AzureADUserRBACRights -UserName $UserNameUpn -UserDisplayName $UserDisplayName -SubscriptionID $_.ID -SubscriptionName $_.Name | Export-Csv $ExportFileLocation -Append -Delimiter ";"
+   Get-AzureADUserRBACRights -UserPrincipalName $UserNameUpn -UserDisplayName $UserDisplayName -SubscriptionID $_.ID -SubscriptionName $_.Name | Export-Csv $ExportFileLocation -Append -Delimiter ";"
   }
  }
 }
@@ -8954,7 +9239,6 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
  $ObjectsToCreate | ForEach-Object {
   if ($_.CreateServicePrincipal) {
    $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name -CreateAssociatedServicePrincipal
-   $SP_AppID = Get-AzureServicePrincipalIDFromName -Name $_.Name
    $SP_AppID = (Get-AzureServicePrincipalInfo -DisplayName $_.Name).ID
   } else {
    $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name
@@ -8974,7 +9258,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
   # Permission Management
   $_.RightsToAdd | ForEach-Object {
    if (! $BackendAPI_ID) {Return}
-   Add-AppRegistrationPermission -AppID $App_AppID -PolicyID $BackendAPI_ID -RightName $_
+   Add-AzureAppRegistrationPermission -AppID $App_AppID -PolicyID $BackendAPI_ID -RightName $_
 
    Progress -Message "Check API Permissions on " -Value $App_AppID -PrintTime
 
@@ -9065,18 +9349,8 @@ Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Ri
   $CurrentSubscriptionName = $_.name
   $AppRegistration | ForEach-Object {
    Progress -Message "Currently checking App Registration " -Value "`'$($_.appDisplayName)`' on subscription `'$CurrentSubscriptionName`'" -PrintTime
-   Get-AzureADUserRBACRights -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserName $_.appId -UserDisplayName $_.appDisplayName
+   Get-AzureADUserRBACRights -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserPrincipalName $_.appId -UserDisplayName $_.appDisplayName
   }
- }
-}
-Function Get-AzureAppRegistrationAPIPermissionsSingle { # Check permission for a single App registration (Do not use for multiple app registration - Use Get-AzureAppRegistrationAPIPermissions instead)
- Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationID
- )
- $AppRegistrationName = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).DisplayName
- $AppRegistrationPermissions = Get-AzureAppRegistrationPermissions -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
- if ($AppRegistrationPermissions) {
-  Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AppRegistrationPermissions
  }
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
@@ -9107,7 +9381,8 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
  Param (
   $ExportFile = "C:\Temp\AppRegistrationPermissionsGUIDOnly.csv",
   $FinalFile = "C:\Temp\AppRegistrationPermissions.csv",
-  $LogFile = "C:\Temp\AppRegistrationPermissions.log"
+  $LogFile = "C:\Temp\AppRegistrationPermissions.log",
+  [Switch]$Verbose
  )
 
  #Extract all App Registration Permission with only GUID (Faster)
@@ -9126,7 +9401,9 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
    if ($Permission) {
     $Permission | Export-CSV $ExportFile -Append
    } else {
-    Write-Colored -Color "Green" -FilePath $LogFile -ColoredText "No permission found for $($_.DisplayName)"
+    if ($Verbose) {
+     Write-Colored -Color "Green" -FilePath $LogFile -ColoredText "No permission found for $($_.DisplayName)"
+    }
    }
   } catch {
    Write-Colored -Color "Red" -FilePath $LogFile -ColoredText "Error checking permission of $($_.DisplayName) ($($_.AppID)) : $($Error[0])"
@@ -9151,9 +9428,19 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
 
  # Convert GUID To READABLE (Takes a couple seconds)
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
- Convert-AzureServicePrincipalPermissionsGUIDToReadable -ServicePrincipalObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
+ Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
 }
-Function Add-AppRegistrationPermission { # Add rights on App Registration
+Function Get-AzureAppRegistrationAPIPermissionsSingle { # Check permission for a single App registration (Do not use for multiple app registration - Use Get-AzureAppRegistrationAPIPermissions instead)
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationID
+ )
+ $AppRegistrationName = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).DisplayName
+ $AppRegistrationPermissions = Get-AzureAppRegistrationPermissions -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
+ if ($AppRegistrationPermissions) {
+  Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AppRegistrationPermissions
+ }
+}
+Function Add-AzureAppRegistrationPermission { # Add rights on App Registration
  Param (
   [Parameter(Mandatory=$true)]$AppID,
   [Parameter(Mandatory=$true)]$PolicyID,
@@ -9176,14 +9463,14 @@ Function Add-AppRegistrationPermission { # Add rights on App Registration
  Progress -Message "Commit API Permissions on $AppID : " -Value $RightName -PrintTime
  az ad app permission grant --only-show-errors --id $AppID --api $PolicyID --scope $RightName | Out-Null
 
- Progress -Message "Waiting 10 Seconds after commit to be able to Grant Admin Consent on " -Value $AppID -PrintTime
- Start-Sleep -Seconds 10
+ Progress -Message "Waiting 30 Seconds after commit to be able to Grant Admin Consent on " -Value $AppID -PrintTime
+ Start-Sleep -Seconds 30
 
  # Grant Admin Consent
  Progress -Message "Grant API Permissions on $AppID : " -Value $RightName -PrintTime
  az ad app permission admin-consent --only-show-errors --id $AppID
 }
-Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all GUID of Object containing Service Principal Permission List with GUID to Readable Names
+Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all GUID of Object containing App Registration Permission List with GUID to Readable Names
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationObjectWithGUIDPermissions,
   $IDConversionTable #Send Conversion Table for faster treatment
@@ -9217,6 +9504,38 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
    # Type=$Policy.Type => This value is empty
   }
  }
+}
+Function Get-AppRegistrationExpiration { # Get All App Registration Secret
+ Param (
+  $Expiration = 30,
+  $MaxExpiration = 730
+ )
+ $Date_Today = Get-Date
+ az ad app list --all -o json --query "[].{DisplayName:displayName,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials}" | ConvertFrom-Json | Select-Object `
+  @{Name="AppName";Expression={$_.DisplayName}},AppId,
+  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+  @{Name="AppAudience";Expression={$_.signInAudience}}  -ExpandProperty passwordCredentials | Select-Object -Property `
+   @{Name="SecretDescription";Expression={$_.DisplayName}},
+   @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
+   @{Name="SecretExpiration";Expression={$_.endDateTime}},* | Select-Object AppName,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,hint,
+   @{Name="Status";Expression={
+    $TimeUntilExpiration = (NEW-TIMESPAN -Start $Date_Today -End $_.SecretExpiration).Days
+    If ($TimeUntilExpiration -gt $MaxExpiration) {
+     "Infinite"
+    } elseif ($TimeUntilExpiration -gt $Expiration) {
+     "OK for at least $Expiration days"
+    } elseif (($TimeUntilExpiration -lt $Expiration) -and ($TimeUntilExpiration -gt 0)) {
+     "Expiring in $TimeUntilExpiration days"
+    } elseif ($TimeUntilExpiration -lt 0) {
+     "Expired"
+    }
+   }}
+}
+Function Get-AppRegistrationAudience { # Check All App registraition Audiences : this can be added to filter wrong configured ones | ? AppAudience -ne "AzureADMyOrg"
+ az ad app list --all -o json --query "[].{DisplayName:displayName,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience}" | ConvertFrom-Json | Select-Object `
+ @{Name="AppName";Expression={$_.DisplayName}},AppId,
+ @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+ @{Name="AppAudience";Expression={$_.signInAudience}}
 }
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
@@ -9450,7 +9769,7 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
    @{name="Scope";expression={$AdminUnitID = $_.administrativeUnitId ; ($AdminUnitList | Where-Object { $_.ID -eq $AdminUnitID } ).displayName} }
  }
 }
-Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role (Using PIM API v3)
+Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligible role (Using PIM API v3) - Not Working from Powershell in Az Cli for some reason : SP Right ?
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  While ($CurrentResult.'@odata.nextLink') {
@@ -9458,6 +9777,12 @@ Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible r
   $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
   $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  }
+}
+Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role - Requires module : Microsoft.Graph.DeviceManagement.Enrolment
+ Import-Module Microsoft.Graph.DeviceManagement.Enrolment
+ $EligibleRoles = Get-MgRoleManagementDirectoryRoleEligibilityScheduleInstance
+ Convert-AzureADRoleAssignements $($EligibleRoles | Select-Object DirectoryScopeId,PrincipalId,RoleDefinitionId)
+
 }
 Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID
  Param (
@@ -9538,14 +9863,26 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
 Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta for Detailed to get all values)
  Param (
   [Parameter(Mandatory)]$UPNorID,
-  [Switch]$Detailed
+  [Switch]$Detailed,
+  [Switch]$ShowManager
  )
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
   # az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json 2>null
-  az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
+  $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
  } else {
-  az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object id,userPrincipalName,displayName 2>null
+  $Result = az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object id,userPrincipalName,displayName
  }
+ if ($ShowManager) {
+  $Manager = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/manager" --headers Content-Type=application/json | ConvertFrom-Json `
+  | Select-Object `
+    @{name="ManagerdisplayName";expression={$_.displayName}},
+    @{name="ManagerUPN";expression={$_.userPrincipalName}},
+    @{name="ManagerMail";expression={$_.mail}}
+  $Result | Add-Member -NotePropertyName ManagerdisplayName -NotePropertyValue $Manager.ManagerdisplayName
+  $Result | Add-Member -NotePropertyName ManagerUPN -NotePropertyValue $Manager.ManagerUPN
+  $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
+ }
+ $Result
 }
 Function Get-AzureADUserCustomAttributes { # Show user information From O365
  Param (
@@ -9556,7 +9893,7 @@ Function Get-AzureADUserCustomAttributes { # Show user information From O365
 
  Get-EXORecipient -Identity $UPN -PropertySets Custom
 }
-Function Set-ADComputerObjectIDAsMSDSConsistencyGUID {
+Function Set-ADComputerObjectIDAsMSDSConsistencyGUID { # Set the Object ID as the ms-ds-consistencyGUID
  Param (
   [Parameter(Mandatory=$true)]$ComputerToMigrate
  )
