@@ -8787,7 +8787,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   $Arguments += "--filter"
   $Arguments += $filter
  }
- az ad sp list  $Arguments | ConvertFrom-Json
+ az ad sp list @Arguments | ConvertFrom-Json
 }
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
@@ -8820,6 +8820,20 @@ Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
   }
   $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ }
+}
+Function Get-AzureResourceGroups { # Get all Azure Resource Groups for all Subscriptions
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking resource groups of subscription : " -Value $subscriptionName -PrintTime
+  az account set --subscription $subscriptionId
+  $CurrentSubscriptionRG = az group list --output json | ConvertFrom-Json
+  $CurrentSubscriptionRG | ForEach-Object {
+   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
+   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+  }
+  $CurrentSubscriptionRG | Export-Csv "C:\Temp\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (Checks ACLs)
@@ -9379,9 +9393,9 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
 }
 Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App Registration of a Tenant
  Param (
-  $ExportFile = "C:\Temp\AppRegistrationPermissionsGUIDOnly.csv",
-  $FinalFile = "C:\Temp\AppRegistrationPermissions.csv",
-  $LogFile = "C:\Temp\AppRegistrationPermissions.log",
+  $ExportFile = "C:\Temp\AppRegistrationPermissionsGUIDOnly_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $FinalFile = "C:\Temp\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $LogFile = "C:\Temp\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).log",
   [Switch]$Verbose
  )
 
