@@ -2140,6 +2140,21 @@ Function Get-EventLogSecurityDCAccountLocked {
   write-host -ForegroundColor "Red" $Error[0]
  }
 }
+Function Get-EventLogPCNSSVC {
+ Param (
+  $PCNSSVCServer
+ )
+ Get-WinEvent -ComputerName $PCNSSVCServer -FilterHashtable @{LogName='application';ProviderName='PCNSSVC';ID=2100} | `
+  Select-Object @{Name="Date";Expression={Format-Date $_.TimeCreated}},
+   @{Name="UpdatedUser";Expression={$_.Properties[2].value}},
+   @{Name="MIM_SRV_ID";Expression={$_.Properties[3].value}}
+}
+Function Get-EventLogLockedAccounts { # Check all latest lockout accounts (needs access to PDC and must be elavated)
+ Param (
+  $PDCEmulatorServer = (Get-ADDomain).pdcemulator
+ )
+ Get-EventLog -LogName security -ComputerName $PDCEmulatorServer -InstanceId 4740
+}
 
 # Network
 Function Get-EthernetConf {
@@ -3497,7 +3512,8 @@ Function Get-ADAllServerInSameOU {
 Function Update-ADUPNSuffix {
  Param (
   [Parameter(Mandatory=$true)]$OldUPNSuffix,
-  [Parameter(Mandatory=$true)]$NewUPNSuffix
+  [Parameter(Mandatory=$true)]$NewUPNSuffix,
+  [Parameter(Mandatory=$true)]$Filter
  )
  Get-ADUser -Filter { Name -like "*" } -properties UserPrincipalName,Created,Modified | Select-Object Name,SamAccountName,UserPrincipalName,Created,Modified |
  Where-Object {$_.UserPrincipalName -like "*@$OldUPNSuffix"} | ForEach-Object {
@@ -3511,7 +3527,12 @@ Function Update-ADUPNSuffix {
 
   if ( $(read-host "Continue with the action (Y/N)") -eq "N" ) {write-host "Skipped" ; return}
 
-  try {Set-ADUser $($_.SamAccountName) -UserPrincipalName $NewUPN ; write-host "Done"} catch {write-host -foregroundcolor "red" $error[0]}
+  try {
+   Set-ADUser $($_.SamAccountName) -UserPrincipalName $NewUPN
+   write-host "Done"
+  } catch {
+   write-host -foregroundcolor "red" $error[0]
+  }
  }
  write-host "Finished updating"
 }
@@ -3826,6 +3847,20 @@ Function Get-ADComputerGUID {
  } Catch {
   write-host -ForegroundColor 'Red' "Computer $Computer does not have a GUID"
  }
+}
+Function Set-ADComputerObjectIDAsMSDSConsistencyGUID { # Set the Object ID as the ms-ds-consistencyGUID
+ Param (
+  [Parameter(Mandatory=$true)]$Computer
+ )
+ $ComputerGUID = (Get-ADComputer -Identity $Computer).ObjectGUID
+ Set-ADComputer -Identity $Computer -Replace @{'mS-DS-ConsistencyGuid'=$ComputerGUID}
+}
+Function Set-ADUserObjectIDAsMSDSConsistencyGUID { # Set the Object ID as the ms-ds-consistencyGUID
+ Param (
+  [Parameter(Mandatory=$true)]$User
+ )
+ $UserGUID = (Get-ADUser -Identity $User).ObjectGUID
+ Set-ADUser -Identity $User -Replace @{'mS-DS-ConsistencyGuid'=$UserGUID}
 }
 
 # Bitlocker
@@ -7123,6 +7158,46 @@ Function Install-MSIRemote { #Copy and Install a MSI on a remote computer
   Remove-PSSession $ServerSessionID
  }
 }
+Function Get-GIT_App_LatestVersion {
+ Param (
+  [Parameter(Mandatory=$true)]$Developper,
+  [Parameter(Mandatory=$true)]$ApplicationName,
+  $FileNamePrefix,
+  $FileNameSuffix,
+  [ValidateSet("None","Base","Trimmed")]$VersionInFileNameType = "None"
+ )
+
+ if (! $FileNamePrefix) { $FileNamePrefix = $ApplicationName }
+ if (! $FileNameSuffix) { $FileNameSuffix = ".zip" }
+
+ # GITHUB Base URL
+ $URL = "https://github.com/$Developper/$ApplicationName/releases/latest"
+
+ # Get latest tag URL (Can Browse)
+ $Request = [System.Net.WebRequest]::Create($URL)
+ $Response = $Request.GetResponse()
+ $TagUrl = $Response.ResponseUri.OriginalString
+
+ # Get Latest version number
+ $BaseVersion = $TagUrl.split('/')[-1]
+ $version = $TagUrl.split('/')[-1].Trim('v').Trim('n')
+
+ # Generate FileName with available info
+ if ($VersionInFileNameType -eq 'None') {
+  $FileName = $FileNamePrefix + $FileNameSuffix
+ } elseif ($VersionInFileNameType -eq 'Base') {
+  $FileName = $FileNamePrefix + $BaseVersion + $FileNameSuffix
+ } elseif ($VersionInFileNameType -eq 'Trimmed') {
+  $FileName = $FileNamePrefix + $version + $FileNameSuffix
+ }
+
+
+ # Get latest Download URL (Cannot Browse)
+ $DownloadUrl = $TagUrl.Replace('tag', 'download') + '/' + $fileName
+ $BaseDownloadUrl = $TagUrl.Replace('tag', 'download') + '/'
+
+ return [pscustomobject]@{BaseVersion=$BaseVersion;Version=$Version;TagURL=$TagUrl;BaseDownloadUrl=$BaseDownloadUrl;DownloadUrl=$DownloadUrl}
+}
 
 # Install APP (UserMode)
 Function Install-VsCode { # Download and install latest VSCode [User version] (Non Admin) [EXE]
@@ -7271,13 +7346,18 @@ Function Install-K9S { # Download and 'install' latest K9S - Add Binary to PATH 
  Param (
   $InstallDestination="C:\Apps\k9s"
  )
- $RootURL = "https://github.com"
- $DownloadLink = $RootURL + ((Invoke-WebRequest $RootURL/derailed/k9s/releases/latest).links | Where-Object { $_ -like  "*Windows_x86_64*" }).href
+ # Current version : k9s version
+ $Developer = 'derailed'
+ $ApplicationName = "k9s"
+ $FileNamePrefix = $ApplicationName
+ $FileNameSuffix = "_Windows_x86_64.tar.gz"
+ $TempFileName = $FileNamePrefix + $FileNameSuffix
  try {
-  Get-FileFromURL $DownloadLink -OutputFile 'k9s_Windows_x86_64.tar.gz'
+  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix
+  Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
-  tar -xvf 'k9s_Windows_x86_64.tar.gz' --directory $InstallDestination\
-  Remove-Item 'k9s_Windows_x86_64.tar.gz'
+  tar -xvf $TempFileName --directory $InstallDestination\
+  Remove-Item $TempFileName
   Add-ToPath $InstallDestination
  } Catch {
   write-output "$(get-date -uformat '%Y-%m-%d %T') - ERROR : $($Error[0])"
@@ -7287,17 +7367,18 @@ Function Install-FFMpeg { # Download and 'install' latest FFMpeg - Add Binary to
  Param (
   $InstallDestination="C:\Apps\FFmpeg"
  )
-
- $RootURL = "https://github.com"
- $ProductName = "ffmpeg"
-
- $DownloadLink = $RootURL + ((Invoke-WebRequest $RootURL/BtbN/$ProductName-Builds/releases/latest).links | Where-Object { $_ -like "*$ProductName-n[0-9]*win64-gpl-shared*" } | Select-Object -Last 1).href
-
+  # Current version : FFMpeg -version
+ $Developer = 'BtbN'
+ $ApplicationName = "FFmpeg-Builds"
+ $FileNamePrefix = "ffmpeg-master-"
+ $FileNameSuffix = "-win64-gpl-shared.zip"
+ $TempFileName = $FileNamePrefix + $FileNameSuffix
  try {
-  Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
+  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Base
+  Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
-  Expand-Archive -Path "$ProductName.zip" -DestinationPath $InstallDestination -Force
-  Remove-Item "$ProductName.zip"
+  Expand-Archive -Path $TempFileName -DestinationPath $InstallDestination -Force
+  Remove-Item $TempFileName
   Move-Item $InstallDestination\$ProductName*\* $InstallDestination\ -Force
   Remove-Item $InstallDestination\$ProductName*\
   Add-ToPath $InstallDestination\bin
@@ -7309,18 +7390,22 @@ Function Install-Robo3T { # Download and 'install' latest Robo3T - Add Binary to
  Param (
   $InstallDestination="C:\Apps\Robo3T"
  )
-
- $ProductName = "robomongo"
- $ProductNameAlternative = "Robo3t"
- $RootURL = "https://github.com"
-
- $DownloadLink = $RootURL + ((Invoke-WebRequest $RootURL/Studio3T/$ProductName/releases/latest).links | Where-Object { $_ -like "*$ProductNameAlternative-*.zip*" }).href
+ # Current version : Get-FileInfo $InstallDestination\robo3t.exe
+ $Developer = 'Studio3T'
+ $ApplicationName = "robomongo"
+ $FileNamePrefix = "robo3t-"
+ $FileNameSuffix = "-windows-x86_64-HASH.zip"
+ $TempFileName = $FileNamePrefix + $FileNameSuffix
 
  try {
-  Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
+  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
+  #Get Latest Hash to get correct filename
+  $LastHash = ((((Invoke-WebRequest $GitHubInfo.TagURL).Links | Where-Object 'data-hovercard-type' -eq 'commit').href -split "/")[-1]).SubString(0,8)
+
+  Get-FileFromURL $($GitHubInfo.DownloadUrl -replace 'HASH',$LastHash) -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
-  Expand-Archive -Path "$ProductName.zip" -DestinationPath $InstallDestination -Force
-  Remove-Item "$ProductName.zip"
+  Expand-Archive -Path $TempFileName -DestinationPath $InstallDestination -Force
+  Remove-Item $TempFileName
   Move-Item $InstallDestination\$ProductNameAlternative*\* $InstallDestination\ -Force
   Remove-Item $InstallDestination\$ProductNameAlternative-*\
   Add-ToPath $InstallDestination
@@ -7332,15 +7417,18 @@ Function Install-ShareX { # Download and 'install' latest ShareX - Add Binary to
  Param (
   $InstallDestination="C:\Apps\ShareX"
  )
- $RootURL = "https://github.com"
- $ProductName = "ShareX"
+ $Developer = 'ShareX'
+ $ApplicationName = "ShareX"
+ $FileNamePrefix = "ShareX-"
+ $FileNameSuffix = "-portable.zip"
+ $TempFileName = $FileNamePrefix + $FileNameSuffix
 
- $DownloadLink = $RootURL + ((Invoke-WebRequest $RootURL/ShareX/$ProductName/releases/latest).links | Where-Object { ($_ -like  "*portable.zip*") -and ($_ -notlike  "*sha256*") }).href
  try {
-  Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
+  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
+  Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
-  Expand-Archive -Path "$ProductName.zip" -DestinationPath $InstallDestination -Force
-  Remove-Item "$ProductName.zip"
+  Expand-Archive -Path $TempFileName -DestinationPath $InstallDestination -Force
+  Remove-Item $TempFileName
   Add-ToPath $InstallDestination
  } Catch {
   write-output "$(get-date -uformat '%Y-%m-%d %T') - ERROR : $($Error[0])"
@@ -7350,15 +7438,22 @@ Function Install-MongoDBCompass { # Download and 'install' latest ShareX - Add B
  Param (
   $InstallDestination="C:\Apps\MongoDBCompass"
  )
- $RootURL = "https://github.com"
- $ProductName = "MongoDBCompass"
+ $Developer = 'mongodb-js'
+ $ApplicationName = "compass"
+ $FileNamePrefix = "mongodb-compass-"
+ $FileNameSuffix = "-win32-x64.zip"
+ $TempFileName = $FileNamePrefix + $FileNameSuffix
 
- $DownloadLink = $RootURL + ((Invoke-WebRequest $RootURL/mongodb-js/compass/releases/latest).links | Where-Object { ($_ -like  "*mongodb-compass-*-win32-x64.zip*") -and ($_ -notlike  "*isolated*") -and ($_ -notlike  "*readonly*")}).href
- Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
- Expand-Archive -Path "$ProductName.zip" -DestinationPath $InstallDestination -Force
- Remove-Item "$ProductName.zip"
- Add-ToPath $InstallDestination
-
+ try {
+  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
+  Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
+  New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
+  Expand-Archive -Path $TempFileName -DestinationPath $InstallDestination -Force
+  Remove-Item $TempFileName
+  Add-ToPath $InstallDestination
+ } Catch {
+  write-output "$(get-date -uformat '%Y-%m-%d %T') - ERROR : $($Error[0])"
+ }
 }
 Function Install-WinSCP { # Download and install latest WinSCP [ZIP]
  Param (
@@ -8376,7 +8471,7 @@ Function Set-CurrentUserLangToAllUsers { # Set the current local from current us
 }
 Function Set-PowershellProfileForAllUsers { # Set a file as the profile for all users
  Param (
-  $ProfilePath="$env:USERPROFILE\OneDrive\Git\VsCode-Repo\iClic-Perso.ps1"
+  $ProfilePath="$env:OneDriveConsumer\Git\VsCode-Repo\iClic-Perso.ps1"
  )
  $ProfileList=$($PROFILE.AllUsersAllHosts,$PROFILE.AllUsersCurrentHost,$PROFILE.CurrentUserCurrentHost)
  $ProfileList | ForEach-Object {
@@ -8764,6 +8859,15 @@ Function Get-AzureSubscriptions { # Get all subscription of a Tenant
   az account list --all --query '[].{id:id, name:name, state:state}' -o json | convertfrom-json | Where-Object {$_.state -eq 'Enabled'} | select-object id,name,state
  }
 }
+Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups Using Az Cli
+ $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
+ (az graph query -q $Query -o json --first 200 | ConvertFrom-Json).data | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
+}
+Function Get-AzureManagementGroups_Other { # Get all subscription and associated Management Groups Using PS Module
+ $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
+ $response = Search-AzGraph -Query $Query
+ $response | Select-Object name,id,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
+}
 Function Get-AzureAppRegistration {  # Get all App Registration of a Tenant
  az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
 }
@@ -8791,8 +8895,8 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
 }
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
-  [parameter(Mandatory = $true, ParameterSetName="Fast")][Switch]$Fast,
-  [parameter(Mandatory = $true, ParameterSetName="Advanced")][Switch]$Advanced
+  [parameter(Mandatory = $false, ParameterSetName="Fast")][Switch]$Fast,
+  [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced
  )
  # Get rights of all AAD users (takes some minutes with 50k+ users)
  if ($Fast) {
@@ -8902,6 +9006,48 @@ Function Get-AzureStorageAccounts { # Get all Azure Storage Accounts for all Sub
   $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllStorageAccounts_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
+Function Get-AzureSQLServers { # Get all Azure SQL Servers for all Subscription (check ACLs and firewall rules)
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking SQL Server of subscription : " -Value $subscriptionName -PrintTime
+  az account set --subscription $subscriptionId
+  $CurrentSubscriptionResources = az sql server list --output json | ConvertFrom-Json
+  $CurrentSubscriptionResources | ForEach-Object {
+   Progress -Message "Checking SQL Server of subscription : $subscriptionName : " -Value $_.Name -PrintTime
+   $SQL_Properties = az sql server firewall-rule list --id $_.id -o json | ConvertFrom-Json
+   $SQL_Vnet_Properties = az sql server vnet-rule list --id $_.id -o json | ConvertFrom-Json
+   $SQL_Audit_Properties = az sql server audit-policy show --id $_.id -o json | ConvertFrom-Json
+   $PublicMode = if (($_.publicNetworkAccess -eq "Enabled") -and (($SQL_Properties | Where-Object name -ne 'AllowAllWindowsAzureIps').Count -gt 0) ) {
+    "Public Filtered"
+   } elseif ($_.publicNetworkAccess -eq "Disabled") {
+    "Private"
+   } elseif (($_.publicNetworkAccess -eq "Enabled") -and (($SQL_Properties | Where-Object name -eq 'AllowAllWindowsAzureIps').Count -eq 1) -and ($SQL_Properties.Count -eq 1) ) {
+    "Microsoft IPs Only"
+   } elseif (($_.publicNetworkAccess -eq "Enabled") -and (($SQL_Properties | Where-Object name -ne 'AllowAllWindowsAzureIps').Count -eq 0) ) {
+    "Public Without Open IPs"
+   } else {
+    "Other"
+   }
+   if (($SQL_Properties | Where-Object name -eq 'AllowAllWindowsAzureIps').Count -eq 1) {$Network_Bypass = 'AllowAllWindowsAzureIps'} else {$Network_Bypass = 'None'}
+
+   $_ | Add-Member -NotePropertyName RBAC_Enabled -NotePropertyValue $_.administrators.administratorType
+   $_ | Add-Member -NotePropertyName RBAC_Enforced -NotePropertyValue $_.administrators.azureAdOnlyAuthentication
+   $_ | Add-Member -NotePropertyName Admin_Login -NotePropertyValue $_.administrators.login
+   $_ | Add-Member -NotePropertyName Admin_Type -NotePropertyValue $_.administrators.principalType
+   $_ | Add-Member -NotePropertyName Admin_SID -NotePropertyValue $_.administrators.sid
+   $_ | Add-Member -NotePropertyName Auditing_Status -NotePropertyValue $SQL_Audit_Properties.state
+   $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $PublicMode
+   $_ | Add-Member -NotePropertyName Network_Bypass -NotePropertyValue $Network_Bypass
+   $_ | Add-Member -NotePropertyName Network_Open_IP -NotePropertyValue ($SQL_Properties | Where-Object name -ne 'AllowAllWindowsAzureIps').Count
+   $_ | Add-Member -NotePropertyName Network_Open_VNET -NotePropertyValue $SQL_Vnet_Properties.Count
+   $_ | Add-Member -NotePropertyName Network_PrivateEndpoint -NotePropertyValue ($_.privateEndpointConnections.properties.privateEndpoint.id -split("/"))[-1]
+   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
+   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+  }
+  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllSQLServers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ }
+}
 # Convert Methods
 Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  Param (
@@ -8994,7 +9140,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
 
  # If Subscription name is given, find Subscription ID
  if ($SubscriptionName) {
-  $SubscriptionID = ($AllSubscription | Where-Object id -eq $SubscriptionName).ID
+  $SubscriptionID = ($AllSubscription | Where-Object Name -eq $SubscriptionName).ID
  }
  # If Subscription ID is given, find Subscription Name
  if ($SubscriptionID) {
@@ -9073,7 +9219,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
    @{Name="UserMail_Or_SPType";Expression={
     if ($ConvertDisplayName) {
      if ($_.principalType -eq "User") {
-      ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).mail
+       ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).mail
      } elseif ($_.principalType -eq "ServicePrincipal") {
       ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).servicePrincipalType
      } elseif ($_.principalType -eq "Group") {
@@ -9081,7 +9227,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
        # Add here to get info on groups (for example to do a recursive search of users)
      } else {
       ""
-      # Add here to get info on groups (for example to do a recursive search of users)
+      # Other types
      }
     } else {
      "Only available when using ConvertDisplayName option"
@@ -9727,6 +9873,12 @@ Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add
   write-host -foregroundcolor "Red" -Object $Error[0]
  }
 }
+Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned Users and Groups
+ Param (
+  [Parameter(Mandatory=$true)]$ServicePrincipalID
+ )
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty appRoleId,id,deletedDateTime
+}
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
@@ -9794,6 +9946,7 @@ Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligi
 }
 Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role - Requires module : Microsoft.Graph.DeviceManagement.Enrolment
  Import-Module Microsoft.Graph.DeviceManagement.Enrolment
+ if (!(Get-MgContext)) { Connect-MgGraph }
  $EligibleRoles = Get-MgRoleManagementDirectoryRoleEligibilityScheduleInstance
  Convert-AzureADRoleAssignements $($EligibleRoles | Select-Object DirectoryScopeId,PrincipalId,RoleDefinitionId)
 
@@ -9907,10 +10060,51 @@ Function Get-AzureADUserCustomAttributes { # Show user information From O365
 
  Get-EXORecipient -Identity $UPN -PropertySets Custom
 }
-Function Set-ADComputerObjectIDAsMSDSConsistencyGUID { # Set the Object ID as the ms-ds-consistencyGUID
+Function Convert-Tag { # Convert Tags to a usable value
  Param (
-  [Parameter(Mandatory=$true)]$ComputerToMigrate
+  $TagToSearch,
+  $TagVariable # Format : name1=value1 , name2=value2
  )
- $ComputerToMigrateGUID = (Get-ADComputer -Identity $ComputerToMigrate).ObjectGUID
- Set-ADComputer -Identity $ComputerToMigrate -Replace @{'mS-DS-ConsistencyGuid'=$ComputerToMigrateGUID}
+ # Replace beginning and end
+ $TrimmedValue = $TagVariable -replace("@{","") -replace(" *}","") -split("; ")
+ (($TrimmedValue | Select-String $TagToSearch) -split"=")[1]
+}
+Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignement Status
+ Param (
+  [Switch]$ShowAssignements # Slow
+ )
+ $AllApps = Get-AzureServicePrincipal -ShowAllColumns
+
+ if ($ShowAssignements) {
+  $AllApps | ForEach-Object {
+   Get-AzureServicePrincipalAssignments -ServicePrincipalID $_.id
+  }
+ } else {
+  $AllApps | Select-Object appdisplayname,servicePrincipalType,accountEnabled,appRoleAssignmentRequired | Group-Object signInAudience,servicePrincipalType,appRoleAssignmentRequired
+ }
+}
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI)
+ Param (
+  $Group
+ )
+ az ad group member list -g $Group --query "[].{userPrincipalName: userPrincipalName, displayName:displayName, mail:mail, UserID:id}" -o json | ConvertFrom-Json
+}
+Function Get-AzureGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
+ Param (
+  $GroupName
+ )
+ az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json | Select-Object displayName,description,@{Name="Members";Expression={(Get-AzureADGroupMembers $_.displayName).displayName -Join(",")}}
+}
+Function Convert-GuidToSourceAnchor { # Convert Azure AD Object ID to Source Anchor (used in AAD Connect)
+ Param (
+  $Guid
+ )
+ $GUID_Obj = [GUID]$Guid
+ [System.Convert]::ToBase64String($GUID_Obj.ToByteArray())
+}
+Function Convert-SourceAnchorToGUID {
+ Param (
+  $SourceAnchor
+ )
+ [Guid]([Convert]::FromBase64String("$SourceAnchor"))
 }
