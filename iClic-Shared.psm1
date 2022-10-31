@@ -722,8 +722,8 @@ Function Get-ChildItemBen { # 'ls' equivalent
   [ValidateSet("Name","Length","LastWrite","Mode")][string]$Sort,
   [switch]$NoColor
  )
- #Available only in powershell 5 or more : https://docs.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences#span-idtextformattingspanspan-idtextformattingspanspan-idtextformattingspantext-formatting
- #Get Colors : https://docs.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences#text-formatting
+ # Available only in powershell 5 or more : https://docs.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences#span-idtextformattingspanspan-idtextformattingspanspan-idtextformattingspantext-formatting
+ # Get Colors : https://docs.microsoft.com/en-us/windows/console/console-virtual-terminal-sequences#text-formatting
 
  $ErrorActionPreference='Stop'
 
@@ -740,13 +740,13 @@ Function Get-ChildItemBen { # 'ls' equivalent
  # $DllPdbList = @(".dll", ".pdb")
  $ConfigsList = @(".cfg", ".conf", ".config", ".json")
  $Multimedia = @(".mp3", ".avi", ".mkv")
- $OfficeDocuments = @(".doc",".xls",".xlsx",".docx")
+ $OfficeDocuments = @(".doc",".xls",".xlsx",".docx",".xml")
 
  #Search
  $Result = Get-ChildItem -ErrorAction Stop -force -Path $Path | Select-Object Mode,Name,Length,
   @{Label='LastWrite'; Expression={Get-Date $_.LastWriteTime -uformat '%Y-%m-%d %T'}},
   @{Label='Size'; Expression={ if ($_.Length -gt '1') {format-FileSize $_.Length }}},
-  @{Label='Type'; Expression={ $Type=$($_.GetType().Name) ; if (! ($Type -like 'DirectoryInfo')) {$Type=$_.Extension.ToLower()};$Type}}
+  @{Label='Type'; Expression={ $Type=$($_.GetType().Name) ; if (! ($Type -like 'DirectoryInfo')) {$Type=$_.Extension.ToLower()};$Type}},Target
 
  #Sort result
  if ($sort) { $Result=$Result | Sort-Object $sort }
@@ -780,7 +780,7 @@ Function Get-ChildItemBen { # 'ls' equivalent
   $EscapeChar=[char]27
   # When in remote session disable color for alignement
   if ($NoColor -or $PSSenderInfo) {
-   $Result | Format-Table LastWrite,Mode,Name,Length,Size
+   $Result | Format-Table LastWrite,Mode,Name,Length,Size,Target
   } else {
    $EscapeChar=[char]27
    $Result | Format-Table LastWrite,
@@ -800,7 +800,7 @@ Function Get-ChildItemBen { # 'ls' equivalent
       else {$color = '0'}
       "${EscapeChar}[${color}m$($_.Name)${EscapeChar}[0m"
      }
-     },Length,Size
+     },Length,Size,Target
   }
 
  } catch { write-host -foregroundcolor "Red" $Error[0] ; return }
@@ -3509,13 +3509,13 @@ Function Get-ADAllServerInSameOU {
  )
  Get-ADComputer -SearchBase ( Get-ADOUFromServer $Servername ) -filter 'OperatingSystem -like "*Windows*"'
 }
-Function Update-ADUPNSuffix {
+Function Update-ADUserUPN_Full_OU {
  Param (
   [Parameter(Mandatory=$true)]$OldUPNSuffix,
   [Parameter(Mandatory=$true)]$NewUPNSuffix,
-  [Parameter(Mandatory=$true)]$Filter
+  $Filter="*"
  )
- Get-ADUser -Filter { Name -like "*" } -properties UserPrincipalName,Created,Modified | Select-Object Name,SamAccountName,UserPrincipalName,Created,Modified |
+ Get-ADUser -Filter { Name -like "$Filter" } -properties UserPrincipalName,Created,Modified | Select-Object Name,SamAccountName,UserPrincipalName,Created,Modified |
  Where-Object {$_.UserPrincipalName -like "*@$OldUPNSuffix"} | ForEach-Object {
   $OldUPN=$_.UserPrincipalName
   $OldSamAccount=($OldUPN -split("@"))[0]
@@ -3535,6 +3535,24 @@ Function Update-ADUPNSuffix {
   }
  }
  write-host "Finished updating"
+}
+Function Update-ADUserUPN {
+ Param (
+  [Parameter(Mandatory=$true)]$SamAccountName,
+  [Parameter(Mandatory=$true)]$NewUPNSuffix
+ )
+ $UserInfo = Get-Aduser -Identity $SamAccountName
+ $OldUPN = $UserInfo.UserPrincipalName
+ $UPNPrefix = ($OldUPN -split("@"))[0]
+ $NewUPN = $UPNPrefix + "@" + $NewUPNSuffix
+
+ if ($OldUPN -eq $NewUPN) {
+  Write-Host -ForegroundColor Cyan "Nothing to do, UPN is already set $NewUPN"
+ } else {
+  write-host "UPN Before : $OldUPN | After: $NewUPN"
+  write-host "Set-ADUser $SamAccountName -UserPrincipalName $NewUPN"
+  Set-ADUser $SamAccountName -UserPrincipalName $NewUPN
+ }
 }
 Function Get-ADSecurityDomain {
  Param (
@@ -8473,7 +8491,7 @@ Function Set-PowershellProfileForAllUsers { # Set a file as the profile for all 
  Param (
   $ProfilePath="$env:OneDriveConsumer\Git\VsCode-Repo\iClic-Perso.ps1"
  )
- $ProfileList=$($PROFILE.AllUsersAllHosts,$PROFILE.AllUsersCurrentHost,$PROFILE.CurrentUserCurrentHost)
+ $ProfileList=$($PROFILE.AllUsersAllHosts,$PROFILE.CurrentUserAllHosts)
  $ProfileList | ForEach-Object {
   try {
    Remove-Item $_ -ErrorAction silentlycontinue
@@ -9076,31 +9094,7 @@ Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
  az ad user list --query '[].{objectId:id,displayName:displayName,userPrincipalName:userPrincipalName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
 }
 # User Rights Management
-Function Get-AzureADUserRBACRights-Old { # Get all User RBAC Rights on one Subscriptions (Works with Users, Service Principals and groups)
- Param (
-  [Parameter(Mandatory=$true)]$UserName,
-  [Parameter(Mandatory=$true)]$SubscriptionID,
-  $SubscriptionName,
-  $UserDisplayName
- )
- #If the subscription name does not exist replace it with the subscription ID
- if (! $SubscriptionName) { $SubscriptionName = $Subscription }
- if (! $UserDisplayName) { $UserDisplayName = $UserName }
-
- az role assignment list --only-show-errors --all --assignee $UserName `
-  --include-classic-administrators --include-groups `
-  --include-inherited --subscription $SubscriptionID `
-  --query '[].{principalName:principalName, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup} '`
-  -o json | ConvertFrom-Json | `
-    Select-object @{Name="UserUPN";Expression={$UserName}},
-    @{Name="UserDisplay";Expression={$UserDisplayName}},
-    @{Name="Subscription";Expression={$SubscriptionName}},
-    @{Name="SubscriptionID";Expression={$SubscriptionID}},
-    resourceGroup,principalType,roleDefinitionName,
-    @{Name="ResourceName";Expression={$_.scope.split("/")[-1]}},
-    scope,principalName
-}
-Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If not Subscription are defined then it will check all subscriptions
+Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
  [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
   [parameter(Mandatory = $true, ParameterSetName="UserAndSubID")]
@@ -9885,7 +9879,8 @@ Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves nam
 }
 Function Convert-AzureADRoleAssignements { # Convert list of Role Assignement with ObjectID and RoleID to Readable list
  Param (
-  $UserObjectList #Format of object must be an object list formated with DirectoryScopedID,PrincipalID,roleDefinitionID
+  $UserObjectList, #Format of object must be an object list formated with DirectoryScopedID,PrincipalID,roleDefinitionID
+  [Switch]$Verbose
  )
 # If object is empty return nothing (does not work if the param is set to mandatory)
 if (! $UserObjectList) {return}
@@ -9895,6 +9890,9 @@ $RoleAssignementConverted=@()
   $RoleID = $_.roleDefinitionId
   $UserInfo = Get-AzureADUserInfo $_.principalId
   $RoleInfo = $RoleDefinitionList | Where-Object roleTemplateId -eq $RoleID
+  if ($Verbose) {
+   Progress -Message "Checking Role $($RoleInfo.displayName) and UPN : " -Value $($UserInfo.userPrincipalName) -PrintTime
+  }
 
   $RoleAssignementConverted+=[pscustomobject]@{
    UserObjectID = $UserInfo.ID;
@@ -10102,7 +10100,7 @@ Function Convert-GuidToSourceAnchor { # Convert Azure AD Object ID to Source Anc
  $GUID_Obj = [GUID]$Guid
  [System.Convert]::ToBase64String($GUID_Obj.ToByteArray())
 }
-Function Convert-SourceAnchorToGUID {
+Function Convert-SourceAnchorToGUID { # Convert Source Anchor to Azure AD Object ID (used in AAD Connect)
  Param (
   $SourceAnchor
  )
