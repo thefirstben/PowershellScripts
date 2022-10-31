@@ -40,8 +40,6 @@
 
 # ToDo : add measure-command function to time functions whenever possible
 
-# Version of Script
-$iClicVersion="50.0"
 # Set future console in QuickEdit mode
 set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1
 # Set Path to C:\
