@@ -3807,6 +3807,8 @@ Function Get-ADUserFromName {
  )
  Get-ADUser -Filter {Name -eq $DisplayName}
 }
+
+# SCCM Management
 Function Set-BusinessCategory {
  Param (
   [Parameter(Mandatory=$true)]$BC #BusinessCategory
@@ -3825,6 +3827,8 @@ Function Get-BusinessCategory {
  if (! $ServerBusinessCategory) {$ServerBusinessCategory="N/A"}
  return $ServerBusinessCategory
 }
+
+# MS GUID Conversion scripts
 Function Get-SchemaGUIDDefinition {
  #Set global to use in other scripts
  # $global:schemaIDGUID = @{}
@@ -3844,6 +3848,8 @@ Function Get-ValueFromGUID {
  if ($GuidResult.Value) { $returnvalue=$GuidResult.Value } else {$returnvalue="GUID Not Found"}
  return $returnvalue
 }
+
+# MS-DS-ConsistencyGUID Management
 Function Get-ADUserGUID {
  Param (
   $user=$env:ComputerName
@@ -3851,7 +3857,7 @@ Function Get-ADUserGUID {
  Try {
  ([GUID]((Get-ADUser $user -property mS-DS-ConsistencyGuid)."mS-DS-ConsistencyGuid")).GUID
  } Catch {
-  write-host -ForegroundColor 'Red' "User $User does not have a GUID"
+  write-host -ForegroundColor 'Red' "User $User does not have an mS-DS-ConsistencyGuid"
  }
 }
 Function Get-ADComputerGUID {
@@ -3861,7 +3867,7 @@ Function Get-ADComputerGUID {
  Try {
  ([GUID]((Get-ADComputer $Computer -property mS-DS-ConsistencyGuid)."mS-DS-ConsistencyGuid")).GUID
  } Catch {
-  write-host -ForegroundColor 'Red' "Computer $Computer does not have a GUID"
+  write-host -ForegroundColor 'Red' "Computer $Computer does not have a mS-DS-ConsistencyGuid"
  }
 }
 Function Set-ADComputerObjectIDAsMSDSConsistencyGUID { # Set the Object ID as the ms-ds-consistencyGUID
@@ -3920,15 +3926,6 @@ Function Get-BitlockerKeyFromID {
 
 # Exchange/O365
 #Exchange Connexion
-Function LoadExchangeModule () {
- if ( ! (Assert-IsCommandAvailable Get-Mailbox -NoError) ) { try {add-pssnapin -ErrorAction stop Microsoft.Exchange.Management.PowerShell.E2010} catch {write-colored "red" "" "Cannot load Exchange Module" ; return $false} }
- Title -PostMsg " | ExchangeModule Loaded"
- return $true
-}
-Function UnloadExchangeModule () {
- try {Remove-PSSnapin -ErrorAction stop Microsoft.Exchange.Management.PowerShell.E2010} catch {write-colored "red" "" "Cannot load Exchange Module"}
- Title
-}
 Function Connect-Exchange () {
  [Parameter(Mandatory=$true)]$ExchangeServerName,
  $SessionName = "Exchange-Local"
@@ -3944,89 +3941,6 @@ Function Connect-Exchange () {
 Function Disconnect-Exchange () {
  #Disconnect all Exchange Local PS Sessions
  Get-PSSession -ErrorAction Ignore -Name "Exchange-Local" | Remove-PSSession
-
- $ModuleSource=get-command -ErrorAction Ignore get-mailbox
- if ($ModuleSource) { Remove-Module -ErrorAction Ignore -Name $($ModuleSource.Source) }
- Title
-}
-# O365 Connexion
-Function Connect-MSOL {
-Param (
- $user,
- [securestring]$Password
-)
- while (! $user) {$user=read-host "Enter O365 UserName"}
- while (! $Password) {$Password=read-host -AsSecureString "Enter O365 Password of account `"$user`" "}
-
- $Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $User,$Password
- try {
-  Connect-MsolService -ErrorAction Stop -Credential $Credential
- } catch {
-  write-colored "Red" "" $error[0]
- }
-}
-Function Connect-O365Old {
- Param (
-  $user=$((get-aduser $env:username -ErrorAction SilentlyContinue).UserPrincipalName), # Format must be UPN of O365 User
-  [securestring]$Password,
-  [switch]$NoProxy=$false
- )
-
- #Get User Variables
- while (! $Password) {$Password=read-host -AsSecureString "Enter O365 Password of account `"$user`" "}
-
- #Get Session Variables
- $Credentials = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $User,$Password
- $URL = "https://ps.outlook.com/powershell"
- $SessionName = "O365-Proxy"
-
- if ($NoProxy) {
-  $proxysettings = New-PSSessionOption
- } else {
-  # $proxysettings = New-PSSessionOption -ProxyAccessType IEConfig
-  $proxysettings = New-PSSessionOption -ProxyAccessType AutoDetect
- }
-
- #Open Session
- try {
-  $SessionNumber = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $URL -Credential $Credentials -Authentication Basic -AllowRedirection -SessionOption $proxysettings -Name $SessionName -WarningAction Ignore -ErrorAction Stop
- } catch {
-  $ConnectionErrorMessage = $Error[0]
-  if ( $ConnectionErrorMessage.Exception.ErrorCode -eq 12180) {
-   # If 'The Proxy Auto-configuration URL was not found' try again with direct connection
-   $SessionNumber = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $URL -Credential $Credentials -Authentication Basic -AllowRedirection -SessionOption $(New-PSSessionOption) -Name $SessionName -WarningAction Ignore -ErrorAction Stop
-  } else {
-   write-host -foregroundcolor "red" "Error during connection : $ConnectionErrorMessage ($($ConnectionErrorMessage.Exception.Message))"
-   return
-  }
- }
-
- #Import command in Shell
- import-module (Import-PSSession $SessionNumber -AllowClobber -DisableNameChecking -ErrorAction Stop) -Global | Out-Null
- Title -PostMsg " | O365 Connected"
-}
-Function Connect-O365 {
- Param (
-  $user,
-  [securestring]$Password,
-  [switch]$NoProxy=$false
- )
- #Get UPN of current user if not set
- if ((! $User) -and (Get-Command get-aduser -ErrorAction SilentlyContinue)) {
-  $user=$((get-aduser $env:username -ErrorAction SilentlyContinue).UserPrincipalName)
- }
- if (! $User) {write-host -ForegroundColor "Red" "UserName is mandatory" ; return}
- if ($NoProxy) {
-  $proxysettings = New-PSSessionOption
- } else {
-  $proxysettings = New-PSSessionOption -ProxyAccessType AutoDetect
- }
- if(!$(Get-InstalledModule -Name 'ExchangeOnlineManagement')) { import-module 'ExchangeOnlineManagement' }
- Connect-IPPSSession -UserPrincipalName $user -PSSessionOption $proxysettings -ConnectionUri "https://ps.protection.outlook.com/powershell-liveid/"
-}
-Function Disconnect-O365 {
- #Disconnect all O365 PS Sessions
- Get-PSSession -ErrorAction Ignore -Name "O365-Proxy" | Remove-PSSession
 
  $ModuleSource=get-command -ErrorAction Ignore get-mailbox
  if ($ModuleSource) { Remove-Module -ErrorAction Ignore -Name $($ModuleSource.Source) }
@@ -4139,18 +4053,6 @@ Function Get-O365MemberOf {
  $UserDN=Get-User $mail | Select-Object -ExpandProperty DistinguishedName
 (Get-Recipient -Filter "Members -eq '$UserDN'" ) | Select-Object Alias,DisplayName,PrimarySmtpAddress,RecipientType | Sort-Object DisplayName
 }
-Function Get-O365Licences {
- Param (
-  $path="C:\Temp\LicensesExport-$(get-date -uformat %Y-%m-%d).csv",
-  $UPNFilter="*" # Can filter with only one domain name for example : *@microsoft.com
- )
- Connect-MSOL
- Get-MsolAccountSku
- Get-MsolUser -all | Where-Object {$_.UserPrincipalName -like $UPNFilter} | Select-Object @{name="LocalUserID";expression={Progress "Checking : $($_.DisplayName)";$_.DisplayName}},
-  UserPrincipalName,Department,Country,Office,PreferredLanguage, @{name="Lic";expression={($_.Licenses).AccountSkuId -join ","}} `
-  | Export-Csv $path -NoTypeInformation -Delimiter ";" -Encoding UTF8
- return $path
-}
 # Checks
 Function Assert-O365DistributionList {
  Param (
@@ -4236,40 +4138,6 @@ Function Assert-O365Account {
  Write-StarLine "-"
 
  return $accountinfo
-}
-# Create Lists
-Function Get-ExchangeResources {
- Param (
-  $OutputFile="C:\Temp\ExchangeResources.csv",
-  $user=$((get-aduser $env:USERNAME).UserPrincipalName)
- )
- while (! $Password) {$Password=read-host -AsSecureString "Enter O365 Password of account `"$user`" "}
-
- Disconnect-O365
- Connect-Exchange
-
- #Get Exchange Information
- $NonMigrated=get-mailbox | Where-Object {$_.IsMailboxEnabled -and $_.IsResource} | Select-Object SamAccountName,DisplayName,PrimarySmtpAddress,
-  @{name="EmailAddresses";expression={$_.EmailAddresses -replace "SMTP:","" -join ","}},Office,
-  @{name="GrantSendOnBehalfTo";expression={$_.GrantSendOnBehalfTo.Name -join ","}},UserPrincipalName,OrganizationalUnit
-
- Disconnect-Exchange
- Write-host
- Connect-O365 $user $password
-
- #Get O365 Information
- $Migrated=Get-Mailbox -RecipientTypeDetails RoomMailbox -ResultSize:Unlimited -filter {DisplayName -like "*" } | Select-Object SamAccountName,DisplayName,PrimarySmtpAddress,
-  @{name="EmailAddresses";expression={$_.EmailAddresses -replace "SMTP:","" -join ","}},Office,
-  @{name="GrantSendOnBehalfTo";expression={$_.GrantSendOnBehalfTo.Name -join ","}},UserPrincipalName,OrganizationalUnit
-
- Disconnect-O365
-
- #Fusion Migrated and Non MigratedResourcesMailbox
- $AllUserList=$NonMigrated+$Migrated
-
- $AllUserList | Export-Csv $OutputFile -encoding "unicode" -notypeinformation -Delimiter ";"
-
- return $OutputFile
 }
 # Misc Functions
 Function New-PSTBackup {
@@ -5607,7 +5475,7 @@ Function Get-KasperskyStatus {
 Function Set-KasperskyServer {
  Param (
   [Parameter(Mandatory=$true)]$ServerIP, # Kaspersky Serveur IP
-  $KasperskyPath="C:\Program Files (x86)\Kaspersky Lab\NetworkAgent\"
+  $KasperskyPath="${env:ProgramFiles(x86)}\Kaspersky Lab\NetworkAgent\"
  )
  if ( ! (Assert-IsAdmin) ) {Write-Colored "red" -ColoredText "You must be admin to run this command" ; return}
  if ( ! (test-path $KasperskyPath)) { write-Colored "Red" -ColoredText "Unavailable path : $KasperskyPath" ; return }
@@ -5618,7 +5486,7 @@ Function Set-KasperskyServer {
 Function Set-KasperskyCert {
  Param (
   $CertLocation="C:\Temp\klserver.cer",
-  $KasperskyPath="C:\Program Files (x86)\Kaspersky Lab\NetworkAgent\"
+  $KasperskyPath="${env:ProgramFiles(x86)}\Kaspersky Lab\NetworkAgent\"
  )
  # Cert location on server %ALLUSERSPROFILE%\Application Data\KasperskyLab\adminkit\1093\cert
  if ( ! (Assert-IsAdmin) ) {Write-Colored "red" "" "You must be admin to run this command" ; return}
@@ -7174,7 +7042,7 @@ Function Install-MSIRemote { #Copy and Install a MSI on a remote computer
   Remove-PSSession $ServerSessionID
  }
 }
-Function Get-GIT_App_LatestVersion {
+Function Get-GITHUB_App_LatestVersion {
  Param (
   [Parameter(Mandatory=$true)]$Developper,
   [Parameter(Mandatory=$true)]$ApplicationName,
@@ -7369,7 +7237,7 @@ Function Install-K9S { # Download and 'install' latest K9S - Add Binary to PATH 
  $FileNameSuffix = "_Windows_x86_64.tar.gz"
  $TempFileName = $FileNamePrefix + $FileNameSuffix
  try {
-  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix
+  $GitHubInfo = Get-GITHUB_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix
   Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
   tar -xvf $TempFileName --directory $InstallDestination\
@@ -7390,7 +7258,7 @@ Function Install-FFMpeg { # Download and 'install' latest FFMpeg - Add Binary to
  $FileNameSuffix = "-win64-gpl-shared.zip"
  $TempFileName = $FileNamePrefix + $FileNameSuffix
  try {
-  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Base
+  $GitHubInfo = Get-GITHUB_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Base
   Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
   Expand-Archive -Path $TempFileName -DestinationPath $InstallDestination -Force
@@ -7414,7 +7282,7 @@ Function Install-Robo3T { # Download and 'install' latest Robo3T - Add Binary to
  $TempFileName = $FileNamePrefix + $FileNameSuffix
 
  try {
-  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
+  $GitHubInfo = Get-GITHUB_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
   #Get Latest Hash to get correct filename
   $LastHash = ((((Invoke-WebRequest $GitHubInfo.TagURL).Links | Where-Object 'data-hovercard-type' -eq 'commit').href -split "/")[-1]).SubString(0,8)
 
@@ -7440,7 +7308,7 @@ Function Install-ShareX { # Download and 'install' latest ShareX - Add Binary to
  $TempFileName = $FileNamePrefix + $FileNameSuffix
 
  try {
-  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
+  $GitHubInfo = Get-GITHUB_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
   Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
   Expand-Archive -Path $TempFileName -DestinationPath $InstallDestination -Force
@@ -7461,7 +7329,7 @@ Function Install-MongoDBCompass { # Download and 'install' latest ShareX - Add B
  $TempFileName = $FileNamePrefix + $FileNameSuffix
 
  try {
-  $GitHubInfo = Get-GIT_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
+  $GitHubInfo = Get-GITHUB_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix -VersionInFileNameType Trimmed
   Get-FileFromURL $GitHubInfo.DownloadUrl -OutputFile $TempFileName
   New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
   Expand-Archive -Path $TempFileName -DestinationPath $InstallDestination -Force
@@ -8866,14 +8734,33 @@ Function Get-AzureEnvironment { # Get Current Environment used by Az Cli
 }
 # Global Extracts
 Function Get-AzureSubscriptions { # Get all subscription of a Tenant
+ [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
-  [Switch]$ShowAll
+  [Switch]$ShowAll,
+  [parameter(Mandatory = $false, ParameterSetName="Name")][String]$Name,
+  [parameter(Mandatory = $false, ParameterSetName="Id")][GUID]$Id
  )
- if ($ShowAll) {
-  az account list --all --query '[].{id:id, name:name, state:state}' -o json | convertfrom-json | select-object id,name,state
+
+ # Default Value
+ $Arguments = '--output', 'json'
+
+ if ( $ShowAll ) {
+  $Arguments += '--all'
  } else {
-  az account list --all --query '[].{id:id, name:name, state:state}' -o json | convertfrom-json | Where-Object {$_.state -eq 'Enabled'} | select-object id,name,state
+  $Arguments += '--only-show-errors' # Ignore warnings when not set to Display All, otherwise this will appear each time
  }
+
+ # Add Query
+ $Arguments += '--query'
+
+ if ($Name) {
+  $Arguments += '"[?name==' + "'" + $Name + "'" + '].{id:id, name:name, state:state}"'
+ } elseif ($Id) {
+  $Arguments += '"[?id==' + "'" + $Id + "'" + '].{id:id, name:name, state:state}"'
+ } else {
+  $Arguments += '"[].{id:id, name:name, state:state}"'
+ }
+ az account list @Arguments | convertfrom-json | select-object id,name,state
 }
 Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups Using Az Cli
  $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
@@ -9142,7 +9029,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
  if ( ($UserPrincipalName) -and (! $UserDisplayName ) ) {
   $UserDisplayName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=displayName&`$filter=userPrincipalName eq '$UserPrincipalName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.displayName
  }
- if ( $UserDisplayName ) {
+ if ( ($UserDisplayName) -and (! $UserPrincipalName ) ) {
   $UserPrincipalName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=userPrincipalName&`$filter=displayName eq '$UserDisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.userPrincipalName
  }
  if ($GroupName) {
@@ -9243,7 +9130,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
  # $GlobalStatus | Sort-Object -Unique id
  $GlobalStatus
 }
-Function Remove-AzureADUserRBACRights { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
+Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
  Param (
   [Parameter(Mandatory=$true)]$UserName,
   [Parameter(Mandatory=$true)]$SubscriptionID,
@@ -9251,9 +9138,7 @@ Function Remove-AzureADUserRBACRights { # Remove all User RBAC Rights on one Sub
   $UserDisplayName
  )
  $CurrentRights = Get-AzureADUserRBACRights -UserDisplayName $UserDisplayName -UserPrincipalName $UserName -SubscriptionID $SubscriptionID -SubscriptionName $SubscriptionName
- $CurrentRights | ForEach-Object {
-  az role assignment delete --assignee $UserName --role $_.roleDefinitionName --scope $_.scope
- }
+ $CurrentRights | ForEach-Object { Remove-AzureADRBACRights -UserName $UserName -Role $_.roleDefinitionName -Scope $_.scope }
 }
 Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to multiple RG of a Subscription following a naming query
  Param (
@@ -9271,6 +9156,34 @@ Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to 
    write-host "Adding role $RoleName for group $GroupObjectID in scope $ScopeID"
    az role assignment create --assignee $GroupObjectID --role $RoleName --scope $ScopeID
   }
+ }
+}
+Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
+ Param (
+  [parameter(Mandatory = $true, ParameterSetName="UserName")]$UserName,
+  [parameter(Mandatory = $true, ParameterSetName="ID")][GUID]$Id,
+  [parameter(Mandatory = $true, ParameterSetName="ID")][ValidateSet("Group","ServicePrincipal","User","ForeignGroup")]$ID_Type,
+  [Parameter(Mandatory=$true)]$Role,
+  [Parameter(Mandatory=$true)]$Scope
+ )
+ if ($ID) {
+  az role assignment create --assignee-object-id $ID --role $Role --scope $Scope --assignee-principal-type $ID_Type
+ } else {
+  az role assignment create --assignee $UserName --role $Role --scope $Scope
+ }
+}
+Function Remove-AzureADRBACRights { # Remove rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
+ Param (
+  [parameter(Mandatory = $true, ParameterSetName="UserName")]$UserName,
+  [parameter(Mandatory = $true, ParameterSetName="ID")][GUID]$Id,
+  [parameter(Mandatory = $true, ParameterSetName="ID")][ValidateSet("Group","ServicePrincipal","User","ForeignGroup")]$ID_Type,
+  [Parameter(Mandatory=$true)]$Role,
+  [Parameter(Mandatory=$true)]$Scope
+ )
+ if ($ID) {
+  az role assignment delete --assignee-object-id $ID --role $Role --scope $Scope --assignee-principal-type $ID_Type
+ } else {
+  az role assignment delete --assignee $UserName --role $Role --scope $Scope
  }
 }
 # User Global rights Checks -> Replaced by new Get-AzureADUserRBACRights
@@ -9877,25 +9790,27 @@ Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves nam
 }
 Function Convert-AzureADRoleAssignements { # Convert list of Role Assignement with ObjectID and RoleID to Readable list
  Param (
-  $UserObjectList, #Format of object must be an object list formated with DirectoryScopedID,PrincipalID,roleDefinitionID
+  $ObjectList, #Format of object must be an object list formated with DirectoryScopedID,PrincipalID,roleDefinitionID
   [Switch]$Verbose
  )
 # If object is empty return nothing (does not work if the param is set to mandatory)
-if (! $UserObjectList) {return}
+if (! $ObjectList) {return}
 $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
 $RoleAssignementConverted=@()
- $UserObjectList | ForEach-Object {
+ $ObjectList | ForEach-Object {
   $RoleID = $_.roleDefinitionId
-  $UserInfo = Get-AzureADUserInfo $_.principalId
+  $ObjectInfo = Get-AzureADObjectInfo -ObjectID $_.principalId
   $RoleInfo = $RoleDefinitionList | Where-Object roleTemplateId -eq $RoleID
   if ($Verbose) {
-   Progress -Message "Checking Role $($RoleInfo.displayName) and UPN : " -Value $($UserInfo.userPrincipalName) -PrintTime
+   Progress -Message "Checking Role $($RoleInfo.displayName) and UPN : " -Value $($ObjectInfo.userPrincipalName) -PrintTime
   }
 
   $RoleAssignementConverted+=[pscustomobject]@{
-   UserObjectID = $UserInfo.ID;
-   UserUPN = $UserInfo.userPrincipalName;
-   UserDisplayName = $UserInfo.displayName;
+   ObjectID = $ObjectInfo.ID;
+   ObjectType = $ObjectInfo.Type;
+   UPN = $ObjectInfo.userPrincipalName;
+   DisplayName = $ObjectInfo.displayName;
+   Mail = $ObjectInfo.Mail;
    RoleName = $RoleInfo.displayName;
    RoleDescription = $RoleInfo.description;
    RoleDescriptionID = $RoleInfo.id
@@ -9916,6 +9831,7 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
    @{name="AdministrativeRole";expression={$CurrentRole}},
    displayName,id,userPrincipalName,mail,
    @{name="RoleDescription";expression={$RoleDescription}},
+   @{name="PermissionType";expression={'Permanent'}},
    @{name="Scope";expression={"Directory"}}
 
   Progress -Message "Checking Role (Scoped Members) : " -Value $CurrentRole -PrintTime
@@ -9928,6 +9844,7 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
    @{name="userPrincipalName";expression={$_.UserInfo.userPrincipalName}},
    @{name="mail";expression={$_.UserInfo.mail}},
    @{name="RoleDescription";expression={$RoleDescription}},
+   @{name="PermissionType";expression={'Permanent (Scoped)'}},
    @{name="Scope";expression={$AdminUnitID = $_.administrativeUnitId ; ($AdminUnitList | Where-Object { $_.ID -eq $AdminUnitID } ).displayName} }
  }
 }
@@ -9944,8 +9861,14 @@ Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible r
  Import-Module Microsoft.Graph.DeviceManagement.Enrolment
  if (!(Get-MgContext)) { Connect-MgGraph }
  $EligibleRoles = Get-MgRoleManagementDirectoryRoleEligibilityScheduleInstance
- Convert-AzureADRoleAssignements $($EligibleRoles | Select-Object DirectoryScopeId,PrincipalId,RoleDefinitionId)
-
+ Convert-AzureADRoleAssignements $($EligibleRoles | Select-Object DirectoryScopeId,PrincipalId,RoleDefinitionId) -Verbose | Select-Object `
+ @{name="AdministrativeRole";expression={$_.RoleName}},displayName,
+ @{name="Id";expression={$_.ObjectID}},
+ @{name="userPrincipalName";expression={$_.UPN}},
+ @{name="mail";expression={$_.Mail}},
+ @{name="RoleDescription";expression={$_.RoleDescription}},
+ @{name="PermissionType";expression={'Eligible'}},
+ @{name="Scope";expression={$_.ScopeId}}
 }
 Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID
  Param (
@@ -10047,6 +9970,21 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  $Result
 }
+Function Get-AzureADObjectInfo { # Get Object GUID Info
+ Param (
+  [Parameter(Mandatory)][GUID]$ObjectID,
+  [Switch]$ShowAll
+ )
+ $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json | ConvertFrom-Json
+ if ($ShowAll) {
+  $Result
+ } else {
+  $Result | Select-Object `
+   @{name="ID";expression={$_.id}},
+   @{name="Type";expression={$_.'@odata.type'}},
+   @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
+ }
+}
 Function Get-AzureADUserCustomAttributes { # Show user information From O365
  Param (
   [Parameter(Mandatory)]$UPN
@@ -10081,7 +10019,7 @@ Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal a
 }
 Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI)
  Param (
-  $Group
+  [Parameter(Mandatory)]$Group
  )
  az ad group member list -g $Group --query "[].{userPrincipalName: userPrincipalName, displayName:displayName, mail:mail, UserID:id}" -o json | ConvertFrom-Json
 }
