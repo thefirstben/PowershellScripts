@@ -1502,7 +1502,7 @@ Function Get-OSInfo {
     $installer=get-content "C:\SMSLogs\*JoinDomain*" | select-string "InstallerUserName" | get-unique | ForEach-Object { $_.Line.Split(":")[1].Trim()}
    }
    if ($installer) { Write-Colored $defaultblue " (Installed by : " "$installer" -nonewline ; write-Colored "Black" ")" } else {write-blank}
-   Write-Colored $defaultblue (Align "SCCM Site Code" $TabSize " : ") Get-SCCMSiteCode
+   Write-Colored $defaultblue (Align "SCCM Site Code" $TabSize " : ") (Get-SCCMSiteCode)
    Write-Colored $defaultblue (Align "Business Category" $TabSize " : ") (Get-BusinessCategory)
   }
 
@@ -1550,6 +1550,8 @@ Function Get-OSInfo {
   }
 
   #Credential Guard
+
+  # Info : https://learn.microsoft.com/en-us/windows/security/threat-protection/device-guard/enable-virtualization-based-protection-of-code-integrity
   Try {
    $CredentialGuardInfo=Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction Stop
    $VirtualizationBasedSecurityStatus=switch ($CredentialGuardInfo.VirtualizationBasedSecurityStatus)
@@ -1564,12 +1566,22 @@ Function Get-OSInfo {
     Write-Colored "Red" (Align "Credential Guard" $TabSize " : ") "No Service Running"
    } else {
     if ($CredentialGuardInfo.SecurityServicesRunning -Contains('1') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "Windows Defender Credential Guard is running" }
-    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('2') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "HVCI is running" }
+    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('2') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "Memory integrity is running (HVCI)" }
     if ($CredentialGuardInfo.SecurityServicesRunning -Contains('3') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "System Guard Secure Launch is running" }
+    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('4') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "SMM Firmware Measurement is running" }
    }
+
   } Catch {
    Write-Colored "Red" (Align "Credential Guard" $TabSize " : ") "Error checking status"
   }
+
+
+  $LSA_Info = Try { Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" } catch { "" }
+  $RunAsPPLColor="Red"
+  if ($LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled' ; $RunAsPPLColor = "DarkYellow" } else { $RunAsPPL = "Disabled" ; $RunAsPPLColor = "Red" }
+  if ($LSA_Info.RunAsPPLBoot -eq 1 ) { $RunAsPPL = 'Enabled OnBoot' ; $RunAsPPLColor = "Green" }
+
+  Write-Colored $RunAsPPLColor (Align "RunAsPPL" $TabSize " : ") $RunAsPPL
 
   #Anvitirus
   $AntivirusResult=Get-AntiVirus
@@ -4757,7 +4769,7 @@ Function Get-WSUSUpdatesFull { # List all Updates on WSUS Servers
 }
 Function Get-WSUSUpdatesWaitingForApproval { # List all updates waiting for approval from
  Param (
-  $ServerGroup="FR-G-ORG-Servers WSUS"
+  [Parameter(Mandatory=$true)]$ServerGroup
  )
  Get-ADGroupMember $ServerGroup | ForEach-Object {
   $CurrentServer=$_.Name
@@ -8989,14 +9001,19 @@ Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (C
    Progress -Message "Checking Keyvaults of subscription : $subscriptionName : " -Value $_.Name -PrintTime
    # $PublicAccess = az keyvault show --name $_.name --query '{publicNetworkAccess:properties.publicNetworkAccess}' -o tsv
    $KV_Properties = az keyvault show --name $_.name --query '{properties:properties}' -o json | ConvertFrom-Json
+   $Bypass = $KV_Properties.properties.networkAcls.bypass
    $PublicMode = if (($KV_Properties.properties.publicNetworkAccess -eq "Enabled") -or ($KV_Properties.properties.networkAcls.defaultAction -eq "Allow")) {
     "Public"
-   } elseif ($_.properties.publicNetworkAccess -eq "Disabled") {
-    "Private"
+   } elseif (($KV_Properties.properties.publicNetworkAccess -eq "Disabled") -and $Bypass) {
+    "Private with Bypass ($Bypass)"
+   } elseif ($KV_Properties.properties.publicNetworkAccess -eq "Disabled") {
+    "FullPrivate"
    } else {
     "Public Filtered"
    }
    $_ | Add-Member -NotePropertyName RBAC_Enabled -NotePropertyValue $KV_Properties.properties.enableRbacAuthorization
+   $_ | Add-Member -NotePropertyName Access_Policies_Count -NotePropertyValue $KV_Properties.properties.accessPolicies.count
+   $_ | Add-Member -NotePropertyName SKU -NotePropertyValue $KV_Properties.properties.sku.name
    $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $PublicMode # Check if it's enough
    # $_ | Add-Member -NotePropertyName Network_Public_Mode -NotePropertyValue $KV_Properties.properties.publicNetworkAccess
    $_ | Add-Member -NotePropertyName Network_Bypass -NotePropertyValue $KV_Properties.properties.networkAcls.bypass
@@ -9086,6 +9103,18 @@ Function Get-AzureSQLServers { # Get all Azure SQL Servers for all Subscription 
   $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllSQLServers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
+Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
+ (Get-AzContext -ListAvailable).Subscription | Where-Object State -eq Enabled | ForEach-Object {
+  Set-AzContext -Subscription $_.id | Out-Null
+  get-AzPolicyExemption -IncludeDescendent | Select-Object -ExcludeProperty Properties,SystemData,ResourceType,Name,ResourceName,*,
+  @{N="P_DiplayName";E={$_.Properties.DisplayName}},
+  @{N="P_ExemptionCategory";E={$_.Properties.ExemptionCategory}},
+  @{N="P_Description";E={$_.Properties.Description}},
+  @{N="P_Expiration";E={$_.Properties.ExpiresOn}},
+  @{N="P_Reference";E={$_.Properties.ExpiresOn}},
+  @{N="P_Meta";E={$_.Properties.Metadata}}
+ } | Export-Csv "C:\Temp\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+}
 # Convert Methods
 Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  Param (
@@ -9098,7 +9127,8 @@ Function Get-AzureADUserFromMail { # Find Azure Ad User info from email
  Param (
   [Parameter(Mandatory=$true)]$Mail
  )
- az ad user list --output json --filter "mail eq '$Mail'" --query '[].{userPrincipalName:userPrincipalName,mail:mail,displayName:displayName,objectId:id}' --only-show-errors | ConvertFrom-Json
+ $Result = az ad user list --output json --filter "mail eq '$Mail'" --query '[].{userPrincipalName:userPrincipalName,mail:mail,displayName:displayName,objectId:id}' --only-show-errors | ConvertFrom-Json
+ if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found with email $Mail" }
 }
 Function Get-AzureSubscriptionNameFromID { #Retrieve name of Subscription from the ID
  Param (
@@ -9178,7 +9208,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   '--all',
   '--include-classic-administrators',
   '--include-groups',
-  '--query' , '"[].{principalName:principalName, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup}"',
+  '--query' , '"[].{principalName:principalName, principalId:principalId, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup}"',
   '--output', 'json'
 
  # Add Arguments if value is set
@@ -9210,22 +9240,21 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   $CurrentSubscription = az role assignment list @ArgumentsOfCurrentSubscription | ConvertFrom-Json | `
   Select-object `
    @{Name="PrincipalName";Expression={ if (! $_.principalName) { "Identity not found" } else { $_.principalName } }},
+   @{Name="principalId";Expression={ $_.principalId }},
    @{Name="UserUPN";Expression={ if ($UserPrincipalName) { $UserPrincipalName } else { "Only used when filtering by user" } }},
    @{Name="UserDisplay";Expression={
     if ($UserDisplayName) {
      $UserDisplayName
     } else {
      if ($ConvertDisplayName) {
-      if ($_.principalType -eq "User") {
-       ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).displayName
-      } elseif ($_.principalType -eq "ServicePrincipal") {
-       ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).displayName
-      } elseif ($_.principalType -eq "Group") {
-       "Group"
-        # Add here to get info on groups (for example to do a recursive search of users)
+      if ($_.principalType -eq "ServicePrincipal") {
+       ($AllServicePrincipals | Where-Object Id -eq $_.principalId).displayName
       } else {
-       ""
+       ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).displayName
       }
+     } elseif ($_.principalType -eq "Group") {
+      "Group"
+       # Add here to get info on groups (for example to do a recursive search of users)
      } else {
       "Only available when using ConvertDisplayName option or when filtering by user"
      }
@@ -9270,13 +9299,14 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
 }
 Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
  Param (
-  [Parameter(Mandatory=$true)]$UserName,
-  [Parameter(Mandatory=$true)]$SubscriptionID,
-  $SubscriptionName,
-  $UserDisplayName
+  [Parameter(Mandatory=$true)]$UserPrincipalName
  )
- $CurrentRights = Get-AzureADUserRBACRights -UserDisplayName $UserDisplayName -UserPrincipalName $UserName -SubscriptionID $SubscriptionID -SubscriptionName $SubscriptionName
- $CurrentRights | ForEach-Object { Remove-AzureADRBACRights -UserName $UserName -Role $_.roleDefinitionName -Scope $_.scope }
+ $CurrentRights = Get-AzureADUserRBACRights -UserPrincipalName $UserPrincipalName
+ $CurrentRights | Where-Object PrincipalType -eq User | ForEach-Object {
+  Progress -Message "Removing permission " -Value "$($_.roleDefinitionName) from user $($UserPrincipalName) from scope $($_.scope)"
+  Remove-AzureADRBACRights -UserName $UserPrincipalName -Role $_.roleDefinitionName -Scope $_.scope
+ }
+ $CurrentRights | Where-Object PrincipalType -ne User | ForEach-Object { "User has permission to Scope $($_.scope) because of the Principal $($_.PrincipalName)" }
 }
 Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to multiple RG of a Subscription following a naming query
  Param (
@@ -9707,29 +9737,55 @@ Function Get-AppRegistrationExpiration { # Get All App Registration Secret
   $MaxExpiration = 730
  )
  $Date_Today = Get-Date
- az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials}" | ConvertFrom-Json | Select-Object `
-  @{Name="AppName";Expression={$_.DisplayName}},
-  @{Name="AppNotes";Expression={$_.notes}},AppId,
-  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
-  @{Name="AppTags";Expression={$_.Tags}},
-  @{Name="AppAudience";Expression={$_.signInAudience}}  -ExpandProperty passwordCredentials | Select-Object -Property `
+ $KeyList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json | Where-Object passwordCredentials | Select-Object `
+ @{Name="AppName";Expression={$_.DisplayName}},AppID,
+ @{Name="AppNotes";Expression={$_.notes}},
+ @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+ @{Name="AppTags";Expression={
+  $TagList = [PSCustomObject]@{}
+  $_.Tags | ForEach-Object {
+    $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1]
+   }
+   $TagList
+ }}, @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | Select-Object -Property `
+  @{Name="SecretDescription";Expression={$_.DisplayName}},
+  @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
+  @{Name="SecretExpiration";Expression={$_.endDateTime}},
+  @{Name="SecretType";Expression={"Key"}},*
+
+ $CertificateList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json | Where-Object keyCredentials | Select-Object `
+ @{Name="AppName";Expression={$_.DisplayName}},AppID,
+ @{Name="AppNotes";Expression={$_.notes}},
+ @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+ @{Name="AppTags";Expression={
+  $TagList = [PSCustomObject]@{}
+  $_.Tags | ForEach-Object {
+    $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1]
+   }
+   $TagList
+ }},
+ @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty keyCredentials | Select-Object -Property `
    @{Name="SecretDescription";Expression={$_.DisplayName}},
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
-   @{Name="SecretExpiration";Expression={$_.endDateTime}},* | Select-Object AppName,AppNotes,AppTags,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,hint,
+   @{Name="SecretExpiration";Expression={$_.endDateTime}},
+   @{Name="SecretType";Expression={"Certificate"}},*
+
+  $KeyList + $CertificateList | Select-Object `
+   AppName,AppNotes,AppTags,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,SecretType,hint,
+   @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.SecretExpiration).Days}} | Select-Object *,
    @{Name="Status";Expression={
-    $TimeUntilExpiration = (NEW-TIMESPAN -Start $Date_Today -End $_.SecretExpiration).Days
-    If ($TimeUntilExpiration -gt $MaxExpiration) {
+    If ($_.TimeUntilExpiration -gt $MaxExpiration) {
      "Infinite"
-    } elseif ($TimeUntilExpiration -ge $Expiration) {
+    } elseif ($_.TimeUntilExpiration -ge $Expiration) {
      "OK for at least $Expiration days"
-    } elseif (($TimeUntilExpiration -le $Expiration) -and ($TimeUntilExpiration -gt 0)) {
-     "Expiring in $TimeUntilExpiration days"
-    } elseif ($TimeUntilExpiration -eq 0) {
+    } elseif (($_.TimeUntilExpiration -le $Expiration) -and ($_.TimeUntilExpiration -gt 0)) {
+     "Expiring in $($_.TimeUntilExpiration) days"
+    } elseif ($_.TimeUntilExpiration -eq 0) {
      "Expires today"
-    } elseif ($TimeUntilExpiration -lt 0) {
+    } elseif ($_.TimeUntilExpiration -lt 0) {
      "Expired"
     } else {
-     $TimeUntilExpiration
+     $_.TimeUntilExpiration
     }
    }}
 }
@@ -9993,6 +10049,19 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
  )
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty appRoleId,id,deletedDateTime
 }
+Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity)
+ Param (
+  [Parameter(Mandatory=$true)]$principalId, # ID of the App to be changed
+  [Parameter(Mandatory=$true)]$resourceDisplayName, # DisplayName of the API to use : example : Microsoft Graph
+  [Parameter(Mandatory=$true)]$resourceId, # ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
+  [Parameter(Mandatory=$true)]$appRoleId # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
+ )
+ $Body = '{\"appRoleId\": \"'+$appRoleId+'\",\"principalId\": \"'+$principalId+'\",\"resourceDisplayName\": \"'+$resourceDisplayName+'\",\"resourceId\": \"'+$resourceId+'\"}'
+ az rest --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" `
+  --method POST `
+  --headers 'Content-Type=application/json' `
+  --body $Body
+}
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
@@ -10239,7 +10308,9 @@ Function Get-AzureGroups { # Get all groups (with members), works with wildcard 
  Param (
   $GroupName
  )
- az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json | Select-Object displayName,description,@{Name="Members";Expression={(Get-AzureADGroupMembers $_.displayName).displayName -Join(",")}}
+ az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json |`
+  Select-Object displayName,description,
+  @{Name="Members";Expression={Get-AzureADGroupMembers $_.displayName}}
 }
 Function Convert-GuidToSourceAnchor { # Convert Azure AD Object ID to Source Anchor (used in AAD Connect)
  Param (
@@ -10253,4 +10324,55 @@ Function Convert-SourceAnchorToGUID { # Convert Source Anchor to Azure AD Object
   $SourceAnchor
  )
  [Guid]([Convert]::FromBase64String("$SourceAnchor"))
+}
+Function Send-Mail {  # To make automated Email, it requires an account with a mailbox
+ Param (
+  [Parameter(Mandatory)]$UserMail,
+  [Parameter(Mandatory)]$SenderUPN,
+  [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
+  [Parameter(Mandatory)]$Subject
+ )
+
+ Open-MgGraphConnection -Scopes 'Mail.Send' -ContextScope 'Process'
+
+ $params = @{
+  Message = @{
+   Subject = $Subject
+   Body = @{ ContentType = "HTML" ; Content = $MessageContent }
+   ToRecipients = @( @{ EmailAddress = @{ Address = $UserMail } } )
+  }
+  SaveToSentItems = "true"
+ }
+ Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
+}
+
+# VPN
+Function Get-VPNUserFromIP {
+ Param (
+  $IP,
+  [Parameter(Mandatory)]$VPNServerName
+ )
+ Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object {$_.VPN_IP -eq $IP} | Select-Object DateTime,Status,UserUPN,@{Name="UserName";Expression={(Get-ADUserFromUPN $_.UserUPN).Name}},VPN_IP
+}
+Function Get-VPNIPFromUser {
+ Param (
+  $SamAccountName=$Env:USERNAME,
+  [Parameter(Mandatory)]$VPNServerName
+ )
+ Try {
+  $UPN=(get-aduser $SamAccountName).UserPrincipalName
+  Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object { ($_.UserUPN -eq $UPN ) -and ($_.Status -eq "IP Assignement")} | Select-Object DateTime,UserUPN,VPN_IP
+ } Catch {
+  Write-Host -ForegroundColor Red $Error[0]
+ }
+}
+Function Get-VPNInfoFromUser {
+ Param (
+  $SamAccountName=$Env:USERNAME,
+  [Parameter(Mandatory)]$VPNServerName,
+  $NumberOfDay='7'
+ )
+ $UPN=(get-aduser $SamAccountName).UserPrincipalName
+ write-host -ForegroundColor Cyan "Searching for VPN connection info for user $SamAccountName ($UPN) in the past $NumberOfDay days on server $VPNServerName (Initial search may take some time, please wait)"
+ Get-EventLogNPSDetailed -ServerName $VPNServerName -StartTime $(Get-Date).addDays(-$NumberOfDay)  | Where-Object UPN -eq $UPN
 }
