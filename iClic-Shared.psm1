@@ -37,6 +37,7 @@
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
 # AzureAD for : Set-AzureADUser, Get-AzureADUser etc.
+# For Azure : Azure CLI
 
 # ToDo : add measure-command function to time functions whenever possible
 
@@ -8010,7 +8011,7 @@ Function Get-WallpaperForAllUsers { # Check the wallpaper applied for all users 
 }
 Function Get-DuplicatePSModules { # Check duplicate Powershell modules as the old versions are not automatically removed (by default only checks one module folder)
  Param (
-  $ModulePaths=@("$env:USERPROFILE\Documents\PowerShell\Modules"),
+  $ModulePaths=($env:PSModulePath -split ";")[0], # Look only the first one by default, other are usually system ones
   [Switch]$Remove
  )
  #$PSModulePath variable contains too many folder. Specific Apps folders may appear here also.
@@ -8018,24 +8019,28 @@ Function Get-DuplicatePSModules { # Check duplicate Powershell modules as the ol
  $OldModuleList = @()
 
  $ModulePaths | ForEach-Object {
-  Get-ChildItem $_ -Directory | ForEach-Object {
-   $CurrentModule = $_
-   $ModuleVersions = Get-ChildItem $CurrentModule -Directory | Select-Object Name,FullName,@{Label='Version';Expression={[Version]$_.Name}} | Sort-Object Version
-   if ($ModuleVersions.count -gt 1) {
-    $LatestVersion = $($ModuleVersions | Select-Object -Last 1).Name
-    $ModuleVersions | Select-Object -Index 0, ($ModuleVersions.Count -2) | ForEach-Object {
-     $OldModuleList+=[pscustomobject]@{Name = $_.FullName ; LatestVersion = $LatestVersion}
+  Try {
+   Get-ChildItem $_ -Directory -ErrorAction Stop | ForEach-Object {
+    $CurrentModule = $_
+    $ModuleVersions = Get-ChildItem $CurrentModule -Directory | Select-Object Name,FullName,@{Label='Version';Expression={[Version]$_.Name}} | Sort-Object Version
+    if ($ModuleVersions.count -gt 1) {
+     $LatestVersion = $($ModuleVersions | Select-Object -Last 1).Name
+     $ModuleVersions | Select-Object -Index 0, ($ModuleVersions.Count -2) | ForEach-Object {
+      $OldModuleList+=[pscustomobject]@{Name = $_.FullName ; LatestVersion = $LatestVersion}
+     }
     }
    }
-  }
-  If ($Remove) {
-   # Remove-Item $OldModuleList.Name -Recurse -Verbose -Force
-   $OldModuleList | ForEach-Object {
-    Write-Host -ForegroundColor Cyan "Removing $($_.Name)"
-    Remove-Item $_.Name -Recurse -Force
+   If ($Remove) {
+    # Remove-Item $OldModuleList.Name -Recurse -Verbose -Force
+    $OldModuleList | ForEach-Object {
+     Write-Host -ForegroundColor Cyan "Removing $($_.Name)"
+     Remove-Item $_.Name -Recurse -Force
+    }
+   } else {
+    $OldModuleList
    }
-  } else {
-   $OldModuleList
+  } Catch {
+   write-host -foregroundcolor "red" $error[0]
   }
  }
 }
@@ -8834,6 +8839,37 @@ Function Get-EncryptionCertificate { # Retrive certificat that can be used for d
  return $Certificate
 }
 
+# VPN (OnPrem)
+Function Get-VPNUserFromIP {
+ Param (
+  $IP,
+  [Parameter(Mandatory)]$VPNServerName
+ )
+ Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object {$_.VPN_IP -eq $IP} | Select-Object DateTime,Status,UserUPN,@{Name="UserName";Expression={(Get-ADUserFromUPN $_.UserUPN).Name}},VPN_IP
+}
+Function Get-VPNIPFromUser {
+ Param (
+  $SamAccountName=$Env:USERNAME,
+  [Parameter(Mandatory)]$VPNServerName
+ )
+ Try {
+  $UPN=(get-aduser $SamAccountName).UserPrincipalName
+  Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object { ($_.UserUPN -eq $UPN ) -and ($_.Status -eq "IP Assignement")} | Select-Object DateTime,UserUPN,VPN_IP
+ } Catch {
+  Write-Host -ForegroundColor Red $Error[0]
+ }
+}
+Function Get-VPNInfoFromUser {
+ Param (
+  $SamAccountName=$Env:USERNAME,
+  [Parameter(Mandatory)]$VPNServerName,
+  $NumberOfDay='7'
+ )
+ $UPN=(get-aduser $SamAccountName).UserPrincipalName
+ write-host -ForegroundColor Cyan "Searching for VPN connection info for user $SamAccountName ($UPN) in the past $NumberOfDay days on server $VPNServerName (Initial search may take some time, please wait)"
+ Get-EventLogNPSDetailed -ServerName $VPNServerName -StartTime $(Get-Date).addDays(-$NumberOfDay)  | Where-Object UPN -eq $UPN
+}
+
 # Azure
 #Azure Connection
 Function Connect-AzureCli {
@@ -8914,31 +8950,6 @@ Function Get-AzureManagementGroups_Other { # Get all subscription and associated
  $response = Search-AzGraph -Query $Query
  $response | Select-Object name,id,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
 }
-Function Get-AzureAppRegistration {  # Get all App Registration of a Tenant
- az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
-}
-Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
- Param (
-  $Filter,
-  [Switch]$ShowAllColumns,
-  [Switch]$Fast
- )
- $Arguments = '--output', 'json', '--all', '--only-show-errors'
-
- if ( ! $ShowAllColumns ) {
-  $Arguments += '--query'
-  if ($Fast) {
-   $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
-  } else {
-   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired}"'
-  }
- }
- if ($filter) {
-  $Arguments += "--filter"
-  $Arguments += $filter
- }
- az ad sp list @Arguments | ConvertFrom-Json
-}
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
   [parameter(Mandatory = $false, ParameterSetName="Fast")][Switch]$Fast,
@@ -8953,7 +8964,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
  }
 }
-Function Get-AzurePublicIPs {
+Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptions | foreach-object {
   az network public-ip list --subscription $_.id -o json | convertfrom-json | Select-Object @{Name="SubscriptionName";Expression={$_.Name}},location,resourceGroup,ipAddress,linkedPublicIpAddress
  }
@@ -8969,7 +8980,7 @@ Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
    $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
   }
-  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
  ProgressClear
 }
@@ -9532,11 +9543,17 @@ Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using RES
  }
 }
 # App Registration [Only]
+Function Get-AzureAppRegistration {  # Get all App Registration of a Tenant
+ az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
+}
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationID
  )
  az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object ID,userPrincipalName,displayName
+}
+Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Registration
+ Get-AzureAppRegistration | ForEach-Object { Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID | Export-Csv "C:\Temp\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append }
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
@@ -9851,8 +9868,7 @@ Function Set-AppRegistrationTags { # Set Tag on App Registration, can add or ove
 
   write-colored -Color Cyan -PrintDate -NonColoredText "Body sent to Graph API : " $Body
 
-  az rest --uri "https://graph.microsoft.com/v1.0/applications/$($SP_Info.ID)" `
-   --method PATCH `
+  az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($SP_Info.ID)" `
    --headers "Content-Type=application/json" `
    --body $body
 
@@ -9866,11 +9882,55 @@ Function Set-AppRegistrationTags { # Set Tag on App Registration, can add or ove
 
 }
 # Service Principal (Enterprise Applications) [Only]
+Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
+ Param (
+  $Filter,
+  [Switch]$ShowAllColumns,
+  [Switch]$Fast
+ )
+ $Arguments = '--output', 'json', '--all', '--only-show-errors'
+
+ if ( ! $ShowAllColumns ) {
+  $Arguments += '--query'
+  if ($Fast) {
+   $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
+  } else {
+   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired}"'
+  }
+ }
+ if ($filter) {
+  $Arguments += "--filter"
+  $Arguments += $filter
+ }
+ az ad sp list @Arguments | ConvertFrom-Json
+}
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  Param (
   [Parameter(Mandatory=$true)]$ServicePrincipalID
  )
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" --header Content-Type=application/json | ConvertFrom-Json).Value
+ $Result = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" --header Content-Type=application/json | ConvertFrom-Json).Value
+ $Result | ForEach-Object {
+  $OwnerType = ($_.'@odata.id' -split('/'))[-1]
+  $OwnerID = ($_.'@odata.id' -split('/'))[-2]
+  if ($OwnerType -eq 'Microsoft.DirectoryServices.ServicePrincipal') {
+   Get-AzureServicePrincipalInfo -ID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
+   @{name="OwnerType";expression={$OwnerType}},
+   @{name="OwnerID";expression={$OwnerID}},
+   @{name="OwnerName";expression={$_.displayName}},
+   @{name="OwnerUPN";expression={""}}
+  } elseif ($OwnerType -eq 'Microsoft.DirectoryServices.User') {
+   Get-azureaduserinfo -UPNorID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
+   @{name="OwnerType";expression={$OwnerType}},
+   @{name="OwnerID";expression={$OwnerID}},
+   @{name="OwnerName";expression={$_.displayName}},
+   @{name="OwnerUPN";expression={$_.userPrincipalName}}
+  } else {
+   [pscustomobject]@{ServicePrincipalID="$ServicePrincipalID";OwnerType="$OwnerType";OwnerID="$OwnerID";OwnerName="Not Implemented";OwnerUPN="Not Implemented"}
+  }
+ }
+}
+Function Get-AzureServicePrincipalOwnerForAllApps { # Get Owner(s) of all Service Principals
+ Get-AzureServicePrincipal | ForEach-Object { Get-AzureServicePrincipalOwner -ServicePrincipalID $_.id | Export-Csv "C:\Temp\AzureServicePrincipalOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append }
 }
 Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (it is different than App Registration Owners) - The ID must be the ObjectID of the 'Enterprise App'
  Param (
@@ -9884,8 +9944,8 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
 
  $Body = '{\"@odata.id\":\"https://graph.microsoft.com/v1.0/directoryObjects/'+$UserObjectID+'\"}'
 
- az rest `
-   --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" `
+ az rest --method POST `
+   --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" `
    --headers Content-Type=application/json `
    --body $Body
 }
@@ -10030,8 +10090,7 @@ Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add
 
   write-colored -Color Cyan -PrintDate -NonColoredText "Body sent to Graph API : " $Body
 
-  az rest --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($SP_Info.ID)" `
-   --method PATCH `
+  az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$($SP_Info.ID)" `
    --headers "Content-Type=application/json" `
    --body $body
 
@@ -10057,8 +10116,7 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
   [Parameter(Mandatory=$true)]$appRoleId # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
  )
  $Body = '{\"appRoleId\": \"'+$appRoleId+'\",\"principalId\": \"'+$principalId+'\",\"resourceDisplayName\": \"'+$resourceDisplayName+'\",\"resourceId\": \"'+$resourceId+'\"}'
- az rest --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" `
-  --method POST `
+ az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" `
   --headers 'Content-Type=application/json' `
   --body $Body
 }
@@ -10175,13 +10233,58 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  # ($result | ? targetTypes -Contains "user").count
  # ($result | ? targetTypes -Contains "Group").count
  # ($result | ? targetTypes -Contains "Message").count
- $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/schemaExtensions" --header Content-Type="application/json" -o json | convertfrom-json
+ $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/schemaExtensions" --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  While ($CurrentResult.'@odata.nextLink') {
   $NextRequest = $CurrentResult.'@odata.nextLink'
-  $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
+  $CurrentResult = az rest --method GET --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
   $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  }
+}
+# Defender for Cloud (MDC)
+Function Get-MDCConfiguration { # Retrieve Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AZ CLI rest API Access)
+ $GlobalResult = $()
+ $Subscriptions = Get-AzureSubscriptions
+ #Variable to follow up the columns without having to rebuild the entire object (Otherwise export-csv only export columns depending on the first object created)
+ $MemberList = $('SubscriptionName','SubscriptionID','pricingTier','EnabledOn')
+ $Subscriptions | ForEach-Object {
+  $SubscriptionName = $_.Name
+  $SubscriptionID = $_.ID
+  Progress -PrintTime -Message "Checking subscription " -Value "$($_.ID) ($($_.Name))"
+
+  # Export all information of MDC in current subscription
+  $Result = (az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/?api-version=2023-01-01"  `
+   --headers "Content-Type=application/json" | ConvertFrom-Json).Value `
+   | Select-Object id,Name,
+   @{Name="SubscriptionName";Expression={$SubscriptionName}},
+   @{Name="SubscriptionID";Expression={$SubscriptionID}},
+   @{Name="pricingTier";Expression={$_.properties.pricingTier}},
+   @{Name="EnabledOn";Expression={$_.properties.enablementTime}},
+   @{Name="Extensions";Expression={$_.properties.Extensions}},
+   @{Name="additionalExtensionProperties";Expression={$_.properties.Extensions.additionalExtensionProperties}}
+
+   # Convert Extension and Additional Extension content to additional columns built from the current Extension being used
+   $Result | ForEach-Object {
+   for ($ExtensionCount = 0; $ExtensionCount -le $($_.Extensions.count-1); $ExtensionCount++) {
+    $ExtensionName = "EXT_" + $_.Extensions.Name[$ExtensionCount]
+    $ExtensionValue = $_.Extensions.IsEnabled[$ExtensionCount]
+    $ExtensionAdditionalProperties = $_.additionalExtensionProperties[$ExtensionCount]
+    $MemberList+=$ExtensionName
+    $_ | Add-Member -NotePropertyName $ExtensionName -NotePropertyValue $ExtensionValue
+    if ($ExtensionAdditionalProperties) {
+     $AdditionalPropertiesName = ($ExtensionAdditionalProperties | get-member -MemberType NoteProperty).Name
+     $AdditionalPropertiesValue = $ExtensionAdditionalProperties.$AdditionalPropertiesName
+     $_ | Add-Member -NotePropertyName $($ExtensionName+$AdditionalPropertiesName) -NotePropertyValue $AdditionalPropertiesValue
+     $MemberList+=$($ExtensionName+$AdditionalPropertiesName)
+    }
+   }
+  }
+  $GlobalResult+=$Result
+ }
+ # Remove duplicate values
+ $MemberList = $MemberList | Select-Object -Unique
+ ProgressClear
+ $GlobalResult | Select-Object $MemberList | Export-Csv "C:\Temp\MDCConfiguration_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
 }
 # Misc
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
@@ -10344,35 +10447,4 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
   SaveToSentItems = "true"
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
-}
-
-# VPN
-Function Get-VPNUserFromIP {
- Param (
-  $IP,
-  [Parameter(Mandatory)]$VPNServerName
- )
- Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object {$_.VPN_IP -eq $IP} | Select-Object DateTime,Status,UserUPN,@{Name="UserName";Expression={(Get-ADUserFromUPN $_.UserUPN).Name}},VPN_IP
-}
-Function Get-VPNIPFromUser {
- Param (
-  $SamAccountName=$Env:USERNAME,
-  [Parameter(Mandatory)]$VPNServerName
- )
- Try {
-  $UPN=(get-aduser $SamAccountName).UserPrincipalName
-  Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object { ($_.UserUPN -eq $UPN ) -and ($_.Status -eq "IP Assignement")} | Select-Object DateTime,UserUPN,VPN_IP
- } Catch {
-  Write-Host -ForegroundColor Red $Error[0]
- }
-}
-Function Get-VPNInfoFromUser {
- Param (
-  $SamAccountName=$Env:USERNAME,
-  [Parameter(Mandatory)]$VPNServerName,
-  $NumberOfDay='7'
- )
- $UPN=(get-aduser $SamAccountName).UserPrincipalName
- write-host -ForegroundColor Cyan "Searching for VPN connection info for user $SamAccountName ($UPN) in the past $NumberOfDay days on server $VPNServerName (Initial search may take some time, please wait)"
- Get-EventLogNPSDetailed -ServerName $VPNServerName -StartTime $(Get-Date).addDays(-$NumberOfDay)  | Where-Object UPN -eq $UPN
 }
