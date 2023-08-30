@@ -4249,6 +4249,10 @@ Function Get-DistributionGroupMemberRecursive {
 		}
 	}
 }
+Function Get-ExchangeRoles {
+ Connect-ExchangeOnline
+ Get-ManagementRoleAssignment -GetEffectiveUsers | Select-Object *,@{name="Account_Type";expression={Assert-IsANumber $_.User}} | Export-CSV -Append C:\Temp\EchangeRoleAssignment_$([DateTime]::Now.ToString("yyyyMMdd")).csv
+}
 
 # Windows Update
 Function Get-WindowsUpdateConfig {
@@ -9512,6 +9516,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
  }
 }
 # App Registration / Service Principal check
+# App Registration [Only]
 Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
@@ -9527,22 +9532,6 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
  }
 }
-Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
- Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
-  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
-  [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
-  $ValuesToShow = "*" # Format is : value1,value2
- )
- if ($AppID) {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'" --headers Content-Type=application/json | ConvertFrom-Json).value
- } elseif ($ID) {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
- } elseif ($DisplayName) {
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
- }
-}
-# App Registration [Only]
 Function Get-AzureAppRegistration {  # Get all App Registration of a Tenant
  az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
 }
@@ -9882,6 +9871,21 @@ Function Set-AppRegistrationTags { # Set Tag on App Registration, can add or ove
 
 }
 # Service Principal (Enterprise Applications) [Only]
+Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
+ Param (
+  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
+  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
+  [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
+  $ValuesToShow = "*" # Format is : value1,value2
+ )
+ if ($AppID) {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'" --headers Content-Type=application/json | ConvertFrom-Json).value
+ } elseif ($ID) {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ } elseif ($DisplayName) {
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ }
+}
 Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
  Param (
   $Filter,
@@ -9903,6 +9907,13 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   $Arguments += $filter
  }
  az ad sp list @Arguments | ConvertFrom-Json
+}
+Function Get-AzureServicePrincipalFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationID
+ )
+ $ServicePrincipalID = ((az ad sp show --id $AppRegistrationID --query "{id:id}") | convertfrom-json).ID
+ az ad sp show --id $ServicePrincipalID | ConvertFrom-Json
 }
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  Param (
@@ -10120,6 +10131,12 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
   --headers 'Content-Type=application/json' `
   --body $Body
 }
+Function Set-AzureServicePrincipalAssignementRequired {
+ Param (
+  [Parameter(Mandatory=$true)]$ServicePrincipalID
+ )
+ az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
+}
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
@@ -10173,7 +10190,10 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
   Progress -Message "Checking Role (Scoped Members) : " -Value $CurrentRole -PrintTime
   #Scoped Members
   (az rest --method GET --uri https://graph.microsoft.com/v1.0/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
-  @{name="UserInfo";expression={Get-AzureADUserInfo -UPNorID $_.roleMemberInfo.ID}},* | Select-Object `
+  @{name="UserInfo";expression={
+   Progress -Message "Checking Role (Scoped Members) : " -Value "$CurrentRole - $($_.roleMemberInfo.ID)" -PrintTime
+   Get-AzureADUserInfo -UPNorID $_.roleMemberInfo.ID
+   }},* | Select-Object `
    @{name="AdministrativeRole";expression={$CurrentRole}},
    @{name="displayName";expression={$_.roleMemberInfo.DisplayName}},
    @{name="id";expression={$_.roleMemberInfo.ID}},
