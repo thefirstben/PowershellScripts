@@ -33,6 +33,8 @@
 # Added --only-show-errors on all Az AD Cmdlets until the migration is dones to Microsoft Graph
 # Azure Query filter
 #  az account list --all --query "[?id=='$ObjectID'].{id:id, name:name}"
+# To add dynamic number of values (Example to show all tags)
+#  Get-MDCConfiguration
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -196,13 +198,6 @@ Function prompt { # Used to have a "pretty" Powershell prompt showing important 
  write-colored $ColorGray -ColoredText "@" -nonewline
  write-colored $promptcolor -ColoredText $P_ComputerName -nonewline
  write-colored $ColorGray -ColoredText "] " -nonewline
-
- if ($Global:AzurePrompt) {
-  if (get-command kubectl -CommandType Application -ErrorAction SilentlyContinue){
-   $PromptAzure = Set-PromptAzure $(kubectl config current-context)
-   write-colored -Color $PromptAzure[0] -ColoredText "$([char]16)$($PromptAzure[1])$([char]17) " -nonewline
-  }
- }
 
  $CurrentPath = "$($executionContext.SessionState.Path.CurrentLocation)" -replace "Microsoft.PowerShell.Core\\FileSystem::",""
 
@@ -1096,10 +1091,23 @@ Function Assert-IsDLLInRegistry {
 }
 Function Assert-IsInAAD {
  Param (
-  [Parameter(Mandatory=$true)]$UPNorID
+  [Parameter(Mandatory=$true)]$NameOrID, # Works with Name (UPN for users) & ID
+  [ValidateSet("Group","User")]$Type="User"
  )
- $Result = az ad user show --id $UPNorID --only-show-errors 2>$ErrorMessage
+ if ($Type -eq 'Group') {
+  $Result = az ad group show -g $NameOrID 2>$ErrorMessage
+ } else {
+  $Result = az ad user show --id $NameOrID 2>$ErrorMessage
+ }
  if ($Result) { return $True } else { return $False }
+}
+Function Assert-IsGUID {
+ Param (
+  [Parameter(Mandatory)]$Value
+ )
+ $ObjectGuid = [System.Guid]::empty
+ # Returns True if successfully parsed, otherwise returns False.
+ if ( [System.Guid]::TryParse($Value,[System.Management.Automation.PSReference]$ObjectGuid) ) { return $true } else {return $false}
 }
 
 # Tests
@@ -1579,8 +1587,8 @@ Function Get-OSInfo {
 
   $LSA_Info = Try { Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" } catch { "" }
   $RunAsPPLColor="Red"
-  if ($LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled' ; $RunAsPPLColor = "DarkYellow" } else { $RunAsPPL = "Disabled" ; $RunAsPPLColor = "Red" }
-  if ($LSA_Info.RunAsPPLBoot -eq 1 ) { $RunAsPPL = 'Enabled OnBoot' ; $RunAsPPLColor = "Green" }
+  if ($LSA_Info.RunAsPPL -eq 0) { $RunAsPPL = 'Disabled' ; $RunAsPPLColor = "Red" } elseif ( $LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled' ; $RunAsPPLColor = "DarkYellow" } else { $RunAsPPL = "Unknown" ; $RunAsPPLColor = "Red" }
+  if ($LSA_Info.RunAsPPLBoot -gt 0 ) { $RunAsPPL = 'Enabled OnBoot' ; $RunAsPPLColor = "Green" }
 
   Write-Colored $RunAsPPLColor (Align "RunAsPPL" $TabSize " : ") $RunAsPPL
 
@@ -3963,7 +3971,7 @@ Function Get-BitlockerKeyFromID {
    | Where-Object {$_.ID -like "*$ID*"}
 }
 
-# Exchange/O365
+# Exchange/O365 - Old Not Updated
 #Exchange Connexion
 Function Connect-Exchange () {
  [Parameter(Mandatory=$true)]$ExchangeServerName,
@@ -4249,10 +4257,6 @@ Function Get-DistributionGroupMemberRecursive {
 		}
 	}
 }
-Function Get-ExchangeRoles {
- Connect-ExchangeOnline
- Get-ManagementRoleAssignment -GetEffectiveUsers | Select-Object *,@{name="Account_Type";expression={Assert-IsANumber $_.User}} | Export-CSV -Append C:\Temp\EchangeRoleAssignment_$([DateTime]::Now.ToString("yyyyMMdd")).csv
-}
 
 # Windows Update
 Function Get-WindowsUpdateConfig {
@@ -4518,7 +4522,7 @@ Function Convert-WuaResultCodeToName {
  }
  return $Result
 }
-function Get-WuHistory {
+function Get-WuHistory { # Get latest updates
  # Get a WUA Session
  $session = (New-Object -ComObject 'Microsoft.Update.Session')
  # Query the latest 1000 History starting with the first recordp
@@ -7621,6 +7625,62 @@ Function Install-SSMS { # Download and install latest SQL Server Management Stud
  Remove-Item $SetupFileName
 }
 
+# Git
+Function Get-GitLabGroups {
+ Param (
+  $Access_Token = $env:GitLabKey,
+  $MaxResult = 1000,
+  [Parameter(Mandatory=$true)]$GitLabURL #"https://FQDN/api/v4"
+ )
+ curl -s "$GitLabURL/groups?private_token=$Access_Token;per_page=$MaxResult" | ConvertFrom-Json | Select-Object name,full_path,visibility,
+ @{name="LDAPGroup_Reporter(20)";expression={($_.ldap_group_links | Where-Object group_access -eq 20).cn -join ";"}},
+ @{name="LDAPGroup_Owner(50)";expression={($_.ldap_group_links | Where-Object group_access -eq 50).cn -join ";"}},
+ @{name="LDAPGroup_Maintainer(40)";expression={($_.ldap_group_links | Where-Object group_access -eq 40).cn -join ";"}},
+ @{name="LDAPGroup_Developer(30)";expression={($_.ldap_group_links | Where-Object group_access -eq 30).cn -join ";"}} | Sort-Object full_path
+}
+Function Get-GitLabRunners {
+ Param (
+  $Access_Token = $env:GitLabKey,
+  [Parameter(Mandatory=$true)]$GitLabURL #"https://FQDN/api/v4"
+ )
+ curl -s "$GitLabURL/runners/all?private_token=$Access_Token" | ConvertFrom-Json | Select-Object description,ip_address
+}
+Function Get-GitLabUsers {
+ Param (
+  $Access_Token = $env:GitLabKey,
+  $NumberOfPages = 4,
+  [Parameter(Mandatory=$true)]$GitLabURL #"https://FQDN/api/v4"
+ )
+ $UserList = @()
+ For ($i=1; $i -le $NumberOfPages; $i++) {
+  $UserList += curl -s -H "private-token: $Access_Token" "$GitLabURL/users?per_page=100&page=$i" | ConvertFrom-Json | `
+   Select-Object Id,name,username,state,created_at,last_sign_in_at,last_activity_on,using_license_seat,external,two_factor_enabled,is_admin,email
+ }
+ $UserList
+}
+Function Set-GitConfig {
+ Param (
+  $UserName = $env:USERNAME,
+  $Email,
+  [switch]$Proxy,
+  $ProxyURL
+ )
+ git config --global user.name $UserName
+ if ($Email) { git config --global user.email $Email }
+ # If error http HTTP Basic : Access Denied => git config --global http.emptyAuth true
+ if ($Proxy -and $ProxyURL) {
+  git config --global http.proxy $ProxyURL
+ } else {
+  git config --global --unset http.proxy
+ }
+}
+Function Get-GitConfig {
+ write-host -ForegroundColor Blue "Global"
+ git config --global --list
+ write-host -ForegroundColor Blue "System"
+ git config --system --list
+}
+
 # Misc Functions
 Function Add-ValuesToArray { # Example to add values to a Powershell Array
  Param (
@@ -8516,6 +8576,53 @@ Function Wait-ProcessTermination { # Script used to wait for the end of a proces
   Start-Sleep -s 1
  }
 }
+Function MassCheckLinux {
+ Param (
+  $UserName=$env:USERNAME,
+  $CommandLine=" `"hostnamectl | grep 'Operating System' | awk -F':' '{print ```$2}' | xargs`"",
+  [Parameter(Mandatory=$true)]$Servers # List of Server Names
+
+ )
+ $ServerList=@()
+ $Servers | ForEach-Object {
+  $CurrentServer=$_
+  Progress  -Message "Checking : "  -Value  $CurrentServer
+  $PlinkString="plink -no-antispoof -ssh -batch $UserName@$CurrentServer"
+  $FullCommandLine=$PlinkString+$CommandLine
+  $OsVersionVersion=invoke-expression $FullCommandLine
+  $ServerList+=New-Object PSObject -Property @{ServerName=$CurrentServer;Version=$OsVersionVersion}
+ }
+ $ServerList | Select-Object ServerName,Version
+}
+Function MassCheckLinuxScript {
+ Param (
+  $UserName = $env:USERNAME,
+  [Parameter(Mandatory=$true)]$ScriptLocation, #Script Path (Full path)
+  $ResultLocation = "C:\Temp\LinuxStatus-$(get-date -uformat '%Y-%m-%d').csv",
+  [Parameter(Mandatory=$true)]$Servers # List of Server Names
+ )
+ $FirstRun=$true
+ $Servers | ForEach-Object {
+  $CurrentServer = $_
+  Progress  -Message "Checking : " -Value $CurrentServer
+  $RemoteResult = plink -l $UserName -no-antispoof -ssh -batch -m $ScriptLocation $CurrentServer
+  $Header="" ; $Content=""
+  $RemoteResult -split ";" -replace "^ ","" | ForEach-Object {
+   $Header+="$(($_ -split ":")[0]);" ; $Content+="$(($_ -split ":")[1].trim());"
+  }
+  if ($FirstRun) { $Header > $ResultLocation ;  $FirstRun=$False }
+  $Content >> $ResultLocation
+ }
+}
+Function Clear-CBSFolder {
+ # For Windows 7 Bug : system queued windows error Reporting taking too much space
+ Try {
+  Get-Process TrustedInstaller -ErrorAction Stop | Stop-Process -Confirm:$false -Force
+ } Catch {}
+ Remove-Item C:\Windows\Logs\CBS\CbsPersist_*.*
+ Remove-Item C:\Windows\Logs\CBS\cbs.log
+ Start-Service TrustedInstaller
+}
 # Non standard verbs
 Function ScreenOff { # Turns of screen (no additional software required)
  (Add-Type '[DllImport("user32.dll")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1,0x0112,0xF170,2)
@@ -8582,7 +8689,7 @@ Function LaunchAsUser { # Launch Script as another user
 }
 
 # Misc Functions (Require Additionnal Tools)
-Function Reset-GraphicCard { # Disables/Enables device [Requires Nirsoft DevManView]
+Function Reset-GraphicCard { # Disables/Enables device [Requires Nirsoft DevManView] - On windows 11 can use : Ctrl+Win+Shift+B
  Param (
   $AppPath="C:\Apps\NirSoft",
   $GraphicCardName = "NVIDIA GeForce GTX 1080"
@@ -8765,9 +8872,9 @@ Function Get-LocalGroupMod { # Get Information on the modification of local grou
 }
 Function Get-InstalledApps { # List all installed apps with required information
  $32BitsInstall = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName | Select-Object DisplayName,
-  DisplayVersion, Publisher, InstallDate,UninstallString
+  DisplayVersion, Publisher, InstallDate,UninstallString,PSPath
  $64BitsInstall = Get-ItemProperty HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName | Select-Object DisplayName,
-  DisplayVersion, Publisher, InstallDate,UninstallString
+  DisplayVersion, Publisher, InstallDate,UninstallString,PSPath
  $32BitsInstall + $64BitsInstall  | Sort-Object DisplayName
 }
 Function Get-InstalledAppsFromEvents { # Check all installed apps using event logs to see who installed what/when with what account
@@ -8818,6 +8925,26 @@ Function Get-LocalSecurityPolicy { # Show local security policies and which user
    }
   }
  }
+}
+Function MassCheckSecurityPolicy { # Mass Check Local Security Policy on servers
+ Param (
+  [Parameter(Mandatory=$true)]$ADGroupName
+ )
+ $ComputerList=try {Get-ADGroupMember $AdGroupName -Recursive} catch {write-colored -Color "Red" -ColoredText $Error[0]}
+ $Result=$ComputerList | ForEach-Object {
+  Progress -PrintTime -Message "Checking Server : " -Value $_.Name
+  $SecPol=$(Send-RemoteCommand -ComputerName $_.Name -CommandLine "Get-LocalSecurityPolicy")
+  If ($SecPol) {
+   $SecPol | Select-Object @{Label='Server'; Expression={$_.PSComputerName}}, @{Label='SecPol'; Expression={$_.Name}},Rights
+  } else {
+   [pscustomobject]@{
+    Server=$_.Name
+    SecPol="Error Checking Rights"
+    Rights="Error Checking Rights"
+   }
+  }
+ }
+ Return $Result
 }
 
 #Certificates
@@ -8953,20 +9080,6 @@ Function Get-AzureManagementGroups_Other { # Get all subscription and associated
  $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
  $response = Search-AzGraph -Query $Query
  $response | Select-Object name,id,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
-}
-Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
- Param (
-  [parameter(Mandatory = $false, ParameterSetName="Fast")][Switch]$Fast,
-  [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced
- )
- # Get rights of all AAD users (takes some minutes with 50k+ users)
- if ($Fast) {
-  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName}' --output json --only-show-errors | ConvertFrom-Json
- } elseif ($Advanced) {
-  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
- } else {
-  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
- }
 }
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptions | foreach-object {
@@ -9118,6 +9231,43 @@ Function Get-AzureSQLServers { # Get all Azure SQL Servers for all Subscription 
   $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllSQLServers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
+Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add all Tags in separate columns, same for Extensions [See example : Get-MDCConfiguration]
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking VMs of subscription : " -Value $subscriptionName -PrintTime
+  az account set --subscription $subscriptionId
+  $CurrentSubscriptionResources = az vm list --show-details --output json | ConvertFrom-Json
+  $CurrentSubscriptionResources | ForEach-Object {
+   Progress -Message "Checking VMs of subscription : $subscriptionName : " -Value $_.Name -PrintTime
+   $VM_Extensions = az vm extension list --ids $_.Id -o json | ConvertFrom-Json
+   if ($_.privateIps -and $_.publicIps) {
+    $Network_Mode = "PublicAndPrivate"
+   } elseif ($_.privateIps) {
+    $Network_Mode = "Private"
+   } elseif ($_.publicIps) {
+    $Network_Mode = "Public"
+   } else {
+    $Network_Mode = "Unknown"
+   }
+
+   $_ | Add-Member -NotePropertyName VM_Type -NotePropertyValue $_.hardwareProfile.vmSize
+   $_ | Add-Member -NotePropertyName VM_Name -NotePropertyValue $_.Name
+   $_ | Add-Member -NotePropertyName LinkedResourcesCount -NotePropertyValue $_.resources.Count
+   $_ | Add-Member -NotePropertyName LocalAdmin -NotePropertyValue $_.osProfile.adminUsername
+   $_ | Add-Member -NotePropertyName LocalAdminPassword -NotePropertyValue $_.osProfile.adminPassword
+   $_ | Add-Member -NotePropertyName OSType -NotePropertyValue $_.storageProfile.osDisk.osType
+   $_ | Add-Member -NotePropertyName OSRefImg -NotePropertyValue $_.storageProfile.osDisk.imageReference
+   $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $Network_Mode
+   $_ | Add-Member -NotePropertyName Owner -NotePropertyValue $_.tags.Owner
+   $_ | Add-Member -NotePropertyName GNumber -NotePropertyValue $_.tags.'G-number'
+   $_ | Add-Member -NotePropertyName Extensions -NotePropertyValue ($VM_Extensions.typePropertiesType -join ";")
+   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
+   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+  }
+  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllVMs_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ }
+}
 Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
  (Get-AzContext -ListAvailable).Subscription | Where-Object State -eq Enabled | ForEach-Object {
   Set-AzContext -Subscription $_.id | Out-Null
@@ -9151,13 +9301,111 @@ Function Get-AzureSubscriptionNameFromID { #Retrieve name of Subscription from t
  )
  (Get-AzureSubscriptions | Where-Object id -eq $SubscriptionID).Name
 }
-# Search Functions
-Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
- param (
-  [Parameter(Mandatory=$true)]$SearchValue,
-  [ValidateSet("displayName","userPrincipalName")]$Type = "displayName"
+Function Convert-Tag { # Convert Tags to a usable value
+ Param (
+  $TagToSearch,
+  $TagVariable # Format : name1=value1 , name2=value2
  )
- az ad user list --query '[].{objectId:id,displayName:displayName,userPrincipalName:userPrincipalName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
+ # Replace beginning and end
+ $TrimmedValue = $TagVariable -replace("@{","") -replace(" *}","") -split("; ")
+ (($TrimmedValue | Select-String $TagToSearch) -split"=")[1]
+}
+Function Convert-GuidToSourceAnchor { # Convert Azure AD Object ID to Source Anchor (used in AAD Connect)
+ Param (
+  $Guid
+ )
+ $GUID_Obj = [GUID]$Guid
+ [System.Convert]::ToBase64String($GUID_Obj.ToByteArray())
+}
+Function Convert-SourceAnchorToGUID { # Convert Source Anchor to Azure AD Object ID (used in AAD Connect)
+ Param (
+  $SourceAnchor
+ )
+ [Guid]([Convert]::FromBase64String("$SourceAnchor"))
+}
+Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all GUID of Object containing App Registration Permission List with GUID to Readable Names
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationObjectWithGUIDPermissions,
+  $IDConversionTable #Send Conversion Table for faster treatment
+ )
+ # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
+ if ( ! $IDConversionTable ) {
+  $IDConversionTable = @()
+  $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_ }
+ } else {
+  $IDConversionTable = $IDConversionTable | select-object -ExcludeProperty ServicePrincipalName,ServicePrincipalID
+ }
+
+ $AppRegistrationObjectWithGUIDPermissions | ForEach-Object {
+  $CurrentPolicy = $_.PolicyID ;
+  $CurrentRule = $_.RuleID  ;
+  $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule)}
+  # Some policies have multiple of the same set of PolicyID and RuleID .... If there are multiple result, will take the admin result or the first result
+  if ($Policy.Count -gt 1) {
+   Write-Host -Foregroundcolor "Magenta" "WARNING : PolicyID $CurrentPolicy with RuleID $CurrentRule contains multiple result"
+   if ($Policy | Where-Object Type -eq "Admin") {$Policy = $Policy | Where-Object Type -eq "Admin" } else {$Policy = $Policy[0]}
+  }
+  [pscustomobject]@{
+   AppRegistrationName=$_.AppRegistrationName
+   AppRegistrationID=$_.AppRegistrationID
+   PolicyName=$Policy.PolicyName
+   PolicyID=$Policy.PolicyID
+   Value=$Policy.Value
+   ValueID=$Policy.RuleID
+   PermissionType=$Policy.PermissionType
+   Description=$Policy.Description
+   # Type=$Policy.Type => This value is empty
+  }
+ }
+}
+Function Convert-AzureServicePrincipalPermissionsGUIDToReadable { #Converts all GUID of Object containing Service Principal Permission List with GUID to Readable Names
+ Param (
+  [Parameter(Mandatory=$true)]$ServicePrincipalObjectWithGUIDPermissions,
+  $IDConversionTable #Send Conversion Table for faster treatment
+ )
+ # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
+ if ( ! $IDConversionTable ) {
+  $IDConversionTable = @()
+  $ServicePrincipalObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_ }
+ } else {
+  $IDConversionTable = $IDConversionTable | select-object -ExcludeProperty ServicePrincipalName,ServicePrincipalID
+ }
+
+ $ServicePrincipalObjectWithGUIDPermissions | ForEach-Object {
+  $CurrentPolicy = $_.PolicyID ;
+  $CurrentRule = $_.RuleID  ;
+  $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule)}
+  # Some policies have multiple of the same set of PolicyID and RuleID .... If there are multiple result, will take the admin result or the first result
+  if ($Policy.Count -gt 1) {
+   Write-Host -Foregroundcolor "Magenta" "WARNING : PolicyID $CurrentPolicy with RuleID $CurrentRule contains multiple result"
+   if ($Policy | Where-Object Type -eq "Admin") {$Policy = $Policy | Where-Object Type -eq "Admin" } else {$Policy = $Policy[0]}
+  }
+  [pscustomobject]@{
+   ServicePrincipalName=$_.ServicePrincipalName
+   ServicePrincipalID=$_.ServicePrincipalID
+   PolicyName=$Policy.PolicyName
+   PolicyID=$Policy.PolicyID
+   Value=$Policy.Value
+   ValueID=$Policy.RuleID
+   PermissionType=$Policy.PermissionType
+   Description=$Policy.Description
+   # Type=$Policy.Type => This value is empty
+  }
+ }
+}
+Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Kubectl) to a PS Object (Cert + Key)
+ Param (
+  [Parameter(Mandatory)]$SecretName,
+  [Parameter(Mandatory)]$NameSpace
+ )
+ $SECRETCONTENT = kubectl get secrets $SecretName -n data -o json
+ $TLSCERTB64 = (( $SECRETCONTENT | select-string tls.crt) -split("`""))[3]
+ $TLSCERT = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($TLSCERTB64))
+ $TLSKEYB64 = (( $SECRETCONTENT | select-string tls.key) -split("`""))[3]
+ $TLSKEY = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($TLSKEYB64))
+ $Secret=@()
+ $Secret+=[pscustomobject]@{Cert=$TLSCERT;Key=$TLSKEY}
+ $Secret
 }
 # User Rights Management
 Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
@@ -9180,21 +9428,24 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   [parameter(Mandatory = $true, ParameterSetName="GroupAndSubID")]
   [parameter(Mandatory = $true, ParameterSetName="GroupAndSubName")]
   [parameter(Mandatory = $true, ParameterSetName="GroupName")]$GroupName,
-  [Switch]$ConvertDisplayName, # Will add about 2 seconds per rights
+  [Switch]$Advanced, # Will add about 2 seconds per rights
   [Switch]$IncludeInherited,
   [parameter(Mandatory = $false, ParameterSetName="ShowAll")][Switch]$ShowAll
  )
 
  # For the parameters, it's either Subscription Name OR Subscription ID - And - User Name or User DisplayName
 
+ # Get Tenant ID
+ $TenantID = az account show --query '"{tenantId:tenantId}"' -o tsv
+
  # Get all subscriptions information
  Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime
  $AllSubscription = Get-AzureSubscriptions
 
- if ($ConvertDisplayName) { # If it's requested to convert all display names it will add initial time to the
-  Progress -Message "Current step " -Value "Retrieving all Users (remove switch 'ConvertDisplayName' to ignore this step)" -PrintTime
+ if ($Advanced) { # If it's requested to convert all display names it will add initial time to the request
+  Progress -Message "Current step " -Value "Retrieving all Users (remove switch 'Advanced' to ignore this step)" -PrintTime
   $AllUsers = Get-AzureADUsers -Advanced
-  Progress -Message "Current step " -Value "Retrieving all Service Principal (remove switch 'ConvertDisplayName' to ignore this step)" -PrintTime
+  Progress -Message "Current step " -Value "Retrieving all Service Principal (remove switch 'Advanced' to ignore this step)" -PrintTime
   $AllServicePrincipals = Get-AzureServicePrincipal -Fast
  }
 
@@ -9223,7 +9474,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   '--all',
   '--include-classic-administrators',
   '--include-groups',
-  '--query' , '"[].{principalName:principalName, principalId:principalId, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup}"',
+  '--query' , '"[].{principalName:principalName, principalId:principalId, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup, id:id}"',
   '--output', 'json'
 
  # Add Arguments if value is set
@@ -9255,15 +9506,16 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   $CurrentSubscription = az role assignment list @ArgumentsOfCurrentSubscription | ConvertFrom-Json | `
   Select-object `
    @{Name="PrincipalName";Expression={ if (! $_.principalName) { "Identity not found" } else { $_.principalName } }},
-   @{Name="principalId";Expression={ $_.principalId }},
-   @{Name="UserUPN";Expression={ if ($UserPrincipalName) { $UserPrincipalName } else { "Only used when filtering by user" } }},
-   @{Name="UserDisplay";Expression={
+   # @{Name="UserUPN";Expression={ if ($UserPrincipalName) { $UserPrincipalName } else { "Only used when filtering by user" } }},
+   @{Name="DisplayName";Expression={
     if ($UserDisplayName) {
      $UserDisplayName
     } else {
-     if ($ConvertDisplayName) {
+     if ($Advanced) {
       if ($_.principalType -eq "ServicePrincipal") {
        ($AllServicePrincipals | Where-Object Id -eq $_.principalId).displayName
+      } elseif ($_.principalType -eq "Group") {
+       $_.PrincipalName
       } else {
        ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).displayName
       }
@@ -9271,40 +9523,43 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
       "Group"
        # Add here to get info on groups (for example to do a recursive search of users)
      } else {
-      "Only available when using ConvertDisplayName option or when filtering by user"
+      "Use Advanced switch"
      }
     }
    }},
-   @{Name="UserMail_Or_SPType";Expression={
-    if ($ConvertDisplayName) {
-     if ($_.principalType -eq "User") {
-       ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).mail
-     } elseif ($_.principalType -eq "ServicePrincipal") {
-      ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).servicePrincipalType
-     } elseif ($_.principalType -eq "Group") {
-      "Group"
-       # Add here to get info on groups (for example to do a recursive search of users)
-     } else {
-      ""
-      # Other types
-     }
+   @{Name="UserMail";Expression={
+    if ($Advanced) {
+     if ($_.principalType -eq "User") { ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).mail } else { "N/A" }
     } else {
-     "Only available when using ConvertDisplayName option"
+     "Use Advanced switch"
     }
    }},
+   @{Name="Type";Expression={
+    if ($Advanced -and ($_.principalType -eq "ServicePrincipal")) {
+     $SPType = ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).servicePrincipalType
+     if (! $_.principalName) {return "Unknown"} elseif ($SPType) {Return $SPType} else {return "ServicePrincipal"}
+    } else {
+     # Use "-Advanced" for more info on Service Principals
+     $_.principalType
+    }
+   }}, roleDefinitionName,
    @{Name="Subscription";Expression={$CurrentSubscriptionName}},
-   @{Name="SubscriptionID";Expression={$CurrentSubscriptionID}},
    resourceGroup,
    @{Name="ResourceName";Expression={
     $Scope_Split = $_.scope.split("/")[-1]
     if ($Scope_Split -eq $CurrentSubscriptionID ) {
      "Subscription"
+    } elseif ($Scope_Split -eq $TenantID) {
+     "Tenant"
     } elseif ($Scope_Split -eq $_.resourceGroup) {
      "ResourceGroup"
     } else {
      $Scope_Split
     }
-   }}, @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }}, principalType, roleDefinitionName, scope
+   }}, @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }},
+   @{Name="principalId";Expression={ $_.principalId }},
+   @{Name="SubscriptionID";Expression={$CurrentSubscriptionID}}, scope,
+   @{Name="AssignmentID";Expression={$_.ID}} # Can be used to remove permissions with az role assignment delete --ids
   $GlobalStatus += $CurrentSubscription
  }
  #Print result
@@ -9317,11 +9572,11 @@ Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one 
   [Parameter(Mandatory=$true)]$UserPrincipalName
  )
  $CurrentRights = Get-AzureADUserRBACRights -UserPrincipalName $UserPrincipalName
- $CurrentRights | Where-Object PrincipalType -eq User | ForEach-Object {
+ $CurrentRights | Where-Object Type -eq User | ForEach-Object {
   Progress -Message "Removing permission " -Value "$($_.roleDefinitionName) from user $($UserPrincipalName) from scope $($_.scope)"
-  Remove-AzureADRBACRights -UserName $UserPrincipalName -Role $_.roleDefinitionName -Scope $_.scope
+  Remove-AzureADRBACRights -AssignmentID $_.AssignmentID
  }
- $CurrentRights | Where-Object PrincipalType -ne User | ForEach-Object { "User has permission to Scope $($_.scope) because of the Principal $($_.PrincipalName)" }
+ $CurrentRights | Where-Object Type -ne User | ForEach-Object { "User $($UserPrincipalName) has permission to Scope $($_.scope) because of the Principal $($_.PrincipalName)" }
 }
 Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to multiple RG of a Subscription following a naming query
  Param (
@@ -9357,40 +9612,16 @@ Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Ob
 }
 Function Remove-AzureADRBACRights { # Remove rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
  Param (
-  [parameter(Mandatory=$true)]$UserName, #Was replaced in new CMDLET, ID is not used anymore. Assignee allows all
-  [Parameter(Mandatory=$true)]$Role,
-  [Parameter(Mandatory=$true)]$Scope
+  [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$UserName,
+  [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Role,
+  [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Scope,
+  [parameter(Mandatory = $true, ParameterSetName="ID")]$AssignmentID
  )
-  az role assignment delete --assignee $UserName --role $Role --scope $Scope
-}
-# User Global rights Checks -> Replaced by new Get-AzureADUserRBACRights
-Function Get-AzureADUserRBACRightsForAllSubscription { # Get RBAC Rights of ONE user on ALL Subscriptions - Script takes about 2 seconds per subscription
- Param (
-  [Parameter(Mandatory)]$UserUPN,
-  [Parameter(Mandatory)]$UserDisplayName
- )
- Get-AzureSubscriptions | ForEach-Object {
-  Progress -Message "Checking RBAC rights for user $UserDisplayName [$UserUPN] on subscription " "$($_.Name) $($_.ID)" -PrintTime
-  Get-AzureADUserRBACRights -SubscriptionID $_.ID -SubscriptionName $_.Name -UserPrincipalName $UserUPN -UserDisplayName $UserDisplayName
- }
-}
-Function Get-AzureADAllUserRBACRightsForAllSubscription { # Get RBAC Rights of ALL users on ALL Subscriptions - Script takes about 2 seconds per user / per subscription
- Param (
-  $ExportFileLocation = "C:\Temp\AzureAllUserList_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $SubscriptionList = $(Get-AzureSubscriptions)
- )
- write-host -ForegroundColor Cyan "Getting all users - Please wait, may take up to 10 minutes"
- $UserList = Get-AzureADUsers
- write-host -ForegroundColor Cyan "Found $($UserList.count) users - Checking rights"
- $UserList | ForEach-Object {
-  $UserNameUpn = $_.userPrincipalName
-  $UserDisplayName = $_.displayName
-  $SubscriptionList | ForEach-Object {
-   $Subscription = $_.name
-   Progress -Message "Currently checking user " -Value "$UserDisplayName [$UserNameUpn] on subscription $Subscription" -PrintTime
-   Get-AzureADUserRBACRights -UserPrincipalName $UserNameUpn -UserDisplayName $UserDisplayName -SubscriptionID $_.ID -SubscriptionName $_.Name | Export-Csv $ExportFileLocation -Append -Delimiter ";"
+  if (! $AssignmentID) {
+   az role assignment delete --assignee $UserName --role $Role --scope $Scope
+  } else {
+   az role assignment delete --ids $AssignmentID
   }
- }
 }
 # App Registration / Service Principal creation
 Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions from App Registration
@@ -9515,7 +9746,6 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
   Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $App_AppID
  }
 }
-# App Registration / Service Principal check
 # App Registration [Only]
 Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
  Param (
@@ -9539,10 +9769,14 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationID
  )
- az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object ID,userPrincipalName,displayName
+ az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
 }
 Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Registration
- Get-AzureAppRegistration | ForEach-Object { Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID | Export-Csv "C:\Temp\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append }
+ Get-AzureAppRegistration | ForEach-Object {
+  Progress -Message "Checking current App : " -Value $_.DisplayName
+  Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID
+ } | Export-Csv "C:\Temp\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ ProgressClear
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
@@ -9702,41 +9936,6 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
  Progress -Message "Commit API Permissions on $AppID : " -Value $RightName -PrintTime
  az ad app permission grant --only-show-errors --id $AppID --api $PolicyID --scope $RightName | Out-Null
 }
-Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all GUID of Object containing App Registration Permission List with GUID to Readable Names
- Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationObjectWithGUIDPermissions,
-  $IDConversionTable #Send Conversion Table for faster treatment
- )
- # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
- if ( ! $IDConversionTable ) {
-  $IDConversionTable = @()
-  $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_ }
- } else {
-  $IDConversionTable = $IDConversionTable | select-object -ExcludeProperty ServicePrincipalName,ServicePrincipalID
- }
-
- $AppRegistrationObjectWithGUIDPermissions | ForEach-Object {
-  $CurrentPolicy = $_.PolicyID ;
-  $CurrentRule = $_.RuleID  ;
-  $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule)}
-  # Some policies have multiple of the same set of PolicyID and RuleID .... If there are multiple result, will take the admin result or the first result
-  if ($Policy.Count -gt 1) {
-   Write-Host -Foregroundcolor "Magenta" "WARNING : PolicyID $CurrentPolicy with RuleID $CurrentRule contains multiple result"
-   if ($Policy | Where-Object Type -eq "Admin") {$Policy = $Policy | Where-Object Type -eq "Admin" } else {$Policy = $Policy[0]}
-  }
-  [pscustomobject]@{
-   AppRegistrationName=$_.AppRegistrationName
-   AppRegistrationID=$_.AppRegistrationID
-   PolicyName=$Policy.PolicyName
-   PolicyID=$Policy.PolicyID
-   Value=$Policy.Value
-   ValueID=$Policy.RuleID
-   PermissionType=$Policy.PermissionType
-   Description=$Policy.Description
-   # Type=$Policy.Type => This value is empty
-  }
- }
-}
 Function Get-AppRegistrationExpiration { # Get All App Registration Secret
  Param (
   $Expiration = 30,
@@ -9870,6 +10069,30 @@ Function Set-AppRegistrationTags { # Set Tag on App Registration, can add or ove
  }
 
 }
+Function Add-AppRegistrationSecret { # Uses PowerShell standard module (Created by Gyorgy) - Not yet tested
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationID,
+  $AppMonths = "6"
+ )
+ # Connect to Microsoft Graph
+ Connect-MgGraph -Scopes 'Application.ReadWrite.All'
+
+ # Parameters
+ $AppInfo = Get-MgApplication -Filter "AppId eq '$AppRegistrationID'"
+ $AppObjectId = $AppInfo.Id
+ $AppSecretDescription = "Automatically Generated by $env:username"
+
+ $PasswordCred = @{
+  displayName = $AppSecretDescription
+  endDateTime = (Get-Date).AddMonths($AppMonths)
+ }
+
+ # Add App Client Secret - Valid for 6 months
+ $Secret = Add-MgApplicationPassword -ApplicationId $AppObjectId.Id -PasswordCredential $PasswordCred
+
+ # Write Client Secret value
+ $Secret | Format-List
+}
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
  Param (
@@ -9899,7 +10122,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   if ($Fast) {
    $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
   } else {
-   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired}"'
+   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl}"'
   }
  }
  if ($filter) {
@@ -9941,7 +10164,11 @@ Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  }
 }
 Function Get-AzureServicePrincipalOwnerForAllApps { # Get Owner(s) of all Service Principals
- Get-AzureServicePrincipal | ForEach-Object { Get-AzureServicePrincipalOwner -ServicePrincipalID $_.id | Export-Csv "C:\Temp\AzureServicePrincipalOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append }
+ Get-AzureServicePrincipal | ForEach-Object {
+  Progress -Message "Checking current Service Principal : " -Value $_.DisplayName
+  Get-AzureServicePrincipalOwner -ServicePrincipalID $_.id
+ } | Export-Csv "C:\Temp\AzureServicePrincipalOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ ProgressClear
 }
 Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (it is different than App Registration Owners) - The ID must be the ObjectID of the 'Enterprise App'
  Param (
@@ -10009,41 +10236,6 @@ Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to na
   $PolicyContent.appRoles + $PolicyContent.oauth2Permissions
  } elseif ($PolicyContent.oauth2Permissions) { $PolicyContent.oauth2Permissions
  } elseif ($PolicyContent.appRoles) { $PolicyContent.appRoles
- }
-}
-Function Convert-AzureServicePrincipalPermissionsGUIDToReadable { #Converts all GUID of Object containing Service Principal Permission List with GUID to Readable Names
- Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalObjectWithGUIDPermissions,
-  $IDConversionTable #Send Conversion Table for faster treatment
- )
- # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
- if ( ! $IDConversionTable ) {
-  $IDConversionTable = @()
-  $ServicePrincipalObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_ }
- } else {
-  $IDConversionTable = $IDConversionTable | select-object -ExcludeProperty ServicePrincipalName,ServicePrincipalID
- }
-
- $ServicePrincipalObjectWithGUIDPermissions | ForEach-Object {
-  $CurrentPolicy = $_.PolicyID ;
-  $CurrentRule = $_.RuleID  ;
-  $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule)}
-  # Some policies have multiple of the same set of PolicyID and RuleID .... If there are multiple result, will take the admin result or the first result
-  if ($Policy.Count -gt 1) {
-   Write-Host -Foregroundcolor "Magenta" "WARNING : PolicyID $CurrentPolicy with RuleID $CurrentRule contains multiple result"
-   if ($Policy | Where-Object Type -eq "Admin") {$Policy = $Policy | Where-Object Type -eq "Admin" } else {$Policy = $Policy[0]}
-  }
-  [pscustomobject]@{
-   ServicePrincipalName=$_.ServicePrincipalName
-   ServicePrincipalID=$_.ServicePrincipalID
-   PolicyName=$Policy.PolicyName
-   PolicyID=$Policy.PolicyID
-   Value=$Policy.Value
-   ValueID=$Policy.RuleID
-   PermissionType=$Policy.PermissionType
-   Description=$Policy.Description
-   # Type=$Policy.Type => This value is empty
-  }
  }
 }
 Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add or overwrite existing (add no tags to list current tags)
@@ -10117,7 +10309,24 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
  Param (
   [Parameter(Mandatory=$true)]$ServicePrincipalID
  )
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty appRoleId,id,deletedDateTime
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty appRoleId,deletedDateTime
+}
+Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assignement IDs are recommended, but UserName is possible but will be a lot slower
+ Param (
+  [Parameter(Mandatory=$true)]$ServicePrincipalID,
+  [Parameter(Mandatory=$true, ParameterSetName="Direct")]$AssignmentID, # Strongly Recommended and a lot faster
+  [Parameter(Mandatory=$true, ParameterSetName="Search")]$UserDisplayName
+ )
+ if ( ! $AssignmentID) {
+  $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID | Where-Object principalDisplayName -eq $UserDisplayName
+  if ( ! $PermissionInfo) {
+   Write-Host -ForegroundColor Red -Object "$UserDisplayName was not found"
+   Return
+  } else {
+   $AssignmentID = $PermissionInfo.id
+  }
+ }
+ az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
 }
 Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity)
  Param (
@@ -10130,6 +10339,20 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" `
   --headers 'Content-Type=application/json' `
   --body $Body
+}
+Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignement Status
+ Param (
+  [Switch]$ShowAssignements # Slow
+ )
+ $AllApps = Get-AzureServicePrincipal -ShowAllColumns
+
+ if ($ShowAssignements) {
+  $AllApps | ForEach-Object {
+   Get-AzureServicePrincipalAssignments -ServicePrincipalID $_.id
+  }
+ } else {
+  $AllApps | Select-Object appdisplayname,servicePrincipalType,accountEnabled,appRoleAssignmentRequired | Group-Object signInAudience,servicePrincipalType,appRoleAssignmentRequired
+ }
 }
 Function Set-AzureServicePrincipalAssignementRequired {
  Param (
@@ -10243,11 +10466,11 @@ Function Get-AzureADUserAssignedRoleFromUPN { # Slow - Only for Single User usag
  )
  Convert-AzureADRoleAssignements (Get-AzureADUserAssignedRole -UserObjectID (Get-AzureADUserInfo $UserUPN).ID)
 }
-#Administrative Unit Management
+# Administrative Unit Management
 Function Get-AzureADAdministrativeUnit {
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
 }
-#Schema Extensions
+# Schema Extensions
 Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  #How to filter by Type :
  # ($result | ? targetTypes -Contains "user").count
@@ -10262,11 +10485,11 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  }
 }
 # Defender for Cloud (MDC)
-Function Get-MDCConfiguration { # Retrieve Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AZ CLI rest API Access)
+Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AZ CLI rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
  $GlobalResult = $()
  $Subscriptions = Get-AzureSubscriptions
  #Variable to follow up the columns without having to rebuild the entire object (Otherwise export-csv only export columns depending on the first object created)
- $MemberList = $('SubscriptionName','SubscriptionID','pricingTier','EnabledOn')
+ $MemberList = $('id','name','SubscriptionName','SubscriptionID','pricingTier','EnabledOn')
  $Subscriptions | ForEach-Object {
   $SubscriptionName = $_.Name
   $SubscriptionID = $_.ID
@@ -10279,6 +10502,7 @@ Function Get-MDCConfiguration { # Retrieve Defender For Cloud (MDC) configuratio
    @{Name="SubscriptionName";Expression={$SubscriptionName}},
    @{Name="SubscriptionID";Expression={$SubscriptionID}},
    @{Name="pricingTier";Expression={$_.properties.pricingTier}},
+   @{Name="subPlan";Expression={$_.properties.subPlan}},
    @{Name="EnabledOn";Expression={$_.properties.enablementTime}},
    @{Name="Extensions";Expression={$_.properties.Extensions}},
    @{Name="additionalExtensionProperties";Expression={$_.properties.Extensions.additionalExtensionProperties}}
@@ -10306,7 +10530,156 @@ Function Get-MDCConfiguration { # Retrieve Defender For Cloud (MDC) configuratio
  ProgressClear
  $GlobalResult | Select-Object $MemberList | Export-Csv "C:\Temp\MDCConfiguration_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
 }
-# Misc
+Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
+ Param (
+  [Parameter(Mandatory=$true)]$SubscriptionID,
+  [Switch]$EnableVMProtection # Does not set it by default until we have a clear view of the impact
+ )
+ if ($EnableVMProtection) {
+ # VirtualMachines
+  $Body = '{\"properties\":{\"extensions\":[{\"isEnabled\":\"False\",\"name\":\"MdeDesignatedSubscription\"},{\"additionalExtensionProperties\":{\"ExclusionTags\":\"[]\"},\"isEnabled\":\"True\",\"name\":\"AgentlessVmScanning\"}],\"pricingTier\":\"Standard\",\"subPlan\":\"P2\"}"}'
+  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/VirtualMachines/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ }
+ # SqlServers
+ $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/SqlServers/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # AppServices
+ $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/AppServices/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ #StorageAccounts
+ $Body = '{\"properties\":{\"extensions\":[{\"name\":\"OnUploadMalwareScanning\",\"isEnabled\":\"False\",},{\"name\":\"SensitiveDataDiscovery\",\"isEnabled\":\"True\"}],\"subPlan\":\"DefenderForStorageV2\",\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/StorageAccounts/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # SqlServerVirtualMachines
+ $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/SqlServerVirtualMachines/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # KubernetesService
+ $Body = '{\"properties\":{\"pricingTier\":\"Free\",\"isEnabled\":\"False\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/KubernetesService/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # ContainerRegistry
+ $Body = '{\"properties\":{\"pricingTier\":\"Free\",\"isEnabled\":\"False\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/ContainerRegistry/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ #Keyvaults
+ $body = '{\"name\":\"KeyVaults\",\"properties\":{\"pricingTier\":\"Standard\",\"subPlan\":\"PerKeyVault\"} }'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Keyvaults/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # Dns
+ $Body = '{\"properties\":{\"pricingTier\":\"Free\",\"isEnabled\":\"False\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Dns/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # Arm
+ $Body='{\"properties\":{\"pricingTier\":\"Standard\",\"subPlan\":\"PerSubscription\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Arm/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # OpenSourceRelationalDatabases
+ $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/OpenSourceRelationalDatabases/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # CosmosDbs
+ $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/CosmosDbs/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # Containers
+ $Body='{\"name\":\"Containers\",\"properties\":{\"extensions\":[{\"isEnabled\":\"True\",\"name\":\"ContainerRegistriesVulnerabilityAssessments\"}],\"pricingTier\":\"Standard\"},\"type\":\"Microsoft.Security/pricings\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Containers/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # CloudPosture
+ $Body='{\"properties\":{\"extensions\":[{\"isEnabled\":\"True\",\"name\":\"SensitiveDataDiscovery\"},{\"isEnabled\":\"True\",\"name\":\"ContainerRegistriesVulnerabilityAssessments\"},{\"isEnabled\":\"True\",\"name\":\"AgentlessDiscoveryForKubernetes\"},{\"additionalExtensionProperties\":{\"ExclusionTags\":\"[]\"},\"isEnabled\":\"True\",\"name\":\"AgentlessVmScanning\"}],\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/CloudPosture/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ # Api
+ $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Api/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+}
+# DevOps
+Function Get-ADOUsers {
+ (az devops user list --top 1000 -o json | convertfrom-json).Members | Select-Object dateCreated,lastAccessedDate,
+  @{Name="DisplayName";Expression={$_.User.displayName}},
+  @{Name="principalName";Expression={$_.User.principalName}},
+  @{Name="mailAddress";Expression={$_.User.mailAddress}},
+  @{Name="Origin";Expression={$_.User.Origin}},
+  @{Name="UserType";Expression={$_.User.metaType}},
+  @{Name="License";Expression={$_.accessLevel.licenseDisplayName}},
+  @{Name="LicenseSource";Expression={$_.accessLevel.licensingSource}},
+  @{Name="LicenseAssignementSource";Expression={$_.accessLevel.assignmentSource}},
+  @{Name="LicenseStatus";Expression={$_.accessLevel.status}},
+  @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "C:\Temp\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+}
+# MFA
+Function Get-AzureADUserMFAGraph { # Get MFA Status of User, uses MgGraph
+ Param (
+  [Parameter(Mandatory)]$UserID
+ )
+ Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All" -ContextScope Process
+
+	$MFA_Status = [PSCustomObject]@{
+		MFA_Status                 = "Disabled"  # Initialize to "Disabled"
+		MFA_Email                     = "-"
+		MFA_Fido2                     = "-"
+		MFA_MicrosoftAuthenticatorApp = "-"
+		MFA_Phone                     = "-"
+		MFA_SoftwareOath              = "-"
+		MFA_TemporaryAccessPass       = "-"
+		MFA_WindowsHelloForBusiness   = "-"
+	}
+
+	$MFAData = Get-MgUserAuthenticationMethod -UserId $UserID
+
+	foreach ($method in $MFAData) {
+
+		Switch ($method.AdditionalProperties["@odata.type"]) {
+			"#microsoft.graph.emailAuthenticationMethod" {
+				$MFA_Status.MFA_Email = $true
+				$MFA_Status.MFA_Status = "Enabled"
+			}
+			"#microsoft.graph.fido2AuthenticationMethod" {
+				$MFA_Status.MFA_Fido2 = $true
+				$MFA_Status.MFA_Status = "Enabled"
+			}
+			"#microsoft.graph.microsoftAuthenticatorAuthenticationMethod" {
+				$MFA_Status.MFA_MicrosoftAuthenticatorApp = $true
+				$MFA_Status.MFA_Status = "Enabled"
+			}
+			"#microsoft.graph.phoneAuthenticationMethod" {
+				$MFA_Status.MFA_Phone = $true
+				$MFA_Status.MFA_Status = "Enabled"
+			}
+			"#microsoft.graph.softwareOathAuthenticationMethod" {
+				$MFA_Status.MFA_SoftwareOath = $true
+				$MFA_Status.MFA_Status = "Enabled"
+			}
+			"#microsoft.graph.temporaryAccessPassAuthenticationMethod" {
+				$MFA_Status.MFA_TemporaryAccessPass = $true
+				$MFA_Status.MFA_Status = "Enabled"
+			}
+			"#microsoft.graph.windowsHelloForBusinessAuthenticationMethod" {
+				$MFA_Status.MFA_WindowsHelloForBusiness = $true
+				$MFA_Status.MFA_Status = "Enabled"
+			}
+		}
+	}
+	$MFA_Status
+}
+Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Slow - Uses MGGraph From Get-AzureADUserMFAGraph
+ Param (
+  [Parameter(Mandatory)]$UserListPath # Create file using 'Get-AzureADUsers -Graph'
+ )
+ $Count=0
+ $TotalValues = $UserListPath.Count
+ $UserListPath | ForEach-Object {
+  $Count++
+  $CurrentUser = $_
+  Progress -Message "Checking user $Count/$TotalValues : " -PrintTime -Value $CurrentUser.displayName
+  $UserMFA_Status = Get-AzureADUserMFAGraph $_.ID
+  ($UserMFA_Status | get-member -MemberType NoteProperty).Name | ForEach-Object {
+   $CurrentUser | Add-Member -MemberType NoteProperty -Name $_ -Value $UserMFA_Status.$_
+  }
+  $CurrentUser
+ } | Export-CSV "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+}
+Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast)
+ # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
+ $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
+ $CurrentResult.Value
+ While ($CurrentResult.'@odata.nextLink') {
+  $NextRequest = $CurrentResult.'@odata.nextLink'
+  $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
+  $CurrentResult.Value
+ }
+}
+# AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
  Param (
   [Parameter(Mandatory=$true)]$UserName,
@@ -10319,6 +10692,137 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
  }
 }
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - WTF It does not list Service principals
+ Param (
+  [Parameter(Mandatory)]$Group
+ )
+ az ad group member list -g $Group --query "[].{userPrincipalName: userPrincipalName, displayName:displayName, mail:mail, UserID:id}" -o json | ConvertFrom-Json
+
+ # Using graph : (az rest --method get --uri "https://graph.microsoft.com/beta/groups/76a49819-71e0-4004-9372-7e63531c7fe1/members" --headers "Content-Type=application/json" | ConvertFrom-Json)
+}
+Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
+ Param (
+  $GroupName
+ )
+ az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json |`
+  Select-Object displayName,description,
+  @{Name="Members";Expression={Get-AzureADGroupMembers $_.displayName}}
+}
+# AAD User Management
+Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
+ Param (
+  [parameter(Mandatory = $false, ParameterSetName="Fast")][Switch]$Fast,
+  [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
+  [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph
+ )
+ # Get rights of all AAD users (takes some minutes with 50k+ users)
+ if ($Fast) {
+  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName}' --output json --only-show-errors | ConvertFrom-Json
+ } elseif ($Advanced) {
+  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
+ } elseif ($Graph) {
+  $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes" -o json  | ConvertFrom-Json
+  $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes *,
+   @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
+   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
+   @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
+   @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
+   @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
+   @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
+   @{name="extensionAttribute4";expression={$_.onPremisesExtensionAttributes.extensionAttribute4}},
+   @{name="extensionAttribute5";expression={$_.onPremisesExtensionAttributes.extensionAttribute5}},
+   @{name="extensionAttribute6";expression={$_.onPremisesExtensionAttributes.extensionAttribute6}},
+   @{name="extensionAttribute7";expression={$_.onPremisesExtensionAttributes.extensionAttribute7}},
+   @{name="extensionAttribute8";expression={$_.onPremisesExtensionAttributes.extensionAttribute8}},
+   @{name="extensionAttribute9";expression={$_.onPremisesExtensionAttributes.extensionAttribute9}},
+   @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
+   @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
+   @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}}
+  $NextLoopURL = $CurrentResult.'@odata.nextLink'
+  While ($NextLoopURL) {
+   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+   $CurrentResult = az rest --method get --uri $NextRequest | convertfrom-json
+   $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes *,
+   @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
+    @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
+    @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
+    @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
+    @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
+    @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
+    @{name="extensionAttribute4";expression={$_.onPremisesExtensionAttributes.extensionAttribute4}},
+    @{name="extensionAttribute5";expression={$_.onPremisesExtensionAttributes.extensionAttribute5}},
+    @{name="extensionAttribute6";expression={$_.onPremisesExtensionAttributes.extensionAttribute6}},
+    @{name="extensionAttribute7";expression={$_.onPremisesExtensionAttributes.extensionAttribute7}},
+    @{name="extensionAttribute8";expression={$_.onPremisesExtensionAttributes.extensionAttribute8}},
+    @{name="extensionAttribute9";expression={$_.onPremisesExtensionAttributes.extensionAttribute9}},
+    @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
+    @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
+    @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}}
+   $NextLoopURL = $CurrentResult.'@odata.nextLink'
+  }
+ } else {
+  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
+ }
+}
+Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta for Detailed to get all default values, to get specific value they must be specifically selected, like signInActivity)
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Switch]$Detailed,
+  [Switch]$ShowManager
+ )
+ if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
+ if ($Verbose) {
+  if ($UserGUID) { Write-Host "Working with GUID" } else { Write-Host "Working with UPN" }
+ }
+ if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
+  # az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json 2>null
+  $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
+ } else {
+  $Result = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=id,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
+  id,onPremisesImmutableId,displayName,userPrincipalName,accountEnabled,createdDateTime,
+  @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
+  @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}}
+  # $Result = az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object id,userPrincipalName,displayName
+ }
+ if ($ShowManager) {
+  $Manager = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/manager" --headers Content-Type=application/json | ConvertFrom-Json `
+  | Select-Object `
+    @{name="ManagerdisplayName";expression={$_.displayName}},
+    @{name="ManagerUPN";expression={$_.userPrincipalName}},
+    @{name="ManagerMail";expression={$_.mail}}
+  $Result | Add-Member -NotePropertyName ManagerdisplayName -NotePropertyValue $Manager.ManagerdisplayName
+  $Result | Add-Member -NotePropertyName ManagerUPN -NotePropertyValue $Manager.ManagerUPN
+  $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
+ }
+ $Result
+}
+Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
+ param (
+  [Parameter(Mandatory=$true)]$SearchValue,
+  [ValidateSet("displayName","userPrincipalName")]$Type = "displayName"
+ )
+ az ad user list --query '[].{objectId:id,displayName:displayName,userPrincipalName:userPrincipalName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
+}
+Function Get-AzureADUserCustomAttributes { # Show user information From O365
+ Param (
+  [Parameter(Mandatory)]$UPN
+ )
+ #Check if a session is already opened otherwise open it
+ if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
+
+ Get-EXORecipient -Identity $UPN -PropertySets Custom
+}
+Function Set-AzureADManager { # Set Manager on User in Azure
+ Param (
+  [Parameter(Mandatory)]$UserID,
+  [Parameter(Mandatory)]$ManagerID
+ )
+ $ManagerOdataObject = @{
+  "@odata.id"="https://graph.microsoft.com/v1.0/users/$ManagerID"
+ }
+ Set-MgUserManagerByRef -UserId $UserID -BodyParameter $ManagerOdataObject
+}
+# Misc
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
  Param (
   [Parameter(Mandatory)]$Access_Policy_Name,
@@ -10336,44 +10840,6 @@ Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell usi
  $SASToken = "SharedAccessSignature sr=" + [System.Web.HttpUtility]::UrlEncode($URI) + "&sig=" + [System.Web.HttpUtility]::UrlEncode($Signature) + "&se=" + $Expires + "&skn=" + $Access_Policy_Name
  $SASToken
 }
-Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Kubectl) to a PS Object (Cert + Key)
- Param (
-  [Parameter(Mandatory)]$SecretName,
-  [Parameter(Mandatory)]$NameSpace
- )
- $SECRETCONTENT = kubectl get secrets $SecretName -n data -o json
- $TLSCERTB64 = (( $SECRETCONTENT | select-string tls.crt) -split("`""))[3]
- $TLSCERT = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($TLSCERTB64))
- $TLSKEYB64 = (( $SECRETCONTENT | select-string tls.key) -split("`""))[3]
- $TLSKEY = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($TLSKEYB64))
- $Secret=@()
- $Secret+=[pscustomobject]@{Cert=$TLSCERT;Key=$TLSKEY}
- $Secret
-}
-Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta for Detailed to get all values)
- Param (
-  [Parameter(Mandatory)]$UPNorID,
-  [Switch]$Detailed,
-  [Switch]$ShowManager
- )
- if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
-  # az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json 2>null
-  $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
- } else {
-  $Result = az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object id,userPrincipalName,displayName
- }
- if ($ShowManager) {
-  $Manager = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/manager" --headers Content-Type=application/json | ConvertFrom-Json `
-  | Select-Object `
-    @{name="ManagerdisplayName";expression={$_.displayName}},
-    @{name="ManagerUPN";expression={$_.userPrincipalName}},
-    @{name="ManagerMail";expression={$_.mail}}
-  $Result | Add-Member -NotePropertyName ManagerdisplayName -NotePropertyValue $Manager.ManagerdisplayName
-  $Result | Add-Member -NotePropertyName ManagerUPN -NotePropertyValue $Manager.ManagerUPN
-  $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
- }
- $Result
-}
 Function Get-AzureADObjectInfo { # Get Object GUID Info
  Param (
   [Parameter(Mandatory)][GUID]$ObjectID,
@@ -10388,65 +10854,6 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
    @{name="Type";expression={$_.'@odata.type'}},
    @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
  }
-}
-Function Get-AzureADUserCustomAttributes { # Show user information From O365
- Param (
-  [Parameter(Mandatory)]$UPN
- )
- #Check if a session is already opened otherwise open it
- if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
-
- Get-EXORecipient -Identity $UPN -PropertySets Custom
-}
-Function Convert-Tag { # Convert Tags to a usable value
- Param (
-  $TagToSearch,
-  $TagVariable # Format : name1=value1 , name2=value2
- )
- # Replace beginning and end
- $TrimmedValue = $TagVariable -replace("@{","") -replace(" *}","") -split("; ")
- (($TrimmedValue | Select-String $TagToSearch) -split"=")[1]
-}
-Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignement Status
- Param (
-  [Switch]$ShowAssignements # Slow
- )
- $AllApps = Get-AzureServicePrincipal -ShowAllColumns
-
- if ($ShowAssignements) {
-  $AllApps | ForEach-Object {
-   Get-AzureServicePrincipalAssignments -ServicePrincipalID $_.id
-  }
- } else {
-  $AllApps | Select-Object appdisplayname,servicePrincipalType,accountEnabled,appRoleAssignmentRequired | Group-Object signInAudience,servicePrincipalType,appRoleAssignmentRequired
- }
-}
-Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI)
- Param (
-  [Parameter(Mandatory)]$Group
- )
- az ad group member list -g $Group --query "[].{userPrincipalName: userPrincipalName, displayName:displayName, mail:mail, UserID:id}" -o json | ConvertFrom-Json
-}
-Function Get-AzureGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
- Param (
-  $GroupName
- )
- az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json |`
-  Select-Object displayName,description,
-  @{Name="Members";Expression={Get-AzureADGroupMembers $_.displayName}}
-}
-Function Convert-GuidToSourceAnchor { # Convert Azure AD Object ID to Source Anchor (used in AAD Connect)
- Param (
-  $Guid
- )
- $GUID_Obj = [GUID]$Guid
- [System.Convert]::ToBase64String($GUID_Obj.ToByteArray())
-}
-Function Convert-SourceAnchorToGUID { # Convert Source Anchor to Azure AD Object ID (used in AAD Connect)
- Param (
-  $SourceAnchor
- )
- [Guid]([Convert]::FromBase64String("$SourceAnchor"))
 }
 Function Send-Mail {  # To make automated Email, it requires an account with a mailbox
  Param (
@@ -10468,3 +10875,20 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
 }
+
+#Alias
+Set-Alias -Name ls -Value "Get-ChildItemBen" -Option AllScope
+Set-Alias -Name ll -Value "ls" -Option AllScope
+Set-Alias -Name ip -Value "get-ip" -Option AllScope
+Set-Alias -Name uptime -Value "Get-UptimePerso" -Option AllScope
+Set-Alias -Name npp -Value "notepad++.exe" -Option AllScope
+Set-Alias -Name su -Value "pselevate" -Option AllScope
+Set-Alias -Name du -Value "Get-DiskUsage" -Option AllScope
+Set-Alias -Name df -Value "Get-PartitionInfo" -Option AllScope
+Set-Alias -Name dns -Value "checkdns" -Option AllScope
+Set-Alias -Name grep -Value "Select-String"
+Function Start-Jdownloader { get-job | remove-job ;  invoke-expression -Command "java -jar C:\JDownloader\JDownloader.jar &" }
+Function LoadMMC { mmc "$env:OneDriveCommercial\RootConsole.msc" }
+Set-Alias -Name jd -value Start-Jdownloader
+Set-Alias -Name Home -value "LoginHome"
+Set-Alias -Name Which -value "Get-Command"
