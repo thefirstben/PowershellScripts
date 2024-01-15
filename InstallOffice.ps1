@@ -1,6 +1,6 @@
 Param(
   $SourcePath=$(Split-Path $MyInvocation.MyCommand.Path),
-  [ValidateSet("32","64")][String]$Architecture)="32",
+  [ValidateSet("32","64")][String]$Architecture="32",
   [ValidateSet("Insiders","Monthly","Targeted","Broad")][string]$ChangeUpdateChannel="Monthly",
   [ValidateSet("EN","FR","DE")][string]$Language="EN",
   [switch]$Office=$false,
@@ -31,7 +31,7 @@ if ($tmp_file_creation) {
 if ($Language -eq "EN") { $langXML="   <Language ID='en-us' />"
 } elseif ($Language -eq "FR") { $langXML="   <Language ID='fr-fr' />"
 } elseif ($Language -eq "DE") { $langXML="   <Language ID='de-de' />"
-} else {    
+} else {
 $langXML="   <Language ID='en-us' />
    <Language ID='fr-fr' />
    <Language ID='de-de' />"
@@ -82,7 +82,7 @@ $langXML
 }
 
 write-output "
-<!-- Remove MSI Install -->  
+<!-- Remove MSI Install -->
   <RemoveMSI All='True' />
 <!-- Allow updates to be checked -->
   <Updates Enabled='TRUE' Channel='Monthly' />
@@ -100,17 +100,16 @@ write-output "
 return $TMP_XML_FILE
 }
 Function PrintLatestLog {
- $logfile="$LogPath\$(gci $LogPath -Filter "$hostname-$(get-date -uformat "%Y%m%d")*.log" | select -last 1)"
+ $logfile="$LogPath\$(Get-ChildItem $LogPath -Filter "$hostname-$(get-date -uformat "%Y%m%d")*.log" | Select-Object -last 1)"
  write-host "$(get-date -uformat '%Y-%m-%d-%T') | In case of error check logfile in $logfile"
 }
 
 #Variables
 $hostname=$env:COMPUTERNAME
-$SourcePathDeploymentTool=$SourcePath+"\Office Deployment Tool"
 $logfile="$LogPath\Office_Install.log"
 
 write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Check Log Folder"
-if ( ! (test-path $LogPath)) { 
+if ( ! (test-path $LogPath)) {
  Try {
   write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Creating Temp Folder"
   New-Item -Type Directory $LogPath -ErrorAction Stop | out-null
@@ -128,34 +127,34 @@ try {
 } catch {
  write-colored "Red" "$(get-date -uformat "%Y-%m-%d %T") "  $Error[0] $logfile
 }
- 
+
 write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Checking Setup.exe" $logfile
 if (! (test-path "setup.exe")) {
  write-colored "Red" "$(get-date -uformat "%Y-%m-%d %T") " "Setup.exe is not available, it must be in the same folder as the script" $logfile
  return
 }
- 
+
 write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Generate XML used for install" $logfile
 $OfficeXMLFile=GenerateOfficeXML
-cat $OfficeXMLFile >> $logfile
+Get-Content $OfficeXMLFile >> $logfile
 write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "File that will be used for Office Install : $($OfficeXMLFile.FullName)" $logfile
 
 # Change Update Channel (Not required for new installs)
-if ($ChangeUpdateChannel) { 
+if ($ChangeUpdateChannel) {
  write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Changing Office Update Channel to : $ChangeUpdateChannel" $logfile
  . "C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeC2RClient.exe" /changesetting Channel=$ChangeUpdateChannel
  . "C:\Program Files\Common Files\Microsoft Shared\ClickToRun\OfficeC2RClient.exe" /update user
 }
-  
+
 # Download new version to repository
-if ($Download) { 
+if ($Download) {
  write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Updating Repository" $logfile
  PrintLatestLog
  . ".\setup.exe" /download $OfficeXMLFile
 }
 
 # Install base package
-if ($Office -or $Visio -or $Project) { 
+if ($Office -or $Visio -or $Project) {
  write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "Installing Office" $logfile
  PrintLatestLog
  . ".\setup.exe" /configure $OfficeXMLFile
@@ -163,8 +162,8 @@ if ($Office -or $Visio -or $Project) {
 
 write-colored "Blue" "$(get-date -uformat "%Y-%m-%d %T") " "End process" $logfile
 
-#Add Stop for manual install  
-if (! $NoPause) { 
+#Add Stop for manual install
+if (! $NoPause) {
  write-output "Press a key to continue"
- [void][System.Console]::ReadKey($FALSE) 
+ [void][System.Console]::ReadKey($FALSE)
 }
