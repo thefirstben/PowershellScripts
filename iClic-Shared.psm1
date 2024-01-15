@@ -35,6 +35,9 @@
 #  az account list --all --query "[?id=='$ObjectID'].{id:id, name:name}"
 # To add dynamic number of values (Example to show all tags)
 #  Get-MDCConfiguration
+# Example to add all Members to an Object without knowing the name first
+# $TagList = [PSCustomObject]@{}
+# $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] }
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -88,7 +91,7 @@ Function PSElevate { # Open an elevated Powershell window (not possible to eleva
  }
 
  } catch {
-  write-colored "Red" "Error while Elevate : " $error[0]
+  write-Colored -Color "Red" "Error while Elevate : " $error[0]
  }
 }
 Function Get-UptimePerso { # Show machine uptime, works with any OS and works remotely
@@ -137,7 +140,7 @@ Function KillAllPsSessions { # Remove all opened PS sessions
  try {
   $Sessions | Remove-PSSession -ErrorAction Stop
  } catch {
-  write-colored "Red" -ColoredText $Error[0]
+  write-Colored -Color "Red" -ColoredText $Error[0]
  }
  write-colored "Magenta" -ColoredText "$($Sessions.Count) session(s) deleted"
  #Remove Temporary Modules
@@ -153,9 +156,12 @@ Function Title { # Used to manage the title of the Powershell Window
  # $Host.UI.RawUI.WindowTitle = "PowerShell " + (get-host).Version.Major + "." + (get-host).Version.Minor + " $username`@$($env:computername)" + " (" + $pwd.Provider.Name + ") " + $pwd.Path
  if (Assert-IsAdmin) {$TitleAdmin="[*]"} else {$TitleAdmin=""}
  if (! $([Environment]::Is64BitProcess)) {$TitleArchitecture="<32>"} else {$TitleArchitecture=""}
- $TitleUsername=$env:USERNAME
+ # $TitleUsername=$env:USERNAME
+ $WHOAMI = whoami /UPN 2>$null
+ $TitleUsername = if ($WHOAMI) {($WHOAMI -split("@"))[0]} else {((whoami).split("\"))[1]}
+ $TitleUserDomain = $env:USERDOMAIN
  $TitleHostname=$env:COMPUTERNAME
- $TitleUserInfo="[$TitleUsername`@$TitleHostname]"
+ $TitleUserInfo="[$TitleUsername`@$TitleUserDomain`|$TitleHostname]"
  #Check if in RemoteSession
  if (! $PSSenderInfo) {
   # $HostInfo=get-host
@@ -166,7 +172,7 @@ Function Title { # Used to manage the title of the Powershell Window
   $Host.UI.RawUI.WindowTitle = "$TitleUserInfo$TitleAdmin$TitlePsVersion$PostMsg$TitleArchitecture"
  } catch {}
 }
-Function prompt { # Used to have a "pretty" Powershell prompt showing important info (fast - will be slow when adding Kube prompt)
+Function prompt { # Used to have a "pretty" Powershell prompt showing important info
 
  # $backcolor=[console]::backgroundcolor
  # $frontcolor=[console]::foregroundcolor
@@ -181,7 +187,10 @@ Function prompt { # Used to have a "pretty" Powershell prompt showing important 
    if( Assert-IsAdmin ) { $promptcolor = "red" } else {$promptcolor = "green"}
    if ($PSSenderInfo) {$promptcolor = "Magenta"}
    $ColorGray = "DarkGray"
-   $P_UserName = $env:USERNAME
+   # $P_UserName = $env:USERNAME
+   $WHOAMI = whoami /UPN 2>$null
+   $P_UserName = if ($WHOAMI) {($WHOAMI -split("@"))[0]} else {((whoami).split("\"))[1]}
+   $P_UserDomain = $env:USERDOMAIN
    $P_ComputerName = $($env:COMPUTERNAME).tolower()
  }
 
@@ -196,6 +205,8 @@ Function prompt { # Used to have a "pretty" Powershell prompt showing important 
  write-colored $ColorGray -ColoredText "[$(get-date -uformat '%Y-%m-%d %T')] [" -nonewline
  write-colored $promptcolor -ColoredText $P_UserName -nonewline
  write-colored $ColorGray -ColoredText "@" -nonewline
+ write-colored $promptcolor -ColoredText $P_UserDomain -nonewline
+ write-colored $ColorGray -ColoredText "|" -nonewline
  write-colored $promptcolor -ColoredText $P_ComputerName -nonewline
  write-colored $ColorGray -ColoredText "] " -nonewline
 
@@ -299,14 +310,14 @@ Function Progress { # Default progress function, used to show a progress of some
  } else {
   $Time=""
  }
- Write-Colored $defaultblue "`r$blanklinesize" -nonewline
- Write-Colored $defaultblue "`r$Time$Message" $Value -nonewline
+ Write-Colored -Color $defaultblue -NonColoredText "`r$blanklinesize" -nonewline
+ Write-Colored -Color $defaultblue -NonColoredText "`r$Time$Message" -ColoredText $Value -nonewline
 }
 Function ProgressClear { # Clear progress when a progress is done
  try {
   $blanklinesize=" "*([console]::windowwidth -2)
  } catch {$blanklinesize=" "*100}
- Write-Colored $defaultblue "`r$blanklinesize" -nonewline
+ Write-Colored -Color $defaultblue -NonColoredText "`r$blanklinesize" -nonewline
 }
 Function Align { # Align function depending on the window size
  Param (
@@ -331,7 +342,7 @@ Function Write-Centered { # Function to print text centered on the powershell sc
   $offsetvalue=50
  }
  if ($NoNewLine) {$NoNewLineValue="-nonewline"} else {$NoNewLineValue=""}
- Write-Colored $Color "" ("{0,$offsetvalue}" -f $message) $NoNewLineValue
+ Write-Colored -Color $Color -NonColoredText "" ("{0,$offsetvalue}" -f $message) $NoNewLineValue
 }
 Function Write-StarLine { # Print a line of a specific character
  Param (
@@ -394,7 +405,7 @@ Function Format-Color {
  foreach($line in $lines) {
   $color = ''
   foreach($pattern in $Colors.Keys){ if ($line -match $pattern) { $color = $Colors[$pattern] }}
-  write-Colored $color "" $line
+  Write-Colored -Color $Color -NonColoredText "" $line
  }
 }
 Function Format-TypeServices {
@@ -409,10 +420,10 @@ Function Format-TypeServices {
  # write-colored "Magenta" "" ($RealName,"(",$_.name,")")
  if (! $formattable) {
   write-colored "Magenta" "" ($_.displayname,"(",$_.name,")")
-  Write-Colored $defaultblue " Start Mode : " $_.startmode -nonewline
-  Write-Colored $defaultblue " | Status : " $_.state -nonewline
-  Write-Colored $defaultblue " | Login Name : " $LoginName
-  Write-Colored $defaultblue " CommandLine : " $CommandLine
+  Write-Colored -Color $defaultblue -NonColoredText " Start Mode : " $_.startmode -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | Status : " $_.state -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | Login Name : " $LoginName
+  Write-Colored -Color $defaultblue -NonColoredText " CommandLine : " $CommandLine
  } else {
   $obj=@()
   $obj+=[pscustomobject]@{
@@ -470,8 +481,8 @@ Function Format-TypeGPO {
  $TabSize = 25
 
  $POLICYTOCHECK=$gpresult | Select-String "$policy" -context 0,1
- if ($null -eq $gpresult ) {Write-colored "red" (Align $policy $TabSize " : ") "UNABLE TO CHECK GPOs - Please run script as Admin";return}
- if ($null -eq $POLICYTOCHECK) {Write-colored "red" (Align $policy $TabSize " : ") "NOT CONFIGURED (KO)" -foregroundcolor "red";return}
+ if ($null -eq $gpresult ) {write-Colored -Color "Red" (Align -Variable $policy -Size $Tabsize -Ending " : ") "UNABLE TO CHECK GPOs - Please run script as Admin";return}
+ if ($null -eq $POLICYTOCHECK) {write-Colored -Color "Red" (Align -Variable $policy -Size $Tabsize -Ending " : ") "NOT CONFIGURED (KO)" -foregroundcolor "red";return}
 
  #GetPosition of ":" | Get only end of name of GPO
  #$position=$POLICYTOCHECK.Line.indexof(":")
@@ -481,11 +492,11 @@ Function Format-TypeGPO {
  $value=$POLICYTOCHECK.Context.DisplayPostContext | Out-String
 
  #Check Policy Value
- if ( $policy -eq "MaxCompressionLevel" -and $value.Contains("3, 0, 0, 0")) {Write-colored "darkgreen" (Align $policy $TabSize " : ") "ENABLED (OK)" ; return}
+ if ( $policy -eq "MaxCompressionLevel" -and $value.Contains("3, 0, 0, 0")) {Write-colored "darkgreen" (Align -Variable $policy -Size $Tabsize -Ending " : ") "ENABLED (OK)" ; return}
 
- if ($value.Contains("1, 0, 0, 0")) {Write-colored "darkgreen" (Align $policy $TabSize " : ") "ENABLED (OK)"} else {
-  If ($value.Contains("0, 0, 0, 0")) {Write-colored "red" (Align $policy $TabSize " : ") "DISABLED (KO)"}
-  else {Write-colored "red" (Align $policy $TabSize " : ") "ERROR DURING CHECK - PLEASE CHECK MANUALLY"}
+ if ($value.Contains("1, 0, 0, 0")) {Write-colored "darkgreen" (Align -Variable $policy -Size $Tabsize -Ending " : ") "ENABLED (OK)"} -Size else -Ending {
+  If ($value.Contains("0, 0, 0, 0")) {write-Colored -Color "Red" (Align -Variable $policy -Size $Tabsize -Ending " : ") -Size "DISABLED -Ending (KO)"}
+  else {write-Colored -Color "Red" (Align -Variable $policy -Size $Tabsize -Ending " : ") "ERROR DURING CHECK - PLEASE -Size CHECK -Ending MANUALLY"}
  }
 }
 Function Format-TypeMSDTC {
@@ -496,7 +507,7 @@ Function Format-TypeMSDTC {
  if ( $ValueToCheck ) {
   write-colored "darkgreen" "" "$ValueText : 1"
  } else {
-  write-colored "red" "" "$ValueText : 0"
+  write-Colored -Color "Red" "" "$ValueText : 0"
  }
 }
 Function Format-TypeLogcat {
@@ -661,14 +672,14 @@ Function Watch { # 'watch' equivalent
  # Example : watch "test-port devgrl-01 514" 2 ; watch uptime
  while ($true) {
   if ($clear) {clear-host}
-  if (! $HideTime) {Write-Colored $defaultblue "Test Date/Time : " $(get-date -uformat '%Y-%m-%d %T') -nonewline}
+  if (! $HideTime) {Write-Colored -Color $defaultblue -NonColoredText "Test Date/Time : " $(get-date -uformat '%Y-%m-%d %T') -nonewline}
 
   if ($PrintCommand) {
-   if ($NoNewLine) {Write-Colored $defaultblue " | Command : " $commandline -nonewline ; Write-Colored $defaultblue " | " -nonewline}
-   else { Write-Colored $defaultblue " | Command : " $commandline}
+   if ($NoNewLine) {Write-Colored -Color $defaultblue -NonColoredText " | Command : " $commandline -nonewline ; Write-Colored -Color $defaultblue -NonColoredText " | " -nonewline}
+   else { Write-Colored -Color $defaultblue -NonColoredText " | Command : " $commandline}
   } else {
-   if ($NoNewLine) {Write-Colored $defaultblue " | " "" -nonewline}
-   else {Write-Colored $defaultblue " " ""}
+   if ($NoNewLine) {Write-Colored -Color $defaultblue -NonColoredText " | " "" -nonewline}
+   else {Write-Colored -Color $defaultblue -NonColoredText " " ""}
   }
 
   Invoke-Expression $($commandline)
@@ -689,21 +700,21 @@ Function Fuser { # 'fuser' equivalent
     }
    }
   }
- } catch {write-colored "red" -ColoredText $error[0]}
+ } catch {write-Colored -Color "Red" -ColoredText $error[0]}
 }
 Function Tail { # 'tail' equivalent
  Param (
   $filename,
   $tailsize=10
  )
- if ( ! (test-path $filename)) { write-Colored "Red" "" "Unavailable path : $filename" ; return }
+ if ( ! (test-path $filename)) { write-Colored -Color "Red" "" "Unavailable path : $filename" ; return }
  get-content $filename -wait -tail $tailsize
 }
 Function Get-TopProcesses { # 'top' equivalent using Get-Process
  Param (
   $NumberOfProcess = 25
  )
- Get-Process | Sort-Object -Descending cpu | Select-Object -First 15 ProcessName,ID,@{N="Memory";E={Format-Filesize $_.PrivateMemorySize}},StartTime,
+ Get-Process | Sort-Object -Descending cpu | Select-Object -First $NumberOfProcess ProcessName,ID,@{N="Memory";E={Format-Filesize $_.PrivateMemorySize}},StartTime,
  @{N="TotalProcessorTime";E={($_.TotalProcessorTime).ToString().Split(".")[0]}},Path | Sort-Object CPU -Descending | Format-Table
 }
 Function Top { # 'top' equivalent using Windows Counters
@@ -777,7 +788,7 @@ Function Get-ChildItemBen { # 'ls' equivalent
     write-colored -Color "DarkGreen" -ColoredText "[----LastWrite----] [Mode]  $(Align '[-Size-]' 10) $(Align '[Name]')"
     $result | ForEach-Object {
      #print text in color
-     write-colored -Color $_.Color -ColoredText "$(Align $($_.LastWrite) 19) $(Align $($_.Mode) 7) $(Align $($_.Size) 10) $($_.Name)"
+     write-colored -Color $_.Color -ColoredText "$(Align $($_.LastWrite) 19) $(Align $($_.Mode) 7) $(Align -Variable $($_.Size) 10) $($_.Name)"
     }
    }
    return
@@ -919,7 +930,7 @@ Function Get-UPNFromADUser {
    $objSearcher.PropertiesToLoad.Add("userprincipalname") | Out-Null
    $colResults = $objSearcher.FindAll()
    $colResults[0].Properties.userprincipalname
- } catch {write-colored "red" -ColoredText $Error[0]}
+ } catch {write-Colored -Color "Red" -ColoredText $Error[0]}
 }
 
 # Wait for User Interractions
@@ -1041,9 +1052,9 @@ Function Assert-MinOSVersion {
  Param (
   [int]$OSVersion
  )
- $CurrentOSVersion=(Get-CimInstance -class Win32_OperatingSystem).BuildNumber
- if ( ! $OSVersion ) {Write-Colored $defaultblue "Current OS Version : " $CurrentOSVersion ; return $true}
- elseif ( [int]$CurrentOSVersion -lt [int]$OSVersion ) { Write-Colored "red" "" "This function does not work on older than Windows Build $OSVersion OS (Current build : $CurrentOSVersion)" ; return $false}
+ $CurrentOSVersion=(Get-CimInstance -ClassName Win32_OperatingSystem).BuildNumber
+ if ( ! $OSVersion ) {Write-Colored -Color $defaultblue -NonColoredText "Current OS Version : " $CurrentOSVersion ; return $true}
+ elseif ( [int]$CurrentOSVersion -lt [int]$OSVersion ) { write-Colored -Color "Red" "" "This function does not work on older than Windows Build $OSVersion OS (Current build : $CurrentOSVersion)" ; return $false}
  else {return $true}
 }
 Function Assert-OSType {
@@ -1051,17 +1062,17 @@ Function Assert-OSType {
   [switch]$PrintMessage
  )
  #Currently Only Check if Workstation OS is being used
- if ( (Get-CimInstance Win32_OperatingSystem).ProductType -eq "1" ) { if ($PrintMessage) {Write-Colored "red" "" "This function does not work on workstation OS"} ; return $false} else {return $true}
+ if ( (Get-CimInstance Win32_OperatingSystem).ProductType -eq "1" ) { if ($PrintMessage) {write-Colored -Color "Red" "" "This function does not work on workstation OS"} ; return $false} else {return $true}
 }
 Function Assert-IsCommandAvailable {
  Param (
   $commandname,
   [switch]$NoError
  )
- if (!$commandname) {Write-Colored "red" "" "Provide command name";return}
+ if (!$commandname) {Write-Colored -Color "red" -NonColoredText  "" "Provide command name";return}
 
  if ( !(Get-Command "$commandname" -ErrorAction SilentlyContinue)) {
-  if (! $NoError) {Write-Colored "red" "" "$commandname is not available (not in path or cmdlet not available)"}
+  if (! $NoError) {Write-Colored -Color "red" -NonColoredText  "" "$commandname is not available (not in path or cmdlet not available)"}
   return $false
  } else { return $true }
 }
@@ -1120,8 +1131,8 @@ Function Test-Port {
  )
  # Code based on http://poshcode.org/85
 
- if ( ! (Assert-IsCommandAvailable Resolve-DNSName) ) { write-colored "red" "Resolve-DNSName if not available, please use Test-PortOld (IPv6 test will not be available)" ; return $false }
- if( ! $server -or ! $port ) { write-colored "red" "" "Please enter at least the server name (server = $server) and the port (port= $port) to test" ; return $false }
+ if ( ! (Assert-IsCommandAvailable Resolve-DNSName) ) { Write-Colored -Color "red" -NonColoredText  "Resolve-DNSName if not available, please use Test-PortOld (IPv6 test will not be available)" ; return $false }
+ if( ! $server -or ! $port ) { Write-Colored -Color "red" -NonColoredText  "" "Please enter at least the server name (server = $server) and the port (port= $port) to test" ; return $false }
 
  #If it is a name that is used as argument
  try {
@@ -1131,7 +1142,7 @@ Function Test-Port {
   try {
    $ServerIP=(Resolve-DNSName -ErrorAction Stop $server)
   } catch {
-   if ($verbose) {write-colored "red" "Error during dns check : " $error[0]}
+   if ($verbose) {Write-Colored -Color "red" -NonColoredText  "Error during dns check : " $error[0]}
    return $false
   }
   #Check if a CNAME responds
@@ -1149,10 +1160,10 @@ Function Test-Port {
  if ($IPType -eq "InterNetwork" ) {
   #OK
  } elseif ($IPType -eq "InterNetworkV6" ) {
-  write-colored "red" "" "Test does not work with IPv6 - Please enter IPv4 $((Resolve-DNSName $server)[1].ipaddress)"
+  Write-Colored -Color "red" -NonColoredText  "" "Test does not work with IPv6 - Please enter IPv4 $((Resolve-DNSName $server)[1].ipaddress)"
   return $false
  } else {
-  write-colored "red" "Error while checking IP type : " $error[0]
+  Write-Colored -Color "red" -NonColoredText  "Error while checking IP type : " $error[0]
   return $false
  }
 
@@ -1167,7 +1178,7 @@ Function Test-Port {
  $error.Clear()
  if( ! $wait ) {
   $tcpclient.Close()
-  if ($verbose) {write-colored "red" "" "$server : No response from port $port"}
+  if ($verbose) {Write-Colored -Color "red" -NonColoredText  "" "$server : No response from port $port"}
   return $false
  }
 
@@ -1176,7 +1187,7 @@ Function Test-Port {
  try {
   $tcpclient.EndConnect($iar) 2>&1 | out-Null
  } catch {
-  write-colored "red" "" $error[0];return $false
+  Write-Colored -Color "red" -NonColoredText  "" $error[0];return $false
  }
  $tcpclient.Close()
 
@@ -1224,14 +1235,14 @@ Function Test-PortList {
  Param (
   [Parameter(Mandatory=$true)]$FilePath
  )
- if ( ! (test-path $FilePath)) { write-Colored "Red" "" "Unavailable path : $FilePath" ; return }
+ if ( ! (test-path $FilePath)) { Write-Colored -Color "red" -NonColoredText  "" "Unavailable path : $FilePath" ; return }
  Import-CSV -Encoding UTF8 -Delimiter ";" $FilePath | ForEach-Object {
   if (! $_.Service) {return}
-  Write-Colored $defaultblue "Testing " (Align $_.Service 30) -nonewline
-  Write-Colored $defaultblue " | " (Align $_.IP 15) -nonewline
-  Write-Colored $defaultblue " | Port " (Align $_.Port 5) -nonewline
-  Write-Colored $defaultblue " | " "" -nonewline
-  if (Test-Port $_.IP $_.Port) {write-colored "DarkGreen" "" "Access OK"} else {write-colored "Red" "" "No Access"}
+  Write-Colored -Color $defaultblue -NonColoredText "Testing " (Align -Variable $_.Service 30) -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | " (Align -Variable $_.IP 15) -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | Port " (Align -Variable $_.Port 5) -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | " "" -nonewline
+  if (Test-Port $_.IP $_.Port) {write-colored "DarkGreen" "" "Access OK"} else {Write-Colored -Color "red" -NonColoredText  "" "No Access"}
  }
 }
 Function Test-Account {
@@ -1273,15 +1284,15 @@ Function Test-AccountPassword {
   #This function prints the exact credentatials used for testing
   if ($printcredentials) {
    Write-StarLine "-"
-   Write-Colored $defaultblue "Domain : " $Credential.GetNetworkCredential().Domain -nonewline
-   Write-Colored $defaultblue " | UserName : " $Credential.GetNetworkCredential().UserName -nonewline
-   Write-Colored $defaultblue " | Password : " $Credential.GetNetworkCredential().Password
+   Write-Colored -Color $defaultblue -NonColoredText "Domain : " $Credential.GetNetworkCredential().Domain -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | UserName : " $Credential.GetNetworkCredential().UserName -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | Password : " $Credential.GetNetworkCredential().Password
    Write-StarLine "-"
   }
 
   Start-Process -FilePath cmd.exe /c -Credential $Credential
  } catch {
-  if ($printerror) {write-colored "red" "" $error[0] } ; return $false
+  if ($printerror) {Write-Colored -Color "red" -NonColoredText  "" $error[0] } ; return $false
  }
 
  return $true
@@ -1290,15 +1301,15 @@ Function Test-AccountPasswordList {
  Param (
   [Parameter(Mandatory=$true)]$FilePath
  )
- if ( ! (test-path $FilePath)) { write-Colored "Red" "" "Unavailable path : $FilePath" ; return }
+ if ( ! (test-path $FilePath)) { Write-Colored -Color "red" -NonColoredText  "" "Unavailable path : $FilePath" ; return }
  Import-CSV $FilePath | ForEach-Object {
  if (! $_.Login) {return}
  $user=$_.Domain + "\" + $_.Login
- Write-Colored $defaultblue "Testing " $user -nonewline
- Write-Colored $defaultblue " with Password : " $_.Password -nonewline
- Write-Colored $defaultblue " -> " "" -nonewline
- if ( ! (Test-Account $_.Login)) {Write-Colored "Red" "" "Account does not exist" ; return}
- if (Test-AccountPassword $user $_.Password) {write-colored "DarkGreen" "" "OK"} else {write-colored "Red" "" "KO"}
+ Write-Colored -Color $defaultblue -NonColoredText "Testing " $user -nonewline
+ Write-Colored -Color $defaultblue -NonColoredText " with Password : " $_.Password -nonewline
+ Write-Colored -Color $defaultblue -NonColoredText " -> " "" -nonewline
+ if ( ! (Test-Account $_.Login)) {Write-Colored -Color "red" -NonColoredText  "" "Account does not exist" ; return}
+ if (Test-AccountPassword $user $_.Password) {write-colored "DarkGreen" "" "OK"} else {Write-Colored -Color "red" -NonColoredText  "" "KO"}
  }
 }
 Function Test-URL {
@@ -1308,23 +1319,23 @@ Function Test-URL {
   [Switch]$comment
  )
  # while ( ! $credential ) { $credential = get-credential }
- # try { (curl -uri $URL -credential $credential).StatusCode } catch { write-colored "Red" "" $Error[0].Exception.Message ; write-colored "Red" "-> " $Error[0] }
+ # try { (curl -uri $URL -credential $credential).StatusCode } catch { Write-Colored -Color "red" -NonColoredText  "" $Error[0].Exception.Message ; Write-Colored -Color "red" -NonColoredText  "-> " $Error[0] }
  if ( $comment ) {
-  Write-Colored $defaultblue "Testing URL : " "$URL" -nonewline
-  Write-Colored $defaultblue " with account : " $credential.username
+  Write-Colored -Color $defaultblue -NonColoredText "Testing URL : " "$URL" -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " with account : " $credential.username
  }
  if ( $credential ) {
   try {
    (Invoke-WebRequest -uri $URL -credential $credential).StatusCode
   } catch {
-   write-colored "Red" "Return Code : " $_.Exception.Response.StatusCode.Value__ -nonewline ; write-colored "Red" " -> " $Error[0]
+   Write-Colored -Color "red" -NonColoredText  "Return Code : " $_.Exception.Response.StatusCode.Value__ -nonewline ; Write-Colored -Color "red" -NonColoredText  " -> " $Error[0]
   }
  }
  else {
   try {
    (Invoke-WebRequest -uri $URL -credential $credential).StatusCode
   } catch {
-   write-colored "Red" "Return Code : " $_.Exception.Response.StatusCode.Value__ -nonewline ; write-colored "Red" " -> " $Error[0]
+   Write-Colored -Color "red" -NonColoredText  "Return Code : " $_.Exception.Response.StatusCode.Value__ -nonewline ; Write-Colored -Color "red" -NonColoredText  " -> " $Error[0]
   }
  }
 
@@ -1357,7 +1368,7 @@ Function Test-RemotePowershell {
    }
   }
   if ($printmessage) {write-colored "Cyan" -ColoredText "$servername`t$true"} else {return $true}
- } catch { if ($printmessage) {write-colored "red"  -ColoredText "$servername`t$false`t$($error[0])"} else { return $false } }
+ } catch { if ($printmessage) {write-colored -Color "red" -ColoredText "$servername`t$false`t$($error[0])"} else { return $false } }
 }
 Function Test-PSSpeed {
  Param (
@@ -1382,40 +1393,40 @@ Function Get-UserInfo {
  $TabSize = 20
  write-centered "Account $user"
 
- if ( ! (Test-Account $user)) {Write-Colored "Red" "" "Account does not exist" ; return} else {$userinformation=Get-ADUser $user -Properties * | Select-Object *}
+ if ( ! (Test-Account $user)) {Write-Colored -Color "red" -NonColoredText  "" "Account does not exist" ; return} else {$userinformation=Get-ADUser $user -Properties * | Select-Object *}
 
  Write-Blank
 
- Write-Colored $defaultblue (Align "Name" $TabSize " = ") $userinformation.Name
- Write-Colored $defaultblue (Align "DisplayName" $TabSize " = ") $userinformation.DisplayName
- Write-Colored $defaultblue (Align "SamAccountName" $TabSize " = ") $userinformation.SamAccountName
- Write-Colored $defaultblue (Align "UserPrincipalName" $TabSize " = ") $userinformation.UserPrincipalName
- if ( $userinformation.mail ) { Write-Colored $defaultblue (Align "mail" $TabSize " = ") $userinformation.mail }
- if ( $userinformation.mailNickname ) { Write-Colored $defaultblue (Align "mailNickname" $TabSize " = ") $userinformation.mailNickname }
- if ( $userinformation.OfficePhone ) { Write-Colored $defaultblue (Align "OfficePhone" $TabSize " = ") $userinformation.OfficePhone }
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Name" -Size $Tabsize -Ending " = ") $userinformation.Name
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "DisplayName" -Size $Tabsize -Ending " = ") $userinformation.DisplayName
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "SamAccountName" -Size $Tabsize -Ending " = ") $userinformation.SamAccountName
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "UserPrincipalName" -Size $Tabsize -Ending " = ") $userinformation.UserPrincipalName
+ if ( $userinformation.mail ) { Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "mail" -Size $Tabsize -Ending " = ") $userinformation.mail }
+ if ( $userinformation.mailNickname ) { Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "mailNickname" -Size $Tabsize -Ending " = ") $userinformation.mailNickname }
+ if ( $userinformation.OfficePhone ) { Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "OfficePhone" -Size $Tabsize -Ending " = ") $userinformation.OfficePhone }
 
  Write-Blank
 
  $TabSize = 40
  if ( $userinformation.Enabled ) { $color = "darkgreen" } else { $color = "red" }
- write-colored $color (Align "Account Enabled" $TabSize " = ") $userinformation.Enabled
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "Account Enabled" -Size $Tabsize -Ending " = ") $userinformation.Enabled
 
  if ( $userinformation.CannotChangePassword -or ! $noexpire ) { $color = "darkgreen" } else { $color = "red" }
- write-colored $color (Align "User cannot change password" $TabSize " = ") $userinformation.CannotChangePassword
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "User cannot change password" -Size $Tabsize -Ending " = ") $userinformation.CannotChangePassword
 
  if ( ! $userinformation.PasswordNotRequired ) { $color = "darkgreen" } else { $color = "red" }
- write-colored $color (Align "User must change password at next logon" $TabSize " = ") $userinformation.PasswordNotRequired
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "User must change password at next logon" -Size $Tabsize -Ending " = ") $userinformation.PasswordNotRequired
 
  if ( ! $userinformation.LockedOut ) { $color = "darkgreen" } else { $color = "red" }
- write-colored $color (Align "Account Locked" $TabSize " = ") $userinformation.LockedOut -nonewline
- if ( $userinformation.LastBadPasswordAttempt ) { Write-Colored $defaultblue " (Last Failed Attempt : " $userinformation.LastBadPasswordAttempt -nonewline ; ")" } else { Write-Blank }
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "Account Locked" -Size $Tabsize -Ending " = ") $userinformation.LockedOut -nonewline
+ if ( $userinformation.LastBadPasswordAttempt ) { Write-Colored -Color $defaultblue -NonColoredText " (Last Failed Attempt : " $userinformation.LastBadPasswordAttempt -nonewline ; ")" } else { Write-Blank }
 
  if ( $userinformation.PasswordNeverExpires -or ! $noexpire ) { $color = "darkgreen" } else { $color = "red" }
- write-colored $color (Align "Password Never Expires" $TabSize " = ") $userinformation.PasswordNeverExpires
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "Password Never Expires" -Size $Tabsize -Ending " = ") $userinformation.PasswordNeverExpires
 
  if ( ! $userinformation.PasswordExpired ) { $color = "darkgreen" } else { $color = "darkgreen" }
- write-colored $color (Align "Password Expired" $TabSize " = ") $userinformation.PasswordExpired -nonewline
- if ( $userinformation.AccountExpirationDate ) { Write-Colored $defaultblue " (Expiration date : " $userinformation.AccountExpirationDate -nonewline ; ")" } else { Write-Blank }
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "Password Expired" -Size $Tabsize -Ending " = ") $userinformation.PasswordExpired -nonewline
+ if ( $userinformation.AccountExpirationDate ) { Write-Colored -Color $defaultblue -NonColoredText " (Expiration date : " $userinformation.AccountExpirationDate -nonewline ; ")" } else { Write-Blank }
 
 }
 Function Get-UserGroupContent {
@@ -1459,35 +1470,39 @@ Function Get-OSInfo {
   #Get BatteryInfo :
   $BatteryInfo = Get-CimInstance win32_battery
   #Installed RAM in GB :
-  $InstalledRam=(Get-CimInstance Win32_PhysicalMemory | Measure-Object -Property capacity -Sum | ForEach-Object {[Math]::Round(($_.sum / 1GB),2)})
+  $RamInfo = Get-CimInstance Win32_PhysicalMemory
+  $InstalledRam=($RamInfo | Measure-Object -Property capacity -Sum | ForEach-Object {[Math]::Round(($_.sum / 1GB),2)})
   #Processor :
   $ProcInfo=Get-CimInstance win32_Processor
   $BiosInfo=Get-ciminstance win32_bios
 
-  Write-Colored $defaultblue (Align "Hardware Info" $TabSize " : ") ($ComputerSystemInfo.manufacturer + " (Model : " + $ComputerSystemInfo.Model + ")")
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Hardware Info" -Size $Tabsize -Ending " : ") -ColoredText ($ComputerSystemInfo.manufacturer + " (Model : " + $ComputerSystemInfo.Model + ")")
   if ($MotherBoardInfo) {
-   Write-Colored $defaultblue (Align "Motherboard Info" $TabSize " : ") ("Manufacturer : " + $MotherBoardInfo.Manufacturer + " | Product : " + $MotherBoardInfo.Product)
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Motherboard Info" -Size $Tabsize -Ending " : ") ("Manufacturer : " + $MotherBoardInfo.Manufacturer + " | Product : " + $MotherBoardInfo.Product)
   }
-  Write-Colored $defaultblue (Align "Bios Info" $TabSize " : ") ("Serial Number : " + $BiosInfo.SerialNumber + " | Bios Name : " + $BiosInfo.Name)
-  Write-Colored $defaultblue (Align "Installed RAM" $TabSize " : ") ($InstalledRam.tostring() + " GB")
-  Write-Colored $defaultblue (Align "Physical Processor" $TabSize " : ") ($ComputerSystemInfo.NumberOfProcessors)
-  Write-Colored $defaultblue (Align "Logical Processors (Total)" $TabSize " : ") ($ComputerSystemInfo.NumberOfLogicalProcessors)
-  Write-Colored $defaultblue (Align "Hypervisor Present" $TabSize " : ") ($ComputerSystemInfo.HypervisorPresent)
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Bios Info" -Size $Tabsize -Ending " : ") ("Serial Number : " + $BiosInfo.SerialNumber + " | Bios Name : " + $BiosInfo.Name)
+  write-host
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Installed RAM" -Size $Tabsize -Ending " : ") ($InstalledRam.tostring() + " GB")
+  $RamInfo | foreach-object {
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "$($_.DeviceLocator)-RAM" -Size $Tabsize -Ending " : ") $("$($_.PartNumber.trim()) ($($_.Manufacturer)) | $(Format-FileSize $_.Capacity) ($($_.ConfiguredClockSpeed)Mhz/$($_.Speed)Mhz)")
+  }
+  write-host
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Processor Total" -Size $Tabsize -Ending " : ") ("$($ComputerSystemInfo.NumberOfProcessors) Physical | $($ComputerSystemInfo.NumberOfLogicalProcessors)  Logical")
+  $ProcInfo | foreach-object {
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "$($_.SocketDesignation)-Processor" -Size $Tabsize -Ending " : ") $(($_.Name.trim() -replace '\s+',' ')," | ",$_.Description)
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "$($_.SocketDesignation)-Logical Processors" -Size $Tabsize -Ending " : ") ($_.NumberOfLogicalProcessors)
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "$($_.SocketDesignation)-Speed Current/Max" -Size $Tabsize -Ending " : ") ($_.CurrentClockSpeed,"Mhz /",$_.MaxClockSpeed,"Mhz")
+  }
+  write-host
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Hypervisor Present" -Size $Tabsize -Ending " : ") ($ComputerSystemInfo.HypervisorPresent)
   if ($BatteryInfo) {
 
    if ($BatteryInfo.EstimatedChargeRemaining -eq 100) {$BatteryColor = "Green"} elseif ($BatteryInfo.EstimatedChargeRemaining -ge 15) {$BatteryColor = "DarkYellow"} else {$BatteryColor = "Red"}
-   Write-Colored $defaultblue (Align "Battery Info" $TabSize " : ") ($BatteryInfo.Name) -NoNewLine
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Battery Info" -Size $Tabsize -Ending " : ") ($BatteryInfo.Name) -NoNewLine
    write-colored -Color $BatteryColor -NonColoredText " | % remaining : " -ColoredText $BatteryInfo.EstimatedChargeRemaining -NoNewLine
    write-colored -Color $defaultblue -NonColoredText " | Estimated runtime : " -ColoredText $BatteryInfo.EstimatedRunTime
   }
-
   write-host
-
-  $ProcInfo | foreach-object {
-   Write-Colored $defaultblue (Align "$($_.SocketDesignation)-Processor" $TabSize " : ") $(($_.Name.trim() -replace '\s+',' ')," | ",$_.Description)
-   Write-Colored $defaultblue (Align "$($_.SocketDesignation)-Logical Processors" $TabSize " : ") ($_.NumberOfLogicalProcessors)
-   Write-Colored $defaultblue (Align "$($_.SocketDesignation)-Speed Current/Max" $TabSize " : ") ($_.CurrentClockSpeed,"Mhz /",$_.MaxClockSpeed,"Mhz")
-  }
  }
 
  if ( $Software ) {
@@ -1496,26 +1511,26 @@ Function Get-OSInfo {
 
   $os = Get-CimInstance win32_operatingsystem
 
-  Write-Colored $defaultblue (Align "Windows Version" $TabSize " : ") (Get-WindowsVersion)
-  Write-Colored $defaultblue (Align "Installation Date" $TabSize " : ") $(Format-Date ($os.InstallDate.tostring()))
-  Write-Colored $defaultblue (Align "Uptime" $TabSize " : ") (Get-UptimePerso)
-  Write-Colored $defaultblue (Align "TimeZone" $TabSize " : ") (([TimeZoneInfo]::Local).DisplayName)
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Windows Version" -Size $Tabsize -Ending " : ") (Get-WindowsVersion)
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Installation Date" -Size $Tabsize -Ending " : ") $(Format-Date ($os.InstallDate.tostring()))
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Uptime" -Size $Tabsize -Ending " : ") (Get-UptimePerso)
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "TimeZone" -Size $Tabsize -Ending " : ") (([TimeZoneInfo]::Local).DisplayName)
 
   #NLA (If Error Message NLA will be marked as KO)
   $NLA_Config=(Get-CimInstance "Win32_TSGeneralSetting "-Namespace root\cimv2\terminalservices -Filter "TerminalName='RDP-tcp'").UserAuthenticationRequired 2>$null
-  if ( $NLA_Config) {Write-colored darkgreen (Align "NLA" $TabSize " : ") "OK"} else { Write-colored red (Align "NLA" $TabSize " : ") "KO"}
+  if ( $NLA_Config) {Write-colored darkgreen (Align -Variable "NLA" -Size $TabSize -Ending " : ") "OK"} else { Write-colored red (Align -Variable "NLA" -Size $Tabsize -Ending " : ") "KO"}
 
   #SCCM
   if ((Get-SCCMSiteCode)) {
    if ( (test-path C:\SMSLogs\*JoinDomain*) ) {
     $installer=get-content "C:\SMSLogs\*JoinDomain*" | select-string "InstallerUserName" | get-unique | ForEach-Object { $_.Line.Split(":")[1].Trim()}
    }
-   if ($installer) { Write-Colored $defaultblue " (Installed by : " "$installer" -nonewline ; write-Colored "Black" ")" } else {write-blank}
-   Write-Colored $defaultblue (Align "SCCM Site Code" $TabSize " : ") (Get-SCCMSiteCode)
-   Write-Colored $defaultblue (Align "Business Category" $TabSize " : ") (Get-BusinessCategory)
+   if ($installer) { Write-Colored -Color $defaultblue -NonColoredText " (Installed by : " "$installer" -nonewline ; write-Colored "Black" ")" } else {write-blank}
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "SCCM Site Code" -Size $Tabsize -Ending " : ") (Get-SCCMSiteCode)
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Business Category" -Size $Tabsize -Ending " : ") (Get-BusinessCategory)
   }
 
-  Write-Colored $defaultblue (Align "Swap" $TabSize " : ") (Get-Swap)
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Swap" -Size $Tabsize -Ending " : ") (Get-Swap)
 
   #Get Proxy Settings
   # ([System.Net.WebProxy]::GetDefaultProxy()).Address
@@ -1524,16 +1539,16 @@ Function Get-OSInfo {
   if (Assert-IsAdmin) {
    Try {
     Get-BitlockerVolume | Sort-Object MountPoint | ForEach-Object {
-     Write-Colored $defaultblue (Align "Bitlocker $($_.MountPoint)" $TabSize " : ") ("$($_.VolumeStatus)")
+     Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Bitlocker $($_.MountPoint)" -Size $Tabsize -Ending " : ") ("$($_.VolumeStatus)")
     }
    } Catch {
-   Write-Colored $defaultblue (Align "Bitlocker" $TabSize " : ") "Not Available"
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Bitlocker" -Size $Tabsize -Ending " : ") "Not Available"
    }
   }
 
   #Secure Boot
   if (Assert-IsAdmin) {
-   Write-Colored $defaultblue (Align "Secure Boot" $TabSize " : ") $(Try {Confirm-SecureBootUEFI -ErrorAction Stop} catch {$False})
+   Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Secure Boot" -Size $Tabsize -Ending " : ") $(Try {Confirm-SecureBootUEFI -ErrorAction Stop} catch {$False})
   }
 
   #Fast Boot
@@ -1549,13 +1564,13 @@ Function Get-OSInfo {
   } else {
    $FastBoot = "Unknown"
   }
-  Write-Colored $defaultblue (Align "Fast Boot" $TabSize " : ") $FastBoot
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Fast Boot" -Size $Tabsize -Ending " : ") -ColoredText $FastBoot
 
   #SMB1 Check
   if (Assert-IsAdmin) {
    $SMB1Enabled=(Get-SmbServerConfiguration).EnableSMB1Protocol
    if ($SMB1Enabled) {$SMBColor = "Red"} else {$SMBColor = "Green"}
-   Write-Colored $SMBColor (Align "SMB1 Enabled" $TabSize " : ") $SMB1Enabled
+   Write-Colored -Color $SMBColor -NonColoredText (Align -Variable "SMB1 Enabled" -Size $Tabsize -Ending " : ") -ColoredText $SMB1Enabled
   }
 
   #Credential Guard
@@ -1569,19 +1584,19 @@ Function Get-OSInfo {
     1 {"Yellow","Enabled but not Running"}
     2 {"Green","Enabled and Running"}
    }
-   Write-Colored $VirtualizationBasedSecurityStatus[0] (Align "Virtualization Security" $TabSize " : ") $VirtualizationBasedSecurityStatus[1]
+   Write-Colored -Color $VirtualizationBasedSecurityStatus[0] -NonColoredText (Align -Variable "Virtualization Security" -Size $Tabsize -Ending " : ") -ColoredText $VirtualizationBasedSecurityStatus[1]
 
    if ($CredentialGuardInfo.SecurityServicesRunning[0] -eq 0) {
-    Write-Colored "Red" (Align "Credential Guard" $TabSize " : ") "No Service Running"
+    Write-Colored -Color "red" -NonColoredText  (Align -Variable "Credential Guard" -Size $Tabsize -Ending " : ") "No Service Running"
    } else {
-    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('1') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "Windows Defender Credential Guard is running" }
-    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('2') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "Memory integrity is running (HVCI)" }
-    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('3') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "System Guard Secure Launch is running" }
-    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('4') ){ Write-Colored "Green" (Align "Credential Guard" $TabSize " : ") "SMM Firmware Measurement is running" }
+    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('1') ){ Write-Colored -Color "Green" -NonColoredText (Align -Variable "Credential Guard" -Size $Tabsize -Ending " : ") "Windows Defender Credential Guard is running" }
+    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('2') ){ Write-Colored -Color "Green" -NonColoredText (Align -Variable "Credential Guard" -Size $Tabsize -Ending " : ") "Memory integrity is running (HVCI)" }
+    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('3') ){ Write-Colored -Color "Green" -NonColoredText (Align -Variable "Credential Guard" -Size $Tabsize -Ending " : ") "System Guard Secure Launch is running" }
+    if ($CredentialGuardInfo.SecurityServicesRunning -Contains('4') ){ Write-Colored -Color "Green" -NonColoredText (Align -Variable "Credential Guard" -Size $Tabsize -Ending " : ") "SMM Firmware Measurement is running" }
    }
 
   } Catch {
-   Write-Colored "Red" (Align "Credential Guard" $TabSize " : ") "Error checking status"
+   Write-Colored -Color "red" -NonColoredText  (Align -Variable "Credential Guard" -Size $Tabsize -Ending " : ") "Error checking status"
   }
 
 
@@ -1590,7 +1605,7 @@ Function Get-OSInfo {
   if ($LSA_Info.RunAsPPL -eq 0) { $RunAsPPL = 'Disabled' ; $RunAsPPLColor = "Red" } elseif ( $LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled' ; $RunAsPPLColor = "DarkYellow" } else { $RunAsPPL = "Unknown" ; $RunAsPPLColor = "Red" }
   if ($LSA_Info.RunAsPPLBoot -gt 0 ) { $RunAsPPL = 'Enabled OnBoot' ; $RunAsPPLColor = "Green" }
 
-  Write-Colored $RunAsPPLColor (Align "RunAsPPL" $TabSize " : ") $RunAsPPL
+  Write-Colored -Color $RunAsPPLColor -NonColoredText (Align -Variable "RunAsPPL" -Size $Tabsize -Ending " : ") -ColoredText $RunAsPPL
 
   #Anvitirus
   $AntivirusResult=Get-AntiVirus
@@ -1598,12 +1613,12 @@ Function Get-OSInfo {
    $Count=0
    $AntivirusResult | ForEach-Object {
     $Count++
-    Write-Colored $defaultblue (Align "Antivirus [$Count]" $TabSize " : ") $_.DisplayName -NoNewLine
+    Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Antivirus [$Count]" -Size $Tabsize -Ending " : ") $_.DisplayName -NoNewLine
     Write-Colored -Color $defaultblue " - " -NoNewLine
     if ($_.'Real-time Protection Status' -ne 'On') {$Color='Red'} else {$Color='Green'}
-    Write-Colored $Color -ColoredText "$($_.'Real-time Protection Status') " -NoNewLine
+    Write-Colored -Color $Color -ColoredText "$($_.'Real-time Protection Status') " -NoNewLine
     if ($_.'Definition Status' -ne 'Up To Date') {$Color='Red'} else {$Color='Green'}
-    Write-Colored $Color -ColoredText "[$($_.'Definition Status')]"
+    Write-Colored -Color $Color -ColoredText "[$($_.'Definition Status')]"
    }
   }
 
@@ -1611,13 +1626,13 @@ Function Get-OSInfo {
 }
 Function Get-LocalDomainInfo {
  $TabSize=20
- Write-Colored $defaultblue (Align "Server Hostname" $TabSize " : ") $env:computerName
- Write-Colored $defaultblue (Align "Server FQDN" $TabSize " : ") ([System.Net.Dns]::GetHostByName(($env:computerName))).HostName
- Write-Colored $defaultblue (Align "Server Domain" $TabSize " : ") (Get-CimInstance WIN32_ComputerSystem).Domain
- Write-Colored $defaultblue (Align "User DNS Domain" $TabSize " : ") $env:USERDNSDOMAIN
- Write-Colored $defaultblue (Align "User Domain" $TabSize " : ") $env:USERDOMAIN
- Write-Colored $defaultblue (Align "User Domain Roaming" $TabSize " : ") $env:USERDOMAIN_ROAMINGPROFILE
- Write-Colored $defaultblue (Align "Logon Server" $TabSize " : ") $env:LOGONSERVER
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Server Hostname" -Size $Tabsize -Ending " : ") $env:computerName
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Server FQDN" -Size $Tabsize -Ending " : ") ([System.Net.Dns]::GetHostByName(($env:computerName))).HostName
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Server Domain" -Size $Tabsize -Ending " : ") (Get-CimInstance WIN32_ComputerSystem).Domain
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "User DNS Domain" -Size $Tabsize -Ending " : ") $env:USERDNSDOMAIN
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "User Domain" -Size $Tabsize -Ending " : ") $env:USERDOMAIN
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "User Domain Roaming" -Size $Tabsize -Ending " : ") $env:USERDOMAIN_ROAMINGPROFILE
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Logon Server" -Size $Tabsize -Ending " : ") $env:LOGONSERVER
 }
 Function Get-DomainInfo {
  Param (
@@ -1637,7 +1652,7 @@ Function Get-DomainInfo {
 
  $ByRole | ForEach-Object {
  $TabSize=40
- Write-Colored -NonColoredText (Align "$($_.OperationMasterRoles) ($($_.Domain))" $TabSize " : ") -ColoredText "$($_.Name) ($($_.IPV4Address))"
+ Write-Colored -NonColoredText (Align -Variable "$($_.OperationMasterRoles) ($($_.Domain))" -Size $Tabsize -Ending " : ") -ColoredText "$($_.Name) ($($_.IPV4Address))"
  }
 }
 Function Get-WindowsVersion {
@@ -1700,15 +1715,15 @@ Function Get-LicenseStatus {
 
  write-blank
 
- if (! ($result)) {Write-Colored "Red" "" "Server is not activated"} else {
+ if (! ($result)) {Write-Colored -Color "red" -NonColoredText  "" "Server is not activated"} else {
   ($result | out-string).split("`r`n") | Where-Object { $_ }
-  if ($result.KeyServer -eq "No Key Server Defined" -and $result.KeyServerDiscovered -eq "No Key Server Discovered") {Write-Colored "Red" "" "No KMS server found"}
-  Write-Colored "darkgreen" "" "Server is Activated"
+  if ($result.KeyServer -eq "No Key Server Defined" -and $result.KeyServerDiscovered -eq "No Key Server Discovered") {Write-Colored -Color "red" -ColoredText "No KMS server found"}
+  Write-Colored -Color "darkgreen" -ColoredText "Server is Activated"
  }
  write-blank
  $LicenseKey=(Get-CimInstance -query 'select * from SoftwareLicensingService').OA3xOriginalProductKey
  if (! $LicenseKey) {$LicenseKey="Not found"}
- Write-Colored $defaultblue "Windows License Key : " $LicenseKey
+ Write-Colored -Color $defaultblue -NonColoredText "Windows License Key : " $LicenseKey
  write-blank
 }
 Function Get-ActivationStatus {
@@ -1759,17 +1774,17 @@ Function Set-HostContent {
 }
 Function Get-LangSettings {
   $alignsize=20
-  Write-Colored $defaultblue (Align "OS Language" $alignsize " : " ) $PsUICulture
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "OS Language" -Size $alignsize -Ending " : " ) $PsUICulture
   #get-culture | format-list -property * => Get all Regional Properties
   $RegionalInfo = get-culture
   $RegionalInfoFull=$RegionalInfo.Name+" [ "+$RegionalInfo.DisplayName+" ]"
-  Write-Colored $defaultblue (Align "Regional Settings" $alignsize " : " ) $RegionalInfoFull
+  Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Regional Settings" -Size $alignsize -Ending " : " ) $RegionalInfoFull
 
   #$PsCulture => Get Only Name of Regional Settings
 }
 Function Get-LangForAllUser {
  if ( ! (Assert-IsAdmin) ) {Write-host -ForegroundColor "red" "You must be admin to run this command" ; return}
- New-PSDrive HKU Registry HKEY_USERS | Out-Null
+ New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS | Out-Null
  $ObjUserList=@()
  foreach( $user in $((Get-ChildItem HKU:\).PSChildName | Sort-Object)) {
   try {$DateFormat=(Get-ItemProperty -ErrorAction SilentlyContinue -Path "HKU:\$user\Control Panel\International")} catch {}
@@ -1805,15 +1820,15 @@ Function Get-RolesAndFeatures {
  else {$RolesAndFeatures=Get-WindowsFeature | Where-Object {$_.installed}}
  # Get-WindowsFeature | Where-Object Installed
  $RolesAndFeatures | ForEach-Object {
-  If ($_.FeatureType -eq "Role") { Write-Colored "Magenta" ("   " *$_.Depth+"[") "R" -nonewline} else { Write-Colored $defaultblue ("   " *$_.Depth+"[") "F" -nonewline}
+  If ($_.FeatureType -eq "Role") { Write-Colored -Color "Magenta" -NonColoredText ("   " *$_.Depth+"[") -ColoredText "R" -nonewline} else { Write-Colored -Color $defaultblue -NonColoredText ("   " *$_.Depth+"[") -ColoredText "F" -nonewline}
   write-colored -NonColoredText "] " -ColoredText ($_.DisplayName+" ("+$_.Name+")")
  }
  $ProgressPreference = "Continue";
 }
 Function Get-KMS {
  $KMSServerList=(nslookup -type=srv _vlmcs._tcp 2>$errormessage | Select-Object -skip 3 | select-string -notmatch -pattern "internet address =|nameserver =")
- # if ( $KMSServerList[0].line.contains("DNS request timed out") ) { write-colored "Red" "" "No kms server found" ; return}
- if ( $KMSServerList | select-string "timeout" )  { write-colored "Red" "" "DNS request timed out" ; return}
+ # if ( $KMSServerList[0].line.contains("DNS request timed out") ) { Write-Colored -Color "red" -NonColoredText  "" "No kms server found" ; return}
+ if ( $KMSServerList | select-string "timeout" )  { Write-Colored -Color "red" -NonColoredText  "" "DNS request timed out" ; return}
  $KMSServerList_Split = $KMSServerList -replace "_vlmcs._","__SplitHere" -split "SplitHere" -replace "\s+"," " -join "," -split "__" -replace ", ","," -replace "^,","" -notmatch '^\s*$'
 
  foreach($server in $KMSServerList_Split) {
@@ -1823,18 +1838,18 @@ Function Get-KMS {
   $Port=$server_line[3].TrimStart("port =")
   $ServerName=$server_line[4].TrimStart("svr hostname =")
 
-  Write-Colored $defaultblue "Server : " (Align $ServerName 20) -nonewline
-  Write-Colored $defaultblue " | Port : " (Align $Port 4) -nonewline
-  Write-Colored $defaultblue " | Priority : " (Align $Priority 2) -nonewline
-  Write-Colored $defaultblue " | Weight : " (Align $Weight 2) -nonewline
-  if ( ! (Test-Port $ServerName $Port) ) { write-colored "Red" "| Access : " "KO" } else { write-colored "DarkGreen" "| Access : " "OK" }
+  Write-Colored -Color $defaultblue -NonColoredText "Server : " (Align -Variable $ServerName 20) -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | Port : " (Align -Variable $Port 4) -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | Priority : " (Align -Variable $Priority 2) -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | Weight : " (Align -Variable $Weight 2) -nonewline
+  if ( ! (Test-Port $ServerName $Port) ) { Write-Colored -Color "red" -NonColoredText  "| Access : " "KO" } else { write-colored "DarkGreen" "| Access : " "OK" }
  }
 
 }
 Function Get-TimeZoneCIM {
  #Does not seem to be the same as the clock (must check)
  # [TimeZoneInfo]::Local
- (Get-CimInstance -Class win32_timezone).Caption
+ (Get-CimInstance -ClassName win32_timezone).Caption
 }
 Function Get-InstalledHotfix {
  Param (
@@ -1853,7 +1868,7 @@ Function Get-InstalledHotfix {
   $AllHotFix=Get-Hotfix -ComputerName $ServerName
  }
 
- } catch {write-colored "red" "" $error[0]}
+ } catch {Write-Colored -Color "red" -NonColoredText  "" $error[0]}
 
  $AllHotFix | Sort-Object HotfixID | Where-Object {
   $globalcount++
@@ -1863,16 +1878,16 @@ Function Get-InstalledHotfix {
   if ($globalcount -eq $AllHotFix.count -or ! $AllHotFix.count) {
    #If last occurence is the first of a line
    # if ($count -ne 0 ) {write-colored -NonColoredText " | " -nonewline}
-   write-colored $color " | " (Align $_.HotfixID $alignsize) -nonewline
-   write-colored $color " |"
+   Write-Colored -Color $Color -NonColoredText " | " (Align -Variable $_.HotfixID -Size $alignsize) -nonewline
+   Write-Colored -Color $Color -NonColoredText " |"
    Write-StarLine "-" ([console]::foregroundcolor)
   }
   #First occurence per line
-  elseif ($count -eq 0 ) { write-colored $color " | " (Align $_.HotfixID $alignsize) -nonewline ; $count++}
+  elseif ($count -eq 0 ) { Write-Colored -Color $Color -NonColoredText " | " (Align -Variable $_.HotfixID -Size $alignsize) -nonewline ; $count++}
   #Last occurence per line
-  elseif ($count -eq 7 ) { write-colored $color " | " (Align $_.HotfixID $alignsize) -nonewline ;  write-colored $color " |" ; $count=0}
+  elseif ($count -eq 7 ) { Write-Colored -Color $Color -NonColoredText " | " (Align -Variable $_.HotfixID -Size $alignsize) -nonewline ;  Write-Colored -Color $Color -NonColoredText " |" ; $count=0}
   #All other occurence
-  else { write-colored $color " | " (Align $_.HotfixID $alignsize) -nonewline ; $count++}
+  else { Write-Colored -Color $Color -NonColoredText " | " (Align -Variable $_.HotfixID -Size $alignsize) -nonewline ; $count++}
   }
  write-Centered "Number of installed hotfixes :  $globalcount"
  Write-StarLine "*"
@@ -1985,7 +2000,7 @@ Function Get-EventLogInfo {
  if ( ! (Assert-IsCommandAvailable Get-EventLog) ) {return}
  try {
   $EventLogList=(Get-EventLog -ComputerName $ServerName -list).log
- } catch {Write-Colored "Red" -ColoredText $Error[0] ; return}
+ } catch {Write-Colored -Color "Red" -ColoredText $Error[0] ; return}
  while (! ($EventLogList -contains $LogType) ) {$LogType=read-host "Please choose one of the following Log : $([system.String]::Join(", ", $EventLogList)) "}
 
  if (! $NumberOfDays) {
@@ -2003,7 +2018,7 @@ Function Get-EventLogInfo {
  try {
   $AllEvents=(Get-EventLog -ComputerName $ServerName $LogType -after $LastBootTime | Where-Object {$_.entrytype -eq "Error" -or $_.entrytype -eq "Warning" -or $_.entrytype -eq "Critical"}) 2>$null
  } catch {
-  Write-Colored "Red" -ColoredText $Error[0].Exception.Message
+  Write-Colored -Color "Red" -ColoredText $Error[0].Exception.Message
  }
 
  $Events=($AllEvents | Select-Object @{Label='SourceID'; Expression={ $_.Source +" (Event:"+$_.EventID +")" }},Message | Group-Object Message | Where-Object {$_.count -gt $ErrorCount})
@@ -2205,9 +2220,9 @@ Function Get-EthernetConf {
    if ((($_.NetConnectionStatus -eq "0") -or ($_.NetConnectionStatus -eq "7")) -and (! $ShowDisconnected)) {Return}
 
   Write-StarLine "-" ; write-centered $_.MACAddress "Magenta" ; Write-StarLine "-"
-   write-colored $fontcolor (Align "Interface Name " $alignsize " : ") $_.ProductName
-   write-colored $fontcolor (Align "Interface Alias " $alignsize " : ") $_.NetConnectionID
-   write-colored $fontcolor (Align "Interface Index " $alignsize " : ") $_.InterfaceIndex
+   write-colored $fontcolor (Align -Variable "Interface Name " -Size $alignsize -Ending " : ") $_.ProductName
+   write-colored $fontcolor (Align -Variable "Interface Alias " -Size $alignsize -Ending " : ") $_.NetConnectionID
+   write-colored $fontcolor (Align -Variable "Interface Index " -Size $alignsize -Ending " : ") $_.InterfaceIndex
    $ConnectionStatus=switch ($_.NetConnectionStatus) {
     0 {"Disconnected";"Red"}
     1 {"Connecting";"DarkYellow"}
@@ -2225,28 +2240,28 @@ Function Get-EthernetConf {
    }
    if ($ConnectionStatus) {
     $ConnectionStatusColor=$ConnectionStatus[1]
-    write-colored $ConnectionStatusColor (Align "Interface Status " $alignsize " : ") $ConnectionStatus[0]
+    write-colored $ConnectionStatusColor (Align -Variable "Interface Status " -Size $alignsize -Ending " : ") $ConnectionStatus[0]
    } else {
    }
 
-   write-colored $fontcolor (Align "Interface Last Reset " $alignsize " : ") $_.TimeOfLastReset
+   write-colored $fontcolor (Align -Variable "Interface Last Reset " -Size $alignsize -Ending " : ") $_.TimeOfLastReset
    if ( (Assert-IsCommandAvailable Get-NetAdapter -NoError) ) {
     $NetworkInfoHard=Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue
     If (! $NetworkInfoHard) {Write-Blank ; Return}
-    Write-Colored $fontcolor (Align "LinkSpeed " $alignsize " : ") $NetworkInfoHard."LinkSpeed" -NoNewLine
+    Write-Colored -Color $fontcolor -NonColoredText (Align -Variable "LinkSpeed " -Size $alignsize -Ending " : ") -ColoredText $NetworkInfoHard."LinkSpeed" -NoNewLine
     if (! $NetworkInfoHard.FullDuplex) {
       if ($ConnectionStatus[0] -ne "Connected") {
         Write-Colored "Gray" -ColoredText " (Not connected)"
        } else {
-       Write-Colored "Red" -ColoredText " (NOT FULL DUPLEX)"
+       write-Colored -Color "Red" -ColoredText " (NOT FULL DUPLEX)"
        }
     }else {
-     Write-Colored "Green" -ColoredText " (Full Duplex)"
+     Write-Colored -Color "Green" -ColoredText " (Full Duplex)"
     }
-    write-colored $fontcolor (Align "Driver " $alignsize " : ")  -nonewline
-    Write-Colored $fontcolor "Provider " $NetworkInfoHard.DriverProvider -nonewline
-    Write-Colored $fontcolor " | Version " $NetworkInfoHard.DriverVersion -nonewline
-    Write-Colored $fontcolor " | Date " $NetworkInfoHard.DriverDate
+    write-colored -Color $fontcolor -NonColoredText (Align -Variable "Driver " -Size $alignsize -Ending " : ")  -nonewline
+    Write-Colored -Color $fontcolor -NonColoredText "Provider " -ColoredText $NetworkInfoHard.DriverProvider -nonewline
+    Write-Colored -Color $fontcolor -NonColoredText " | Version " -ColoredText $NetworkInfoHard.DriverVersion -nonewline
+    Write-Colored -Color $fontcolor -NonColoredText " | Date " -ColoredText $NetworkInfoHard.DriverDate
   }
   if ($ConnectionStatus[0] -ne "Connected") { Return }
 
@@ -2257,55 +2272,55 @@ Function Get-EthernetConf {
   write-Blank
   $count=0 ; while ($count -lt $NetworkConfig.IPAddress.count) {
    if (([IpAddress]$NetworkConfig.IPAddress[$count]).AddressFamily -eq "InterNetworkV6") { $type="IPv6" } else { $type="IPv4" }
-   write-colored $fontcolor (Align "IP Address($count) - $type" $alignsize " : ") (Align $NetworkConfig.IPAddress[$count] 40) -nonewline
-   write-colored $fontcolor (Align "Mask($count)" 8 ": ") $NetworkConfig.IPSubnet[$count]
+   write-colored $fontcolor (Align -Variable "IP Address($count) - $type" -Size $alignsize -Ending " : ") (Align -Variable $NetworkConfig.IPAddress[$count] 40) -nonewline
+   write-colored $fontcolor (Align -Variable "Mask($count)" 8 ": ") $NetworkConfig.IPSubnet[$count]
    $count++
   }
 
   if ($NetworkConfig.DefaultIPGateway) {
    write-blank
-   write-colored $fontcolor (Align "Gateway - IPv4" $alignsize " : ") $NetworkConfig.DefaultIPGateway[0]
+   write-colored $fontcolor (Align -Variable "Gateway - IPv4" -Size $alignsize -Ending " : ") $NetworkConfig.DefaultIPGateway[0]
    if ($NetworkConfig.DefaultIPGateway.length -gt 1) {
     $count=1
-    write-colored $fontcolor (Align "Gateway - IPv6" $alignsize " : ") $NetworkConfig.DefaultIPGateway[$count]
+    write-colored $fontcolor (Align -Variable "Gateway - IPv6" -Size $alignsize -Ending " : ") $NetworkConfig.DefaultIPGateway[$count]
     $count++
    }
   }
 
   write-blank
 
-  $count=0 ; $NetworkConfig.DNSServerSearchOrder | Where-Object { write-colored $fontcolor (Align "DNS Servers ($count)" $alignsize " : ") $_ ; $count++ }
+  $count=0 ; $NetworkConfig.DNSServerSearchOrder | Where-Object { write-colored $fontcolor (Align -Variable "DNS Servers ($count)" -Size $alignsize -Ending " : ") $_ ; $count++ }
 
-  if ($NetworkConfig.WINSPrimaryServer) {write-blank; write-colored $fontcolor (Align "WINS Server (0)" $alignsize " : ") ($NetworkConfig.WINSPrimaryServer)}
-  if ($NetworkConfig.WINSSecondaryServer) {write-colored $fontcolor (Align "WINS Server (1)" $alignsize " : ") ($NetworkConfig.WINSSecondaryServer)}
+  if ($NetworkConfig.WINSPrimaryServer) {write-blank; write-colored $fontcolor (Align -Variable "WINS Server (0)" -Size $alignsize -Ending " : ") ($NetworkConfig.WINSPrimaryServer)}
+  if ($NetworkConfig.WINSSecondaryServer) {write-colored $fontcolor (Align -Variable "WINS Server (1)" -Size $alignsize -Ending " : ") ($NetworkConfig.WINSSecondaryServer)}
 
   write-Blank
   if (! $NetworkConfig.DHCPServer) { $DHCP_Server="N/A" } else { $DHCP_Server=$NetworkConfig.DHCPServer }
-  write-colored $fontcolor (Align "DHCP Server" $alignsize " : ") $DHCP_Server -nonewline
+  write-colored $fontcolor (Align -Variable "DHCP Server" -Size $alignsize -Ending " : ") $DHCP_Server -nonewline
   write-colored $fontcolor " (Enabled: " $NetworkConfig.DHCPEnabled -nonewline
   write-colored -NonColoredText ")`n"
 
-  write-colored $fontcolor(Align "DNS Domain" $alignsize " : ") $NetworkConfig.DNSDomain
+  write-colored $fontcolor(Align -Variable "DNS Domain" -Size $alignsize -Ending " : ") $NetworkConfig.DNSDomain
 
-  $count=0 ; $NetworkConfig.DNSDomainSuffixSearchOrder | Where-Object { write-colored $fontcolor (Align "DNS Suffix Search Order ($count)" $alignsize " : ") $_ ; write-blank ; $count++ }
+  $count=0 ; $NetworkConfig.DNSDomainSuffixSearchOrder | Where-Object { write-colored $fontcolor (Align -Variable "DNS Suffix Search Order ($count)" -Size $alignsize -Ending " : ") $_ ; write-blank ; $count++ }
 
   # Format-PrintLineByLine $_.DNSDomainSuffixSearchOrder $fontcolor
 
-  write-colored $fontcolor (Align "IP Metric " $alignsize " : ") $NetworkConfig.IPConnectionMetric
+  write-colored $fontcolor (Align -Variable "IP Metric " -Size $alignsize -Ending " : ") $NetworkConfig.IPConnectionMetric
 
   write-blank
 
   if ( ! $NetworkConfig.FullDNSRegistrationEnabled) { $color="red" } else { $color="darkgreen" }
-  write-colored $color (Align "DNS Auto Register" $alignsize " : ") $NetworkConfig.FullDNSRegistrationEnabled -NoNewLine
+  Write-Colored -Color $Color -NonColoredText (Align -Variable "DNS Auto Register" -Size $alignsize -Ending " : ") $NetworkConfig.FullDNSRegistrationEnabled -NoNewLine
   if ( $NetworkConfig.DomainDNSRegistrationEnabled) { $color="red" } else { $color="darkgreen" }
-  write-colored $color " (Uses Suffix : " $NetworkConfig.DomainDNSRegistrationEnabled -NoNewLine
-  write-colored $color ")"
+  Write-Colored -Color $Color -NonColoredText " (Uses Suffix : " $NetworkConfig.DomainDNSRegistrationEnabled -NoNewLine
+  Write-Colored -Color $Color -NonColoredText ")"
 
   if ($NetworkConfig.WINSEnableLMHostsLookup) { $color="red" } else { $color="darkgreen" }
-  write-colored $color (Align "WINS Search for LMHosts" $alignsize " : ") $NetworkConfig.WINSEnableLMHostsLookup -nonewline
+  Write-Colored -Color $Color -NonColoredText (Align -Variable "WINS Search for LMHosts" -Size $alignsize -Ending " : ") $NetworkConfig.WINSEnableLMHostsLookup -nonewline
   if ($NetworkConfig.DNSEnabledForWINSResolution) { $color="red" } else { $color="darkgreen" }
-  write-colored $color " (WINS DNS Resolution : " $NetworkConfig.DNSEnabledForWINSResolution -nonewline
-  write-colored $color ")"
+  Write-Colored -Color $Color -NonColoredText " (WINS DNS Resolution : " $NetworkConfig.DNSEnabledForWINSResolution -nonewline
+  Write-Colored -Color $Color -NonColoredText ")"
 
   if ($NetworkConfig.TcpipNetbiosOptions -ne 2) { $color="red" } else { $color="darkgreen" }
   $NetBiosValue = switch ($NetworkConfig.TcpipNetbiosOptions) {
@@ -2313,7 +2328,7 @@ Function Get-EthernetConf {
    "1"   {"Enabled"; break}
    "2"   {"Disabled"; break}
   }
-  write-colored $color (Align "NETBIOS" $alignsize " : ") $NetBiosValue
+  Write-Colored -Color $Color -NonColoredText (Align -Variable "NETBIOS" -Size $alignsize -Ending " : ") $NetBiosValue
 
  }
  } Catch {
@@ -2371,27 +2386,27 @@ Function Get-IP {
   Write-StarLine -character "-"
 
   # Interface info
-  write-colored $fontcolor (Align "Interface Name " $alignsize " : ") $_.Name
-  write-colored $fontcolor (Align "Interface Description " $alignsize " : ") $_.Description
-  write-colored $fontcolor (Align "Interface Type " $alignsize " : ") $_.NetworkInterfaceType
-  write-colored $fontcolor (Align "Interface Metric " $alignsize " : ") "$($_.Metric)$(if ($_.AutomaticMetric) {" (Automatic)"})"
-  write-colored $fontcolor (Align "Interface Index " $alignsize " : ") $_.Index
+  write-colored $fontcolor (Align -Variable "Interface Name " -Size $alignsize -Ending " : ") $_.Name
+  write-colored $fontcolor (Align -Variable "Interface Description " -Size $alignsize -Ending " : ") $_.Description
+  write-colored $fontcolor (Align -Variable "Interface Type " -Size $alignsize -Ending " : ") $_.NetworkInterfaceType
+  write-colored $fontcolor (Align -Variable "Interface Metric " -Size $alignsize -Ending " : ") "$($_.Metric)$(if ($_.AutomaticMetric) {" (Automatic)"})"
+  write-colored $fontcolor (Align -Variable "Interface Index " -Size $alignsize -Ending " : ") $_.Index
   if ($_.OperationalStatus -eq "Up") {$StatusColor = "Green"} elseif ($_.OperationalStatus -eq "Down") {$StatusColor = "Red"} else {$StatusColor = "DarkYellow"}
-  write-colored $StatusColor (Align "Interface Status " $alignsize " : ") $_.OperationalStatus
-  if ($_.InterfaceSpeed) { write-colored $fontcolor (Align "Interface Speed " $alignsize " : ") $_.InterfaceSpeed }
-  if ($_.DNSSuffix) {write-colored $fontcolor (Align "Interface DNS Suffix " $alignsize " : ") $_.DNSSuffix}
+  write-colored $StatusColor (Align -Variable "Interface Status " -Size $alignsize -Ending " : ") $_.OperationalStatus
+  if ($_.InterfaceSpeed) { write-colored $fontcolor (Align -Variable "Interface Speed " -Size $alignsize -Ending " : ") $_.InterfaceSpeed }
+  if ($_.DNSSuffix) {write-colored $fontcolor (Align -Variable "Interface DNS Suffix " -Size $alignsize -Ending " : ") $_.DNSSuffix}
   $RouteInfoForThisInterface = $RouteInfo | Where-Object ifIndex -eq $_.Index
   if ($RouteInfoForThisInterface) {
-   write-colored $fontcolor (Align "Number of routes " $alignsize " : ") $RouteInfoForThisInterface.Count
+   write-colored $fontcolor (Align -Variable "Number of routes " -Size $alignsize -Ending " : ") $RouteInfoForThisInterface.Count
   }
 
   # Driver info
   if ($ShowDriverInfo) {
    Try {
     $AdapterInfo=Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop | Select-Object DriverProvider,DriverVersionString,NdisVersion,DriverDescription,DriverDate
-    write-colored $fontcolor (Align "Driver Description " $alignsize " : ") $AdapterInfo.DriverDescription
-    write-colored $fontcolor (Align "Driver Info " $alignsize " : ") $($AdapterInfo.DriverProvider,"[",$AdapterInfo.DriverVersionString,"]","(",$AdapterInfo.DriverDate,")")
-    write-colored $fontcolor (Align "Driver Ndis Version " $alignsize " : ") $AdapterInfo.NdisVersion
+    write-colored $fontcolor (Align -Variable "Driver Description " -Size $alignsize -Ending " : ") $AdapterInfo.DriverDescription
+    write-colored $fontcolor (Align -Variable "Driver Info " -Size $alignsize -Ending " : ") $($AdapterInfo.DriverProvider,"[",$AdapterInfo.DriverVersionString,"]","(",$AdapterInfo.DriverDate,")")
+    write-colored $fontcolor (Align -Variable "Driver Ndis Version " -Size $alignsize -Ending " : ") $AdapterInfo.NdisVersion
    } Catch {}
   }
 
@@ -2399,7 +2414,7 @@ Function Get-IP {
     if ($ShowBindings) {
      Try {
       $AdapterBindings = ( Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop  | Get-NetAdapterBinding | Where-Object Enabled ).ComponentID -join ","
-      write-colored $fontcolor (Align "Enabled bindings " $alignsize " : ") $AdapterBindings
+      write-colored $fontcolor (Align -Variable "Enabled bindings " -Size $alignsize -Ending " : ") $AdapterBindings
      } Catch {}
     }
 
@@ -2410,13 +2425,13 @@ Function Get-IP {
      $ConnectionProfile=Get-NetConnectionProfile -InterfaceIndex $_.Index -ErrorAction Stop
      # Network Category
      if ($ConnectionProfile.NetworkCategory -eq 'Public') {$StatusColor = "Red"} else { $StatusColor="Green" }
-     write-colored $StatusColor (Align "Network Category " $alignsize " : ") $ConnectionProfile.NetworkCategory
+     write-colored $StatusColor (Align -Variable "Network Category " -Size $alignsize -Ending " : ") $ConnectionProfile.NetworkCategory
      # Internet Connectivity (IPv4)
      if ($ConnectionProfile.IPv4Connectivity -ne 'Internet') {$StatusColor = "Red"} else { $StatusColor="Green" }
-     write-colored $StatusColor (Align "Internet Access (IPv4)" $alignsize " : ") $ConnectionProfile.IPv4Connectivity
+     write-colored $StatusColor (Align -Variable "Internet Access (IPv4)" -Size $alignsize -Ending " : ") $ConnectionProfile.IPv4Connectivity
      # Internet Connectivity (IPv6)
      if ($ConnectionProfile.IPv6Connectivity -ne 'Internet') {$StatusColor = "Red"} else { $StatusColor="Green" }
-     write-colored $StatusColor (Align "Internet Access (IPv6)" $alignsize " : ") $ConnectionProfile.IPv6Connectivity
+     write-colored $StatusColor (Align -Variable "Internet Access (IPv6)" -Size $alignsize -Ending " : ") $ConnectionProfile.IPv6Connectivity
     } Catch {}
    }
 
@@ -2427,20 +2442,20 @@ Function Get-IP {
     if ($_.PrefixLength -le "32") {
      # IPv4
      if ($count -eq 0) {
-      write-colored $fontcolor (Align "IP" $alignsize " : ") "$($_.Address) | $($_.IPv4Mask) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
+      write-colored $fontcolor (Align -Variable "IP" -Size $alignsize -Ending " : ") "$($_.Address) | $($_.IPv4Mask) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
      }
      else {
-      write-colored $fontcolor (Align "IP ($count)" $alignsize " : ") "$($_.Address) | $($_.IPv4Mask) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
+      write-colored $fontcolor (Align -Variable "IP ($count)" -Size $alignsize -Ending " : ") "$($_.Address) | $($_.IPv4Mask) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
      }
      $count++
     }
     if (($_.PrefixLength -gt "32")) {
      # IPv6
      if ($countIPv6 -eq 0) {
-      write-colored $fontcolor (Align "IPv6" $alignsize " : ") "$($_.Address) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
+      write-colored $fontcolor (Align -Variable "IPv6" -Size $alignsize -Ending " : ") "$($_.Address) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
      }
      else {
-      write-colored $fontcolor (Align "IPv6 ($countIPv6)" $alignsize " : ") "$($_.Address) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
+      write-colored $fontcolor (Align -Variable "IPv6 ($countIPv6)" -Size $alignsize -Ending " : ") "$($_.Address) ($($_.PrefixLength)) | Source : $($_.PrefixOrigin)"
      }
      $countIPv6++
     }
@@ -2452,7 +2467,7 @@ Function Get-IP {
    $_.Gateway | ForEach-Object {
     $IPTypeCheck = ([IPAddress]$_).AddressFamily
     $IPType = if ($IPTypeCheck -eq "InterNetworkV6") {"IPv6"} elseif ($IPTypeCheck -eq "InterNetwork") {"IPv4"}
-    write-colored $fontcolor -NonColoredText (Align "Gateway $IPType" $alignsize " : ") -ColoredText $_
+    write-colored $fontcolor -NonColoredText (Align -Variable "Gateway $IPType" -Size $alignsize -Ending " : ") -ColoredText $_
    }
   }
 
@@ -2461,16 +2476,16 @@ Function Get-IP {
    $count=0
    $_.DNS | ForEach-Object {
     $count++
-    write-colored $fontcolor (Align "WINS Server ($count)" $alignsize " : ") $_
+    write-colored $fontcolor (Align -Variable "WINS Server ($count)" -Size $alignsize -Ending " : ") $_
    }
   }
 
   # DHCP information
-  if ($_.DHCP) {write-colored $fontcolor (Align "DHCP Server" $alignsize " : ") $_.DHCP}
+  if ($_.DHCP) {write-colored $fontcolor (Align -Variable "DHCP Server" -Size $alignsize -Ending " : ") $_.DHCP}
 
   # DNS information
   if ($_.DNS) {
-   write-colored $fontcolor -NonColoredText (Align "DNS Server " $alignsize " : ") -NoNewLine
+   write-colored $fontcolor -NonColoredText (Align -Variable "DNS Server " -Size $alignsize -Ending " : ") -NoNewLine
    $count=0
    $_.DNS | ForEach-Object {
     if ($count -eq 0) {write-colored -Color $fontcolor -ColoredText $_ -NoNewLine} else {write-colored -Color $fontcolor -ColoredText " | $($_)" -NoNewLine}
@@ -2481,19 +2496,19 @@ Function Get-IP {
   $DNSInfoForThisInterface = $DNSInfo | Where-Object InterfaceIndex -eq $_.Index
   if ($DNSInfoForThisInterface) {
    if ($DNSInfoForThisInterface.Suffix) {
-    write-colored $fontcolor (Align "DNS Suffix " $alignsize " : ") $DNSInfoForThisInterface.Suffix
+    write-colored $fontcolor (Align -Variable "DNS Suffix " -Size $alignsize -Ending " : ") $DNSInfoForThisInterface.Suffix
    }
    $DNSSuffixSearchListCount = 0
    $DNSInfoForThisInterface.SuffixSearchList | ForEach-Object {
-    write-colored $fontcolor (Align "DNS SuffixSearchList [$DNSSuffixSearchListCount]" $alignsize " : ") $DNSInfoForThisInterface.SuffixSearchList[$DNSSuffixSearchListCount]
+    write-colored $fontcolor (Align -Variable "DNS SuffixSearchList [$DNSSuffixSearchListCount]" -Size $alignsize -Ending " : ") $DNSInfoForThisInterface.SuffixSearchList[$DNSSuffixSearchListCount]
     $DNSSuffixSearchListCount++
    }
    if ($DNSInfoForThisInterface.RegisterThisConnectionsAddress) {$StatusColor = "Green"} else { $StatusColor="Red" }
-   write-colored $StatusColor (Align "DNS RegisterConnectionsAddress " $alignsize " : ") $DNSInfoForThisInterface.RegisterThisConnectionsAddress
+   write-colored $StatusColor (Align -Variable "DNS RegisterConnectionsAddress " -Size $alignsize -Ending " : ") $DNSInfoForThisInterface.RegisterThisConnectionsAddress
    if ($DNSInfoForThisInterface.UseSuffixWhenRegistering) {$StatusColor = "Red"} else { $StatusColor="Green" }
-   write-colored $StatusColor (Align "DNS UseSuffixWhenRegistering " $alignsize " : ") $DNSInfoForThisInterface.UseSuffixWhenRegistering
+   write-colored $StatusColor (Align -Variable "DNS UseSuffixWhenRegistering " -Size $alignsize -Ending " : ") $DNSInfoForThisInterface.UseSuffixWhenRegistering
   }
-  if ($_.Sent) {write-colored $fontcolor (Align "Sent | Received " $alignsize " : ") "$($_.Sent) | $($_.Received)"}
+  if ($_.Sent) {write-colored $fontcolor (Align -Variable "Sent | Received " -Size $alignsize -Ending " : ") "$($_.Sent) | $($_.Received)"}
  }
 
  # NRPT Information
@@ -2503,7 +2518,7 @@ Function Get-IP {
   Write-Centered -Color 'Magenta' "NRPT Policies"
   Write-StarLine -character "-"
   $NRPTPolicies | ForEach-Object {
-   write-colored $fontcolor (Align "$($_.Namespace) " $alignsize " : ") $_.NameServers
+   write-colored $fontcolor (Align -Variable "$($_.Namespace) " -Size $alignsize -Ending " : ") $_.NameServers
   }
  }
 }
@@ -2547,9 +2562,9 @@ Function Get-Bandwidth {
 
  while ($timeSpan -gt 0) {
   # Get an object for the network interfaces, excluding any that are currently disabled.
-  $colInterfaces = Get-CimInstance -class Win32_PerfFormattedData_Tcpip_NetworkInterface |Select-Object BytesTotalPersec, CurrentBandwidth,PacketsPersec|Where-Object {$_.PacketsPersec -gt 0}
+  $colInterfaces = Get-CimInstance -ClassName Win32_PerfFormattedData_Tcpip_NetworkInterface |Select-Object BytesTotalPersec, CurrentBandwidth,PacketsPersec|Where-Object {$_.PacketsPersec -gt 0}
    foreach ($interface in $colInterfaces) {
-    Write-Colored $defaultblue "`rCurrent bandwith: " (Align ((Format-FileSize $interface.BytesTotalPersec)+"/s") 25) -nonewline
+    Write-Colored -Color $defaultblue -NonColoredText "`rCurrent bandwith: " (Align -Variable ((Format-FileSize $interface.BytesTotalPersec)+"/s") 25) -nonewline
     $totalBandwidth = $totalBandwidth + $interface.BytesTotalPersec ; $count++
    }
    Start-Sleep -milliseconds 150
@@ -2560,7 +2575,7 @@ Function Get-Bandwidth {
  $averageBandwidth = $totalBandwidth / $count
  # $value = "{0:N2}" -f $averageBandwidth
  $value = ((Format-FileSize $averageBandwidth)+"/s")
- Write-Colored $defaultblue "Average Bandwidth after $durationinminutes minutes: " $value
+ Write-Colored -Color $defaultblue -NonColoredText "Average Bandwidth after $durationinminutes minutes: " $value
 
 }
 Function Get-DNSResponseTime {
@@ -2581,7 +2596,7 @@ Function Get-DNSResponseTime {
 
  try {
   $DNSServerFQDN=(Resolve-DnsName $DNSServer -ErrorAction Stop -QuickTimeout).NameHost
- Write-Colored $defaultblue -ColoredText "Testing response time using DNS Server $DNSServer ($DNSServerFQDN) during $DurationInMinutes minutes (destination : $Request) (Pause time : $SleepDurationInMs`ms)"
+ Write-Colored -Color $defaultblue -ColoredText "Testing response time using DNS Server $DNSServer ($DNSServerFQDN) during $DurationInMinutes minutes (destination : $Request) (Pause time : $SleepDurationInMs`ms)"
  } catch {
   write-host -foregroundcolor "Red" $Error[0]
   Return
@@ -2606,10 +2621,10 @@ Function Get-DNSResponseTime {
  ProgressClear
  write-Blank
  $AverageResult=$TotalResult / $count
- Write-Colored $defaultblue "Average response time after $durationinminutes minutes: " "$AverageResult ms" -NoNewLine
- Write-Colored $defaultblue " (Min : " $MinResult -NoNewLine
- Write-Colored $defaultblue " - Max : " $MaxResult -NoNewLine
- Write-Colored $defaultblue -NonColoredText ")"
+ Write-Colored -Color $defaultblue -NonColoredText "Average response time after $durationinminutes minutes: " "$AverageResult ms" -NoNewLine
+ Write-Colored -Color $defaultblue -NonColoredText " (Min : " $MinResult -NoNewLine
+ Write-Colored -Color $defaultblue -NonColoredText " - Max : " $MaxResult -NoNewLine
+ Write-Colored -Color $defaultblue -NonColoredText ")"
 }
 Function Get-NetworkStatistics {
  # Based on https://gist.github.com/cainejunkazama/6244413#file-get-networkstatistics
@@ -2947,7 +2962,7 @@ Function Get-ServicesSpecific {
   }
   $result = $result | Where-Object { (($_.startmode -eq 'Auto') -or ($_.state -eq 'Running')) }
  } catch {
-  write-colored "red" -coloredtext $error[0] ; return
+  write-Colored -Color "Red" -ColoredText $error[0] ; return
  }
  if (! ($result)) {
   Write-Colored "darkgreen" -coloredtext "No service found"
@@ -2971,7 +2986,7 @@ Function Get-ServicesFiltered { # Search specific service(s), can do actions on 
   $ServicesList | Where-Object {$_.Name -like "*$ServiceName*"}
  }
 
- if ( ! $result) {Write-colored "Red" -ColoredText "$Services Services Not Found" ; return}
+ if ( ! $result) {write-Colored -Color "Red" -ColoredText "$Services Services Not Found" ; return}
 
  #Print Service List
  if ((! $Start) -and (! $Stop)) {
@@ -2980,11 +2995,11 @@ Function Get-ServicesFiltered { # Search specific service(s), can do actions on 
 
  if ($Stop) {
   if ( ! (Assert-IsAdmin) ) {Write-host -ForegroundColor "red" "You must be admin to run this command" ; return}
-  $result | ForEach-Object {Write-Colored $defaultblue "Stopping : " $_.displayname ; Stop-Service -force $_.name }
+  $result | ForEach-Object {Write-Colored -Color $defaultblue -NonColoredText "Stopping : " $_.displayname ; Stop-Service -force $_.name }
  }
  if ($Start) {
   if ( ! (Assert-IsAdmin) ) {Write-host -ForegroundColor "red" "You must be admin to run this command" ; return }
-  $result | ForEach-Object { Write-Colored $defaultblue "Starting : " $_.displayname ; Start-Service $_.name }
+  $result | ForEach-Object { Write-Colored -Color $defaultblue -NonColoredText "Starting : " $_.displayname ; Start-Service $_.name }
  }
 
 }
@@ -3029,9 +3044,9 @@ Function Get-TasksSpecific {
  } else {
   $TaskQueryResult | ForEach-Object {
    Write-colored "Magenta" "" ($_.TaskName,"(Run as :",$_."Run As User",")")
-   Write-Colored $defaultblue "Status : " $_."Scheduled Task State" -nonewline
-   Write-Colored $defaultblue " - Last Run : " $_."Last Run Time"
-   Write-Colored $defaultblue "CommandLine : " $_."Task To Run"
+   Write-Colored -Color $defaultblue -NonColoredText "Status : " $_."Scheduled Task State" -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " - Last Run : " $_."Last Run Time"
+   Write-Colored -Color $defaultblue -NonColoredText "CommandLine : " $_."Task To Run"
    write-blank
   }
  }
@@ -3100,7 +3115,7 @@ Function Get-TasksLogs {
   }
 
  } catch {
-  write-colored "red" -ColoredText $error[0] ; return
+  write-Colored -Color "Red" -ColoredText $error[0] ; return
  }
 
   write-host -ForegroundColor Cyan "$(get-date -uformat '%Y-%m-%d %T') - Filtering results"
@@ -3162,13 +3177,13 @@ Function Get-GPOALL {
    if (! $UserToCheck ) {$UserToCheck = $env:USERNAME}
    gpresult /x $tempPath /s $ServerToCheck /scope User /USER $UserToCheck /f
   }
- } catch {write-colored "red" -ColoredText $error[0] ; return}
+ } catch {write-Colored -Color "Red" -ColoredText $error[0] ; return}
 
  #Convert XML  to PS Object
  [xml]$xml = try {
   get-content $tempPath -ErrorAction Stop
  } catch {
-  write-colored "red" -ColoredText $error[0] ; return
+  write-Colored -Color "Red" -ColoredText $error[0] ; return
  }
 
  #Computer
@@ -3206,7 +3221,7 @@ Function Get-SQLInfo {
   $TITLE,
   $SQLREQUEST
  )
- if (!$SQLREQUEST) {Write-Colored "red" -ColoredText "Provide SQL request";return}
+ if (!$SQLREQUEST) {write-Colored -Color "Red" -ColoredText "Provide SQL request";return}
  if ( ! (Assert-IsCommandAvailable sqlcmd) ) {return}
  write-starline "-"
  write-centered $TITLE
@@ -3277,15 +3292,15 @@ Function Get-FileInfoFull {
  Param (
   [Parameter(Mandatory=$true)]$path
  )
- if ( ! (test-path $path)) { write-Colored "Red" "" "Unavailable path : $path" ; return }
+ if ( ! (test-path $path)) { Write-Colored -Color "red" -NonColoredText  "" "Unavailable path : $path" ; return }
  Get-ItemProperty -Path $path | Format-list -Property *
 }
 Function Get-FileInfo {
  Param (
   [Parameter(Mandatory=$true)]$path
  )
- if (!$path) { write-Colored "Red" "" "Please provide a path" ; return }
- if ( ! (test-path $path)) { write-Colored "Red" "" "Unavailable path : $path" ; return }
+ if (!$path) { Write-Colored -Color "red" -NonColoredText  "" "Please provide a path" ; return }
+ if ( ! (test-path $path)) { Write-Colored -Color "red" -NonColoredText  "" "Unavailable path : $path" ; return }
  (Get-ItemProperty -Path $path).versioninfo
 }
 
@@ -3341,7 +3356,7 @@ Function Set-SWAP {
 
  if ( ! $Auto ) {
   if (Get-Command Get-CimInstance) {
-   $physicalmemMB = [int]((Get-CimInstance -Class Win32_ComputerSystem).TotalPhysicalMemory/1mb)
+   $physicalmemMB = [int]((Get-CimInstance -Classname Win32_ComputerSystem).TotalPhysicalMemory/1mb)
    $pagefile = Get-CimInstance -Query "Select * From Win32_PageFileSetting"
   } else {
    $physicalmemMB = [int]((Get-WmiObject -Class Win32_ComputerSystem).TotalPhysicalMemory/1mb)
@@ -3386,7 +3401,7 @@ Function Get-ADGroupContent {
  )
  write-centered "$ADGroup Members"
  (Get-ADGroupMember $ADGroup) | ForEach-Object {
-  $Name=(Align $_.SamAccountName 10)
+  $Name=(Align -Variable $_.SamAccountName 10)
   write-colored -NonColoredText ($Name,"(",$_.Name,")")
  }
  Write-Blank
@@ -3441,8 +3456,8 @@ Function Get-ADServerMemberOf {
  )
  if ( ! (Assert-IsCommandAvailable "Get-ADComputer") ) { return }
  try { $GROUPLIST=(Get-ADComputer $ServerName -Properties memberof).memberof }
- catch {Write-Colored "red" "" "Server $ServerName does not exist" ; return}
- if ( $GROUPLIST ) { ($GROUPLIST.split(',') | select-string "CN=").line.substring(3) | Sort-Object } else { Write-Colored "red" "" "Server $ServerName is not in any group" }
+ catch {Write-Colored -Color "red" -NonColoredText  "" "Server $ServerName does not exist" ; return}
+ if ( $GROUPLIST ) { ($GROUPLIST.split(',') | select-string "CN=").line.substring(3) | Sort-Object } else { Write-Colored -Color "red" -NonColoredText  "" "Server $ServerName is not in any group" }
 }
 Function Get-ADSubnetsOld {
  Param (
@@ -3452,7 +3467,7 @@ Function Get-ADSubnetsOld {
  $configNCDN = (Get-ADRootDSE).ConfigurationNamingContext
  $siteContainerDN = ("CN=Sites," + $configNCDN)
  $siteDN = "CN=" + $AD_site_name + "," + $siteContainerDN
- $siteObj = try {Get-ADObject -Identity $siteDN -properties "siteObjectBL", "description", "location"} catch {write-colored "red" "" $error[0]}
+ $siteObj = try {Get-ADObject -Identity $siteDN -properties "siteObjectBL", "description", "location"} catch {Write-Colored -Color "red" -NonColoredText  "" $error[0]}
  $(foreach ($subnetDN in $siteObj.siteObjectBL) { (Get-ADObject -Identity $subnetDN -properties "siteObject", "description", "location").Name }) | Sort-Object
 }
 Function Get-ADSubnets {
@@ -3624,7 +3639,7 @@ Function Get-ADSecurityGroup {
     else {$_.ActiveDirectoryRights}
    }},ObjectType,
    @{name="Type";expression={$_.AccessControlType}}
- } catch {write-colored "red" "Error during check ($($error[0]))"}
+ } catch {Write-Colored -Color "red" -NonColoredText  "Error during check ($($error[0]))"}
 }
 Function Get-ADSecurityUser {
  Param (
@@ -3637,7 +3652,7 @@ Function Get-ADSecurityUser {
  Import-Module ActiveDirectory
  try {
   (get-acl $("AD:"+((get-aduser $User).DistinguishedName))).Access | Where-Object {! $_.IsInherited} | Select-Object IdentityReference,ActiveDirectoryRights,AccessControlType,ObjectType
- } catch {write-colored "red" "Error during check ($($error[0]))"}
+ } catch {Write-Colored -Color "red" -NonColoredText  "Error during check ($($error[0]))"}
 }
 Function Get-ADComputerInVLAN {
  Param (
@@ -4013,7 +4028,7 @@ Function Get-ExchangeVersion {
  if ( ! (Assert-IsCommandAvailable EXSetup) ) {return}
  $ExchangeFileVersion=Get-Command EXSetup | Where-Object {$_.FileVersionInfo}
  $ExchangeFileVersion | Where-Object {
- Write-Colored $defaultblue "" $($_.ProductName,$_.Comments,"(",$_.ProductVersion,")")
+ Write-Colored -Color $defaultblue -NonColoredText "" $($_.ProductName,$_.Comments,"(",$_.ProductVersion,")")
  }
 }
 Function Get-ExchangeMailboxSize {
@@ -4032,7 +4047,7 @@ Function Get-ExchangeMailboxSize {
   return $mailboxinfo
  } catch {
   if ($NoError) {return}
-  write-colored "Red" "" "Error with account $DisplayName ($($error[0]))"
+  Write-Colored -Color "red" -NonColoredText  "" "Error with account $DisplayName ($($error[0]))"
  }
 }
 Function Get-MailboxPermissionFiltered {
@@ -4047,17 +4062,17 @@ Function Get-MailboxPermissionFiltered {
  if ( ! (Assert-IsCommandAvailable Get-Mailbox) ) {return}
 
  #Check mandatory params
- if (! $Mailbox) {write-colored "Red" -ColoredText "A Mailbox Name is mandatory";return}
+ if (! $Mailbox) {write-Colored -Color "Red" -ColoredText "A Mailbox Name is mandatory";return}
 
  #Get Mailbox SendAs permission
- try { $MailboxPermissionSendAs = Get-RecipientPermission $Mailbox -ErrorAction "Stop" } catch {if ($verbose) {write-colored "red" -ColoredText $error[0]}}
+ try { $MailboxPermissionSendAs = Get-RecipientPermission $Mailbox -ErrorAction "Stop" } catch {if ($verbose) {write-Colored -Color "Red" -ColoredText $error[0]}}
  # Ignore Deny and Self
  if ($MailboxPermissionSendAs) {
   $MailboxPermissionSendAs = $MailboxPermissionSendAs | Where-Object {! (( $_.IsInherited ) -or ( $_.Deny ) -or ($_.Trustee -like "*nt authority\self*"))}
  }
 
  #Get Mailbox Full Access permission
- try { $MailboxPermissionFullAccess = Get-MailboxPermission $Mailbox -ErrorAction "Stop" } catch {if ($verbose) {write-colored "red" -ColoredText $error[0]}}
+ try { $MailboxPermissionFullAccess = Get-MailboxPermission $Mailbox -ErrorAction "Stop" } catch {if ($verbose) {write-Colored -Color "Red" -ColoredText $error[0]}}
  # Ignore Deny and Self
  if ($MailboxPermissionFullAccess) {
   $MailboxPermissionFullAccess = $MailboxPermissionFullAccess | Where-Object {! (( $_.IsInherited ) -or ( $_.Deny ) -or ($_.User -like "*nt authority\self*"))}
@@ -4113,7 +4128,7 @@ Function Assert-O365DistributionList {
   # $result=Get-MsolGroup -erroraction stop -SearchString $DLMail
   $result=Get-DistributionGroup -erroraction stop $DLMail
  } catch {
-  if (! $NoError) {write-colored "Red" "" "Error while searching for $DLMail ($($error[0]))"}
+  if (! $NoError) {Write-Colored -Color "red" -NonColoredText  "" "Error while searching for $DLMail ($($error[0]))"}
  }
  if ($result) {$result="$($result.GroupType) | $($result.DisplayName) | $($result.PrimarySmtpAddress)"} else {$result=$false}
  return $result
@@ -4145,7 +4160,7 @@ Function Assert-O365User {
  try {
   $result=get-mailbox $SearchValue  -erroraction stop
  } catch {
-  if ($ShowMessage) {write-colored "Red" "" "Error while searching Office 365 for $SearchValue ($($error[0]))"}
+  if ($ShowMessage) {Write-Colored -Color "red" -NonColoredText  "" "Error while searching Office 365 for $SearchValue ($($error[0]))"}
  }
  if ($result) {
   if ($ShowMessage) {
@@ -4174,7 +4189,7 @@ Function Assert-O365Account {
  #Check Account info :
  try {
   $accountinfo=get-aduser $loginname -properties UserPrincipalName,mail,proxyAddresses,targetAddress,legacyExchangeDN
- } catch {write-colored "Red" "$(get-date -uformat '%Y-%m-%d-%T') | Fatal Error | $loginname | " "Error during account check ($($error[0]))" $logfile ; return}
+ } catch {Write-Colored -Color "red" -NonColoredText  "$(get-date -uformat '%Y-%m-%d-%T') | Fatal Error | $loginname | " "Error during account check ($($error[0]))" $logfile ; return}
 
  Write-StarLine "-"
  #Backup Info
@@ -4199,7 +4214,7 @@ Function New-PSTBackup {
    if (test-path $BackupPath) {write-colored "Blue" "$(get-date -uformat '%Y-%m-%d-%T') | Warning | $User | " "Backup already exists : $BackupPath" $logfile; return}
    New-MailboxExportRequest -ErrorAction stop -name $user -Mailbox $user -FilePath $BackupPath
   } catch {
-   write-colored "Red" "$(get-date -uformat '%Y-%m-%d-%T') | Fatal Error | $User | " "Error during the backup of $user ($($error[0]))" $logfile ; return
+   Write-Colored -Color "red" -NonColoredText  "$(get-date -uformat '%Y-%m-%d-%T') | Fatal Error | $User | " "Error during the backup of $user ($($error[0]))" $logfile ; return
   }
  }
 }
@@ -4709,7 +4724,7 @@ Function Remove-WSUSSuperseeded { # Decline all superseeded updates
    $count=$count + 1
   }
  }
- write-host Total Declined Updates: $count
+ write-host "Total Declined Updates: $count"
 }
 Function Get-WSUSConfiguredCategories { # List all enabled categories on a WSUS Server
  Param (
@@ -4822,26 +4837,26 @@ Function CheckVLAN {
  )
  #1) Check if IP is valid
  try {[ipaddress]$GatewayIP 2>&1>$null} catch {}
- if (!$? -or !$GatewayIP -or [regex]::matches("$GatewayIP","\.").count -ne 3) { write-colored "red" "" "You must provide a correct Gateway IP" ; return}
+ if (!$? -or !$GatewayIP -or [regex]::matches("$GatewayIP","\.").count -ne 3) { Write-Colored -Color "red" -NonColoredText  "" "You must provide a correct Gateway IP" ; return}
 
  #2) Show which Gateway will be used
- Write-Colored $defaultblue (Align "Checking Gateway" 20 " : ") $GatewayIP -nonewline
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Checking Gateway" 20 " : ") $GatewayIP -nonewline
 
  #3) Test Gateway Ping response :
- if ( ! (Test-Connection -Cn $GatewayIP -BufferSize 16 -Count 1 -ea 0 -quiet) ) { write-colored "red" " - ping " "KO" } else { write-colored "green" " - ping " "OK" }
+ if ( ! (Test-Connection -Cn $GatewayIP -BufferSize 16 -Count 1 -ea 0 -quiet) ) { Write-Colored -Color "red" -NonColoredText  " - ping " "KO" } else { Write-Colored -Color "Green" -NonColoredText " - ping " "OK" }
 
  #4) Get Reverse zone
  $IPElements=$GatewayIP.split('.')
  $Reverse=$IPElements[2]+"."+$IPElements[1]+"."+$IPElements[0]
 
- Write-Colored $defaultblue (Align "Reverse Zone" 20 " : ") $Reverse
+ Write-Colored -Color $defaultblue -NonColoredText (Align -Variable "Reverse Zone" 20 " : ") $Reverse
 
  #5) Check Reverse zone
  try {
   $NameServers=(nslookup -type=NS "$Reverse.in-addr.arpa" 2>&1 | Select-string -pattern "nameserver").line | ForEach-Object {$_.split("=")[1].trim()}
-  Write-Colored $defaultblue "Reverse zone defined on following DNS Servers : "
+  Write-Colored -Color $defaultblue -NonColoredText "Reverse zone defined on following DNS Servers : "
   Format-PrintLineByLine $NameServers $defaultblue
-  } catch { write-colored "red" "" "Failed checking reverse zone or reverse zone not defined" }
+  } catch { Write-Colored -Color "red" -NonColoredText  "" "Failed checking reverse zone or reverse zone not defined" }
 }
 Function Get-DNSAllZoneUsingAlias {
  Param (
@@ -4969,7 +4984,7 @@ Function Get-PartitionInfo {
    }
   }
  } catch {
-  write-colored "Red" -ColoredText $Error[0] ; return
+  write-Colored -Color "Red" -ColoredText $Error[0] ; return
  }
 
  #Volume check loop
@@ -5030,11 +5045,11 @@ Function Get-PartitionInfo {
 
    #Print
    write-starline "-"
-   write-colored $textcolor -ColoredText (Align ($DriveLetter+" ($drivetype $($_.FileSystem) : $volumelabel$SWAP)") 38) -nonewline
+   write-colored $textcolor -ColoredText (Align -Variable ($DriveLetter+" ($drivetype $($_.FileSystem) : $volumelabel$SWAP)") 38) -nonewline
    if ($_.Freespace) {
-    write-colored $sizecolor -NonColoredText " | Total $(Align $(Format-FileSize($_.Capacity)) 10) / Free $(Align $(Format-FileSize($_.freespace)) 10) " -ColoredText $(align "( $drivefreespace% )" 12) -nonewline
+    write-colored $sizecolor -NonColoredText " | Total $(Align -Variable $(Format-FileSize($_.Capacity)) 10) / Free $(Align -Variable $(Format-FileSize($_.freespace)) 10) " -ColoredText $(Align -Variable "( $drivefreespace% )" 12) -nonewline
    }
-   Write-Colored $defaultblue -ColoredText $(Format-FileSize $_.BlockSize)
+   Write-Colored -Color $defaultblue -NonColoredText -ColoredText $(Format-FileSize $_.BlockSize)
   }
  }
 
@@ -5127,7 +5142,7 @@ Function Get-Rights {
 
  try {
   # while ( ! $path ) { $path = read-host "Enter path to check" }
-  if ( ! ($(try {test-path $path -ErrorAction SilentlyContinue} catch {}))) {write-colored "Red" -ColoredText "Please provide a valid path. `"$path`" is not accessible" ; return}
+  if ( ! ($(try {test-path $path -ErrorAction SilentlyContinue} catch {}))) {write-Colored -Color "Red" -ColoredText "Please provide a valid path. `"$path`" is not accessible" ; return}
   $objlist=@()
   get-acl $path | ForEach-Object {$_.Access} | Sort-Object | ForEach-Object {
    $obj = New-Object PSObject
@@ -5404,13 +5419,13 @@ Function Get-WindowsShareOld {
   if ($_.Type -eq "2147483651" ) { Write-colored "darkgreen" "" ($_.Name,"(",$Description,")") ; return }
 
   #Print Info
-  Write-colored $defaultblue "Share Name : " ($_.Name,"(",$Description,")")
+  Write-Colored -Color $defaultblue -NonColoredText "Share Name : " ($_.Name,"(",$Description,")")
 
   if ($ServerName) {$dnsname=$ServerName} else {$dnsname=$env:computerName}
 
   $ShareFullPath="\\"+([System.Net.Dns]::GetHostByName($dnsname)).HostName+"\"+$_.Name
-  Write-Colored $defaultblue "Local Path : " $_.Path
-  Write-Colored $defaultblue "Remote Path : " $ShareFullPath
+  Write-Colored -Color $defaultblue -NonColoredText "Local Path : " $_.Path
+  Write-Colored -Color $defaultblue -NonColoredText "Remote Path : " $ShareFullPath
 
   #Do not try to get share info on print share
   if ( $_.Name -eq "shared_printer" -and $Description -eq "shared_printer" ) { return }
@@ -5473,15 +5488,15 @@ Function CopyWithBITS {
  # $ProgressPreference='SilentlyContinue'
 
  if ( ! (test-path $Source)) {
-  write-Colored "Red" -ColoredText "Unavailable source path : $Source"
+  write-Colored -Color "Red" -ColoredText "Unavailable source path : $Source"
   return
  }
 
  Try {
   $FullPath=(Resolve-Path $Source -ErrorAction Stop).ProviderPath
-  write-colored "Green" -ColoredText "Using path : $FullPath"
+  write-colored -Color "Green" -ColoredText "Using path : $FullPath"
  } catch {
-  write-Colored "Red" -ColoredText "Error finding full path"
+  write-Colored -Color "Red" -ColoredText "Error finding full path"
  }
 
  Import-Module BitsTransfer
@@ -5498,7 +5513,7 @@ Function CopyWithBITS {
   try {
    Start-BitsTransfer -Source $C_SRC\*.* -Destination $C_DST -ErrorAction Stop -Description "Copying $C_SRC to $C_DST" -DisplayName "Current Folder `'$CurrentFolder`'"
   } Catch {
-  write-Colored "Red" -ColoredText $Error[0]
+  write-Colored -Color "Red" -ColoredText $Error[0]
   }
  }
  ProgressClear
@@ -5519,15 +5534,15 @@ Function Get-SCCMSiteCode {
 Function Get-SCCMInfo {
  if ( ! (Get-SCCMSiteCode) ) {$color="red" ; $sitecode="N/A"} else {$color=$defaultblue ; $sitecode=(Get-SCCMSiteCode)}
  $alignsize=20
- write-colored $color (Align "SCCM Site Code" $alignsize " : ") $sitecode
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "SCCM Site Code" -Size $alignsize -Ending " : ") $sitecode
  try {
-  $SCCMVersion=(Get-CimInstance -ErrorAction "Stop" -Namespace root\ccm -Class SMS_Client).clientversion
+  $SCCMVersion=(Get-CimInstance -ErrorAction "Stop" -Namespace root\ccm -ClassName SMS_Client).clientversion
   $color=$defaultblue
  } catch {
   $SCCMVersion="SCCM Client not installed"
   $color="red"
  }
- write-colored $color (Align "SCCM Client Version" $alignsize " : ") $SCCMVersion
+ Write-Colored -Color $Color -NonColoredText (Align -Variable "SCCM Client Version" -Size $alignsize -Ending " : ") $SCCMVersion
 }
 
 # License Management
@@ -5555,7 +5570,7 @@ Function Get-KasperskyStatus {
   $KasperskyPath="${env:ProgramFiles(x86)}\Kaspersky Lab\NetworkAgent\"
  )
  if ( ! (Assert-IsAdmin) ) {Write-host -ForegroundColor "red" "You must be admin to run this command"; return}
- if ( ! (test-path $KasperskyPath)) { write-Colored "Red" -ColoredText "Unavailable path : $KasperskyPath" ; return }
+ if ( ! (test-path $KasperskyPath)) { write-Colored -Color "Red" -ColoredText "Unavailable path : $KasperskyPath" ; return }
 
  $command=$KasperskyPath+"klnagchk.exe"
  & $command
@@ -5566,7 +5581,7 @@ Function Set-KasperskyServer {
   $KasperskyPath="${env:ProgramFiles(x86)}\Kaspersky Lab\NetworkAgent\"
  )
  if ( ! (Assert-IsAdmin) ) {Write-host -ForegroundColor "red" "You must be admin to run this command"; return}
- if ( ! (test-path $KasperskyPath)) { write-Colored "Red" -ColoredText "Unavailable path : $KasperskyPath" ; return }
+ if ( ! (test-path $KasperskyPath)) { write-Colored -Color "Red" -ColoredText "Unavailable path : $KasperskyPath" ; return }
 
  $command=$KasperskyPath+"klmover.exe"
  &$command -address $ServerIP
@@ -6130,11 +6145,15 @@ Function Remove-Windows10NonEnterpriseApps {
 }
 Function Disable-Windows10UnusedServices {
  Get-Service | Where-Object {($_.Name -eq "OneSyncSvc") -or ($_.Name -eq "CDPUserSvc") -or ($_.Name -eq "MapsBroker") -or ($_.Name -eq "CDPSVC") } | Stop-Service -PassThru | Set-Service -StartupType Manual
- Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\CDPUserSvc*\" -Name Start -Value 4 | Out-Null
- set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\OneSyncSvc*\" -Name Start -Value 4 | Out-Null
+ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\CDPUserSvc*\" -Name Start -Value 4 | Out-Null
+ set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\OneSyncSvc*\" -Name Start -Value 4 | Out-Null
 }
 Function Disable-Windows10Prefetch {
- Try { Set-RegKey "HKLM:SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" "EnablePrefetcher" "0" "DWord"} catch {write-host -foregroundcolor "red" $error[0]}
+ Try {
+  Set-RegKey -RegKey "HKLM:SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters" -Name "EnablePrefetcher" -Value "0" -Type "DWord"
+ } catch {
+  write-host -foregroundcolor "red" $error[0]
+ }
  Try {Set-Service -ErrorAction "Stop" -Name "SysMain" -DisplayName "superfetch" -Status "Stopped" -StartupType "Manual"} catch {write-host -foregroundcolor "red" $error[0]}
 }
 Function Set-REGModsUser {
@@ -6144,36 +6163,36 @@ Function Set-REGModsUser {
 
  #Disable Thumbs.db on network folders
  New-Item -force $ThumbsKey | Out-Null
- Set-ItemProperty $ThumbsKey DisableThumbsDBOnNetworkFolders 1 | Out-Null
+ Set-ItemProperty -Path $ThumbsKey -Name DisableThumbsDBOnNetworkFolders -Value 1 | Out-Null
 
  #Folder Options
- Set-ItemProperty $HKEYExplorerAdvanced Hidden 1
- Set-ItemProperty $HKEYExplorerAdvanced HideFileExt 0
- Set-ItemProperty $HKEYExplorerAdvanced ShowSuperHidden 1
- Set-ItemProperty $HKEYExplorerAdvanced SeparateProcess 1
- Set-ItemProperty $HKEYExplorerAdvanced HideFileExt 0
- Set-ItemProperty $HKEYExplorerAdvanced Start_ShowRun 1
- Set-ItemProperty $HKEYExplorerAdvanced Start_ShowSetProgramAccessAndDefaults 0
- Set-ItemProperty $HKEYExplorerAdvanced LaunchTo 1
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name Hidden -Value 1
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name HideFileExt -Value 0
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name ShowSuperHidden -Value 1
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name SeparateProcess -Value 1
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name HideFileExt -Value 0
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name Start_ShowRun -Value 1
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name Start_ShowSetProgramAccessAndDefaults -Value 0
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name LaunchTo -Value 1
 
  #Disable ShortcutTo on new shortcut
- Set-ItemProperty $HKEYExplorer -Name "link" -Value ([byte[]](0x00,0x00,0x00,0x00))
+ Set-ItemProperty -Path $HKEYExplorer -Name "link" -Value ([byte[]](0x00,0x00,0x00,0x00))
 
  #Show All icons in tray
- Set-ItemProperty $HKEYExplorer EnableAutoTray 0
+ Set-ItemProperty -Path $HKEYExplorer -Name EnableAutoTray -Value 0
 
  #Lock Taskbar
- Set-ItemProperty $HKEYExplorerAdvanced TaskbarSizeMove 0
+ Set-ItemProperty -Path $HKEYExplorerAdvanced -Name TaskbarSizeMove -Value 0
 }
 Function Set-REGModsMachine {
  if ( ! (Assert-IsAdmin) ) {Write-host -ForegroundColor "red" "You must be admin to run this command"; return}
  #Enable FastBoot
- Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" HiberbootEnabled 1
+ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" -Name HiberbootEnabled -Value 1
  #Disable Screensaver
  Disable-ScreenSaver
  #Enable Verbose startup/shutdown
  $RegKey="HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
- Set-ItemProperty -force -path $RegKey -Name "VerboseStatus" -Value "1" -Type DWord | Out-Null
+ Set-ItemProperty -path $RegKey -Name "VerboseStatus" -Value "1" -Type DWord -Force | Out-Null
 }
 Function Set-REGModsMachineRemoveMyPCFolders {
  #64Bits Remove All User Folders In This PC
@@ -6197,7 +6216,7 @@ Function Set-REGModsMachineRemoveMyPCFolders {
  remove-Item -Path "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}]"
 }
 Function Set-REGModsMachineDisableAdminShares {
- Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" LocalAccountTokenFilterPolicy 1
+ Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name LocalAccountTokenFilterPolicy -Value 1
 }
 Function Clear-IconCache {
  Stop-Process explorer.exe
@@ -6254,7 +6273,7 @@ Function Set-RDPNLA {
  Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value "0" | Out-Null
  Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
  if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
-  $RDPClass=Get-CimInstance -class "Win32_TSGeneralSetting" -Namespace root\cimv2\terminalservices -Filter "TerminalName='RDP-tcp'"
+  $RDPClass=Get-CimInstance -classname "Win32_TSGeneralSetting" -Namespace root\cimv2\terminalservices -Filter "TerminalName='RDP-tcp'"
   Invoke-CimMethod -InputObject $RDPClass -MethodName SetEncryptionLevel -Arguments @{MinEncryptionLevel=4} | Out-Null
   Invoke-CimMethod -InputObject $RDPClass -MethodName SetSecurityLayer -Arguments @{SecurityLayer=2} | Out-Null
   Invoke-CimMethod -InputObject $RDPClass -MethodName SetUserAuthenticationRequired -Arguments @{UserAuthenticationRequired=1} | Out-Null
@@ -6262,13 +6281,13 @@ Function Set-RDPNLA {
   (Get-WmiObject -class "Win32_TSGeneralSetting" -Namespace root\cimv2\terminalservices -Filter "TerminalName='RDP-tcp'").SetUserAuthenticationRequired(1)
   #Modifies all RDP-TCP Configuration
   $RegKey="HKLM:\SYSTEM\CurrentControlSet\Control\Terminal*Server\WinStations\RDP-TCP\"
-  Set-RegKey $RegKey "MinEncryptionLevel" "4" "DWord"
-  Set-RegKey $RegKey "UserAuthentication" "1" "DWord"
-  Set-RegKey $RegKey "SecurityLayer" "2" "DWord"
+  Set-RegKey -RegKey $RegKey -Name "MinEncryptionLevel" -Value "4" -Type "DWord"
+  Set-RegKey -RegKey $RegKey -Name "UserAuthentication" -Value "1" -Type "DWord"
+  Set-RegKey -RegKey $RegKey -Name "SecurityLayer" -Value "2" -Type "DWord"
  }
 }
 Function Set-NumlockOnStart {
- New-PSDrive HKU Registry HKEY_USERS |Out-Null
+ New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS |Out-Null
  Set-ItemProperty -ErrorAction SilentlyContinue -Path "HKU:\.DEFAULT\Control Panel\Keyboard" -Name InitialKeyboardIndicators -Value 2
 }
 Function Disable-NetbiosAndLMHostSearch {
@@ -6339,19 +6358,19 @@ Function Clear-Windows {
 }
 Function Set-MSDTC {
  $RegKey="HKLM:\Software\Microsoft\MSDTC\"
- Set-RegKey $RegKey "AllowOnlySecureRpcCalls" "0" "DWord"
- Set-RegKey $RegKey "FallbackToUnsecureRPCIfNecessary" "0" "DWord"
- Set-RegKey $RegKey "TurnOffRpcSecurity" "1" "DWord"
+ Set-RegKey -RegKey $RegKey -Name "AllowOnlySecureRpcCalls" -Value "0" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "FallbackToUnsecureRPCIfNecessary" -Value "0" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "TurnOffRpcSecurity" -Value "1" -Type "DWord"
 
  $RegKey="HKLM:\Software\Microsoft\MSDTC\Security\"
- Set-RegKey $RegKey "NetworkDtcAccess" "1" "DWord"
- Set-RegKey $RegKey "NetworkDtcAccessClients" "1" "DWord"
- Set-RegKey $RegKey "NetworkDtcAccessAdmin" "1" "DWord"
- Set-RegKey $RegKey "XaTransactions" "1" "DWord"
- Set-RegKey $RegKey "NetworkDtcAccessTransactions" "1" "DWord"
- Set-RegKey $RegKey "NetworkDtcAccessInbound" "1" "DWord"
- Set-RegKey $RegKey "NetworkDtcAccessOutbound" "1" "DWord"
- Set-RegKey $RegKey "LuTransactions" "1" "DWord"
+ Set-RegKey -RegKey $RegKey -Name "NetworkDtcAccess" -Value "1" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "NetworkDtcAccessClients" -Value "1" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "NetworkDtcAccessAdmin" -Value "1" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "XaTransactions" -Value "1" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "NetworkDtcAccessTransactions" -Value "1" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "NetworkDtcAccessInbound" -Value "1" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "NetworkDtcAccessOutbound" -Value "1" -Type "DWord"
+ Set-RegKey -RegKey $RegKey -Name "LuTransactions" -Value "1" -Type "DWord"
 
  Restart-Service -displayname "Distributed Transaction Coordinator"
 }
@@ -6624,7 +6643,7 @@ Function Get-KPIADComputer {
   } else { return "Workstation" }
  }
 
- if ( ! (test-path $Path)) { write-Colored "Red" -ColoredText "Unavailable path : $Path" ; return }
+ if ( ! (test-path $Path)) { write-Colored -Color "Red" -ColoredText "Unavailable path : $Path" ; return }
 
  $StartDate=$(get-date -uformat "%Y-%m-%d %T")
 
@@ -6642,13 +6661,13 @@ Function Get-KPIADComputer {
  write-host
  $EndDate=$(get-date -uformat "%Y-%m-%d %T")
  $Duration=(New-TimeSpan -Start $StartDate -End $EndDate)
- write-colored "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
+ write-colored -Color "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
 }
 Function Get-KPIADUser {
  Param (
   $Path="C:\Temp\KPI\"
  )
- if ( ! (test-path $Path)) { write-Colored "Red" -ColoredText "Unavailable path : $Path" ; return }
+ if ( ! (test-path $Path)) { write-Colored -Color "Red" -ColoredText "Unavailable path : $Path" ; return }
 
  $StartDate=$(get-date -uformat "%Y-%m-%d %T")
 
@@ -6668,7 +6687,7 @@ Function Get-KPIADUser {
  write-host
  $EndDate=$(get-date -uformat "%Y-%m-%d %T")
  $Duration=(New-TimeSpan -Start $StartDate -End $EndDate)
- write-colored "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
+ write-colored -Color "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
 }
 # KPI WSUS
 Function Get-KPIWsus {
@@ -6741,7 +6760,7 @@ Function Get-KPIWsus {
 
  $EndDate=$(get-date -uformat "%Y-%m-%d %T")
  $Duration=(New-TimeSpan -Start $StartDate -End $EndDate)
- write-colored "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
+ write-colored -Color "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
 
  write-host
  return $OutputFileWSUS
@@ -6862,7 +6881,7 @@ Function Get-KPIWsusFull {
  #Get end Time and calculate duration
  $EndDate=$(get-date -uformat "%Y-%m-%d %T")
  $Duration=(New-TimeSpan -Start $StartDate -End $EndDate)
- write-colored "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
+ write-colored -Color "Green" -ColoredText "$($MyInvocation.MyCommand) Finished in $Duration"
 
  #Clear Progress
  Write-Host -NoNewline "`r$(" "*100)"
@@ -7801,7 +7820,7 @@ Function Expand-ZIPFile { # Unzip all files of a Zip to a specific destination -
   [Parameter(Mandatory=$true)]$File,
   [Parameter(Mandatory=$true)]$Destination
  )
- if ( ! (test-path $File)) { write-Colored "Red" -ColoredText "Unavailable file : $File" ; return }
+ if ( ! (test-path $File)) { write-Colored -Color "Red" -ColoredText "Unavailable file : $File" ; return }
 
  New-Item -type directory "$Destination" 2>&1 | Out-Null
  $Shell = new-object -com shell.application
@@ -7812,7 +7831,7 @@ Function Read-ZipFile2 { # Read Zip File content
  Param (
   [Parameter(Mandatory=$true)]$File
  )
- if ( ! (test-path $File)) { write-Colored "Red" -ColoredText "Unavailable file : $File" ; return }
+ if ( ! (test-path $File)) { write-Colored -Color "Red" -ColoredText "Unavailable file : $File" ; return }
 
  $Shell = new-object -com shell.application
  $FullPath = (Resolve-Path $File).Path
@@ -7823,7 +7842,7 @@ Function Read-ZipFile { # Read Zip File content using dotnet Object (faster but 
  Param (
   [Parameter(Mandatory=$true)]$File
  )
- if ( ! (test-path $File)) { write-Colored "Red" -ColoredText "Unavailable file : $File" ; return }
+ if ( ! (test-path $File)) { write-Colored -Color "Red" -ColoredText "Unavailable file : $File" ; return }
 
  $FullPath = (Resolve-Path $File).Path
  $ZipFileRead = [System.IO.Compression.ZipFile]::OpenRead($FullPath)
@@ -7874,7 +7893,7 @@ Function Get-FileFromURL { # Download file from URL - Try to follow link if poss
  try {
   Invoke-WebRequest -Uri $link -OutFile "$OutputFolder$outputfile" -UseBasicParsing -ErrorAction Stop
  } catch {
-  write-colored "red" -PrintDate -ColoredText $error[0]
+  write-Colored -Color "Red" -PrintDate -ColoredText $error[0]
   return
  }
 
@@ -7891,8 +7910,8 @@ Function Get-FileContent { # Can be used to search for a string in a file
   [Switch]$Context
  )
  write-blank
- Write-Colored $defaultblue "Search for message " $StringToSearch -nonewline
- Write-Colored $defaultblue " in " $File
+ Write-Colored -Color $defaultblue -NonColoredText "Search for message " $StringToSearch -nonewline
+ Write-Colored -Color $defaultblue -NonColoredText " in " $File
 
  if ( $Context ) {
   $filecontent=get-content $File | select-string $StringToSearch -context 0,1
@@ -8009,7 +8028,7 @@ Function Get-AntiVirus { # Get Current antivirus used (Only if the antivirus res
   $computername=$env:computername
  )
  Try {
-  $AntiVirusProducts = Get-CimInstance -Namespace "root\SecurityCenter2" -Class AntiVirusProduct -ComputerName $computername -ErrorAction Stop
+  $AntiVirusProducts = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName AntiVirusProduct -ComputerName $computername -ErrorAction Stop
  } Catch {Return}
 
  Function Format-AntivirusIdToStatus ($AntivirusStatusID) {
@@ -8055,7 +8074,7 @@ Function Get-WallpaperForAllUsers { # Check the wallpaper applied for all users 
   $Wallpaper="C:\Windows\Web\Wallpaper.jpg",
   [switch]$Set
  )
- New-PSDrive 'HKU' Registry 'HKEY_USERS' | Out-Null
+ New-PSDrive -Name 'HKU' -PSProvider Registry -Root 'HKEY_USERS' | Out-Null
  $RegValueToUpdate="Control Panel\Desktop"
 
  foreach( $User in $((Get-ChildItem HKU:\).PSChildName | Sort-Object )) {
@@ -8309,12 +8328,12 @@ Function Open-EtcHost { # Opens ETC Host in a notepad
 Function Remove-SkypeAds { # Remove Skype ADs (may not be usefull anymore)
  $RegKey="HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\ZoneMap\Domains\skype.com\apps"
  New-Item $RegKey -Force | Out-Null
- Set-RegKey $RegKey "https" "4" "DWord"
+ Set-RegKey -RegKey $RegKey -Name "https" -Value "4" -Type "DWord"
 
  #not required if done before installing skype
  $SkypeProfileName = read-host "What is your skype username"
  while ( ! (Test-Path $env:APPDATA\skype\$SkypeProfileName\) -or ! $SkypeProfileName) {
-  write-colored "Red" "" "`"$SkypeProfileName`" does not exist or a connexion was not done with this account on this computer"
+  write-Colored -Color "Red" "" "`"$SkypeProfileName`" does not exist or a connexion was not done with this account on this computer"
   $SkypeProfileName = read-host "What is your skype username"
  }
  $configpath= "$env:APPDATA\skype\$SkypeProfileName\config.xml"
@@ -8438,23 +8457,23 @@ Function Set-CurrentUserLangToAllUsers { # Set the current local from current us
  #Remove all lang files
  Remove-Object$TempLocation\Lang*.reg
 
- Write-Colored "Green"  -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Mount REG"
+ Write-Colored "Green" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Mount REG"
  #Mount NTUSER.DAT in local Registry
  reg load $DefaultHKEY $DefaultRegPath | Out-Null
  #Mount HKU in Registry
- New-PSDrive 'HKU' Registry 'HKEY_USERS' | Out-Null
+ New-PSDrive -Name 'HKU' -PSProvider Registry -Root 'HKEY_USERS' | Out-Null
 
  $UserSID=Get-SIDFromUser $UserToCopy
 
  if (! $UserSID) {
-  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "User $UserToCopy does not exist"
+  write-Colored -Color "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "User $UserToCopy does not exist"
   return
  }
 
  Try {
   get-item "HKU:\$UserSID\Control Panel\Input Method" | Out-Null
  } catch {
-  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "The profile of User $UserToCopy is not accessible (Open Session)"
+  write-Colored -Color "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "The profile of User $UserToCopy is not accessible (Open Session)"
   return
  }
 
@@ -8469,19 +8488,19 @@ Function Set-CurrentUserLangToAllUsers { # Set the current local from current us
  reg export "$CurrentPath\Control Panel\International" $TempLocation\LangExport_2.reg | Out-Null
  reg export "$CurrentPath\Keyboard Layout" $TempLocation\LangExport_3.reg | Out-Null
  } catch {
-  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText $Error[0]
+  write-Colored -Color "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText $Error[0]
   return
  }
 
  if (! (test-path $TempLocation\LangExport_3.reg)) {
-  Write-Colored "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Error during export"
+  write-Colored -Color "Red" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Error during export"
   Return
  }
 
  #Merge Files and Remove 'Registry Editor Line Export Line'
  (get-content $TempLocation\LangExport_*.reg).Replace('Windows Registry Editor Version 5.00','') | Out-File -Encoding unicode -FilePath $TempLocation\LangExportFull.Reg
 
- Write-Colored "Green"  -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Remove Current Info for all users and create New LangFile"
+ Write-Colored "Green" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Remove Current Info for all users and create New LangFile"
 
  @('Windows Registry Editor Version 5.00') | Out-File -Encoding unicode -FilePath $TempLocation\LangNew.reg
 
@@ -8492,11 +8511,11 @@ Function Set-CurrentUserLangToAllUsers { # Set the current local from current us
   (Get-Content $TempLocation\LangExportFull.Reg).replace('[HKEY_CURRENT_USER\', '[HKEY_USERS\'+$CurrentUser+'\') | Out-File -Encoding unicode -FilePath $TempLocation\LangNew.reg -Append
  }
 
- Write-Colored "Green"  -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Import new lang file"
+ Write-Colored "Green" -NonColoredText "$(get-date -uformat '%Y-%m-%d %T') - " -ColoredText "Import new lang file"
 
  reg import $TempLocation\LangNew.Reg 2>&1 | Out-Null
 
- # Write-Colored "Green" -ColoredText "Unload NTUSER.DAT"
+ # write-colored -Color "Green" -ColoredText "Unload NTUSER.DAT"
  # reg unload $DefaultHKEY | Out-Null
 }
 Function Set-PowershellProfileForAllUsers { # Set a file as the profile for all users
@@ -8700,7 +8719,7 @@ Function LoginHome { # Open SSH Tunnel using Bitvise
  Param (
   $Path="$($env:OneDriveConsumer)\BitVise\BitVisePerso.tlp"
  )
- if ( ! (test-path $Path)) { write-Colored "Red" -ColoredText "Unavailable path : $Path" ; return }
+ if ( ! (test-path $Path)) { write-Colored -Color "Red" -ColoredText "Unavailable path : $Path" ; return }
  # Use Pageant for Certificate Password
  bvssh -profile="$Path" -loginonstartup
 }
@@ -9083,7 +9102,8 @@ Function Get-AzureManagementGroups_Other { # Get all subscription and associated
 }
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptions | foreach-object {
-  az network public-ip list --subscription $_.id -o json | convertfrom-json | Select-Object @{Name="SubscriptionName";Expression={$_.Name}},location,resourceGroup,ipAddress,linkedPublicIpAddress
+  $SubscriptionName = $_.Name
+  az network public-ip list --subscription $_.id -o json | convertfrom-json | Select-Object @{Name="SubscriptionName";Expression={$SubscriptionName}},location,resourceGroup,ipAddress,linkedPublicIpAddress
  }
 }
 Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
@@ -9543,7 +9563,14 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
      $_.principalType
     }
    }}, roleDefinitionName,
-   @{Name="Subscription";Expression={$CurrentSubscriptionName}},
+   @{Name="Subscription";Expression={
+    $Scope_Split = $_.scope.split("/")
+    if ($Scope_Split[-2] -eq "managementGroups") { # Replace Subscription With Management Group or tenant if permission are inherited
+     if ($($Scope_Split[-1]) -eq $TenantID) {"Tenant"} else {$Scope_Split[-1]}
+    } else {
+     $CurrentSubscriptionName
+    }
+   }},
    resourceGroup,
    @{Name="ResourceName";Expression={
     $Scope_Split = $_.scope.split("/")[-1]
@@ -9556,7 +9583,8 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
     } else {
      $Scope_Split
     }
-   }}, @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }},
+   }},
+   @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }},
    @{Name="principalId";Expression={ $_.principalId }},
    @{Name="SubscriptionID";Expression={$CurrentSubscriptionID}}, scope,
    @{Name="AssignmentID";Expression={$_.ID}} # Can be used to remove permissions with az role assignment delete --ids
@@ -9747,7 +9775,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
  }
 }
 # App Registration [Only]
-Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
+Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistrationInfo -AppID $AppID).appRoles | select id,value
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
@@ -9936,13 +9964,14 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
  Progress -Message "Commit API Permissions on $AppID : " -Value $RightName -PrintTime
  az ad app permission grant --only-show-errors --id $AppID --api $PolicyID --scope $RightName | Out-Null
 }
-Function Get-AppRegistrationExpiration { # Get All App Registration Secret
+Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret
  Param (
   $Expiration = 30,
   $MaxExpiration = 730
  )
+ $AppList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json
  $Date_Today = Get-Date
- $KeyList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json | Where-Object passwordCredentials | Select-Object `
+ $KeyList = $AppList | Where-Object passwordCredentials | Select-Object `
  @{Name="AppName";Expression={$_.DisplayName}},AppID,
  @{Name="AppNotes";Expression={$_.notes}},
  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
@@ -9956,14 +9985,15 @@ Function Get-AppRegistrationExpiration { # Get All App Registration Secret
   @{Name="SecretDescription";Expression={$_.DisplayName}},
   @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
   @{Name="SecretExpiration";Expression={$_.endDateTime}},
-  @{Name="SecretType";Expression={"Key"}},*
+  @{Name="SecretType";Expression={"Key"}},
+  @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}},*
 
- $CertificateList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json | Where-Object keyCredentials | Select-Object `
+ $CertificateList = $AppList | Where-Object keyCredentials | Select-Object `
  @{Name="AppName";Expression={$_.DisplayName}},AppID,
  @{Name="AppNotes";Expression={$_.notes}},
  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
  @{Name="AppTags";Expression={
-  $TagList = [PSCustomObject]@{}
+  $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
   $_.Tags | ForEach-Object {
     $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1]
    }
@@ -9973,10 +10003,11 @@ Function Get-AppRegistrationExpiration { # Get All App Registration Secret
    @{Name="SecretDescription";Expression={$_.DisplayName}},
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
    @{Name="SecretExpiration";Expression={$_.endDateTime}},
-   @{Name="SecretType";Expression={"Certificate"}},*
+   @{Name="SecretType";Expression={"Certificate"}},
+   @{Name="CertificateCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).keyCredentials.Count}},*
 
   $KeyList + $CertificateList | Select-Object `
-   AppName,AppNotes,AppTags,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,SecretType,hint,
+   AppName,AppNotes,AppTags,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,KeyCount,CertificateCount,SecretType,hint,
    @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.SecretExpiration).Days}} | Select-Object *,
    @{Name="Status";Expression={
     If ($_.TimeUntilExpiration -gt $MaxExpiration) {
@@ -9994,13 +10025,13 @@ Function Get-AppRegistrationExpiration { # Get All App Registration Secret
     }
    }}
 }
-Function Get-AppRegistrationAudience { # Check All App registration Audiences : this can be added to filter wrong configured ones | ? AppAudience -ne "AzureADMyOrg"
+Function Get-AzureAppRegistrationAudience { # Check All App registration Audiences : this can be added to filter wrong configured ones | ? AppAudience -ne "AzureADMyOrg"
  az ad app list --all -o json --query "[].{DisplayName:displayName,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience}" | ConvertFrom-Json | Select-Object `
  @{Name="AppName";Expression={$_.DisplayName}},AppId,
  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
  @{Name="AppAudience";Expression={$_.signInAudience}}
 }
-Function Set-AppRegistrationTags { # Set Tag on App Registration, can add or overwrite existing (add no tags to list current tags)
+Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add or overwrite existing (add no tags to list current tags)
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
@@ -10069,29 +10100,31 @@ Function Set-AppRegistrationTags { # Set Tag on App Registration, can add or ove
  }
 
 }
-Function Add-AppRegistrationSecret { # Uses PowerShell standard module (Created by Gyorgy) - Not yet tested
+Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationID,
+  $SecretDescription= "Automatically Generated by $env:username",
   $AppMonths = "6"
  )
- # Connect to Microsoft Graph
- Connect-MgGraph -Scopes 'Application.ReadWrite.All'
 
  # Parameters
- $AppInfo = Get-MgApplication -Filter "AppId eq '$AppRegistrationID'"
- $AppObjectId = $AppInfo.Id
- $AppSecretDescription = "Automatically Generated by $env:username"
+ $AppInfo = (az ad app show --id $AppRegistrationID -o json | convertfrom-json)
+ $AppObjectId = $AppInfo.ID
+ $AppName = $AppInfo.displayName
 
- $PasswordCred = @{
-  displayName = $AppSecretDescription
-  endDateTime = (Get-Date).AddMonths($AppMonths)
- }
+ $body = '"{\"passwordCredential\": {\"displayName\": \"' + $SecretDescription + '\",\"endDateTime\": \"' + $((Get-Date).AddMonths($AppMonths)) + '\"}}"'
 
- # Add App Client Secret - Valid for 6 months
- $Secret = Add-MgApplicationPassword -ApplicationId $AppObjectId.Id -PasswordCredential $PasswordCred
+ $ResultJson = az rest --method POST --uri "https://graph.microsoft.com/v1.0/applications/$AppObjectId/addPassword" `
+ --headers "Content-Type=application/json" `
+ --body $body
 
- # Write Client Secret value
- $Secret | Format-List
+ $Result = $ResultJson | ConvertFrom-Json
+
+ $Result | Add-Member -Name ApplicationID -Value $AppRegistrationID -MemberType NoteProperty
+ $Result | Add-Member -Name ApplicationObjectID -Value $AppObjectId -MemberType NoteProperty
+ $Result | Add-Member -Name ApplicationDisplayName -Value $AppName -MemberType NoteProperty
+
+ $Result | Select-Object ApplicationDisplayName,ApplicationID,ApplicationObjectID,displayName,secretText,startDateTime,endDateTime
 }
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
@@ -10131,12 +10164,17 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
  }
  az ad sp list @Arguments | ConvertFrom-Json
 }
-Function Get-AzureServicePrincipalFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
+Function Get-AzureServicePrincipalIDFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationID
  )
- $ServicePrincipalID = ((az ad sp show --id $AppRegistrationID --query "{id:id}") | convertfrom-json).ID
- az ad sp show --id $ServicePrincipalID | ConvertFrom-Json
+ ((az ad sp show --id $AppRegistrationID --query "{id:id}") | convertfrom-json).ID
+}
+Function Get-AzureServicePrincipalIDFromAppName { # Get Azure Service Principal (Enterprise App) information from APP Name (Not SP ObjectID)
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationName
+ )
+ ((az ad sp list --filter "displayName eq '$AppRegistrationName'") | convertfrom-json).ID
 }
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  Param (
@@ -10328,11 +10366,27 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
  }
  az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
 }
-Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity)
+Function Get-AzureServicePrincipalPermission { # Get Assigned API Permission
  Param (
   [Parameter(Mandatory=$true)]$principalId, # ID of the App to be changed
+  [switch]$ConvertDisplayName # Slowed but adds readable Role definition
+ )
+ $Result = (az rest --method get --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" --headers 'Content-Type=application/json' | ConvertFrom-Json).Value
+ if ($ConvertDisplayName) {
+  $Result | ForEach-Object {
+   # $AppRoleDisplayName = (Get-AzureAppRegistrationInfo -DisplayName $_.resourceDisplayName -ValuesToShow appRoles).appRoles | Where-Object id -eq $_.appRoleId
+   $AppRoleDisplayName = (Get-AzureServicePrincipalInfo -ID $_.resourceId -ValuesToShow appRoles).appRoles | Where-Object id -eq $_.appRoleId
+   $_ | Add-Member -MemberType NoteProperty -Name appRoleDisplayName -Value $AppRoleDisplayName.displayName
+   $_ | Add-Member -MemberType NoteProperty -Name appRoleValue -Value $AppRoleDisplayName.value
+  }
+ }
+ $Result
+}
+Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity)
+ Param (
+  [Parameter(Mandatory=$true)]$principalId, # ID of the Service Principal to change
   [Parameter(Mandatory=$true)]$resourceDisplayName, # DisplayName of the API to use : example : Microsoft Graph
-  [Parameter(Mandatory=$true)]$resourceId, # ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
+  [Parameter(Mandatory=$true)]$resourceId, # (Application) ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
   [Parameter(Mandatory=$true)]$appRoleId # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
  )
  $Body = '{\"appRoleId\": \"'+$appRoleId+'\",\"principalId\": \"'+$principalId+'\",\"resourceDisplayName\": \"'+$resourceDisplayName+'\",\"resourceId\": \"'+$resourceId+'\"}'
@@ -10359,6 +10413,42 @@ Function Set-AzureServicePrincipalAssignementRequired {
   [Parameter(Mandatory=$true)]$ServicePrincipalID
  )
  az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
+}
+Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration)
+ Param (
+  $Expiration = 30,
+  $MaxExpiration = 730
+ )
+
+ # To have an idea of the result : Get-AzureServicePrincipalExpiration | ? AppAudience -eq AzureADMyOrg | sort TimeUntilExpiration | ? TimeUntilExpiration -lt 30 | Select-Object -ExcludeProperty AppID,id | ft
+
+ $AppList = az ad sp list --all -o json --query "[].{DisplayName:displayName,id:id,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials}" | ConvertFrom-Json
+ $Date_Today = Get-Date
+ $AppList | Where-Object passwordCredentials | Select-Object `
+  @{Name="AppName";Expression={$_.DisplayName}},AppID,ID,
+  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | Select-Object -Property `
+   @{Name="SecretDescription";Expression={$_.DisplayName}},
+   @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
+   @{Name="SecretExpiration";Expression={$_.endDateTime}},
+   @{Name="SecretType";Expression={"SAML"}},
+   @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
+    @{Name="Status";Expression={
+     If ($_.TimeUntilExpiration -gt $MaxExpiration) {
+      "Infinite"
+     } elseif ($_.TimeUntilExpiration -ge $Expiration) {
+      "OK for at least $Expiration days"
+     } elseif (($_.TimeUntilExpiration -le $Expiration) -and ($_.TimeUntilExpiration -gt 0)) {
+      "Expiring in $($_.TimeUntilExpiration) days"
+     } elseif ($_.TimeUntilExpiration -eq 0) {
+      "Expires today"
+     } elseif ($_.TimeUntilExpiration -lt 0) {
+      "Expired"
+     } else {
+      $_.TimeUntilExpiration
+     }
+  }
+ }
 }
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
@@ -10546,7 +10636,7 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  # AppServices
  $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/AppServices/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
- #StorageAccounts
+ # StorageAccounts
  $Body = '{\"properties\":{\"extensions\":[{\"name\":\"OnUploadMalwareScanning\",\"isEnabled\":\"False\",},{\"name\":\"SensitiveDataDiscovery\",\"isEnabled\":\"True\"}],\"subPlan\":\"DefenderForStorageV2\",\"pricingTier\":\"Standard\"}}'
  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/StorageAccounts/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
  # SqlServerVirtualMachines
@@ -10558,7 +10648,7 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  # ContainerRegistry
  $Body = '{\"properties\":{\"pricingTier\":\"Free\",\"isEnabled\":\"False\"}}'
  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/ContainerRegistry/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
- #Keyvaults
+ # Keyvaults
  $body = '{\"name\":\"KeyVaults\",\"properties\":{\"pricingTier\":\"Standard\",\"subPlan\":\"PerKeyVault\"} }'
  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Keyvaults/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
  # Dns
@@ -10580,7 +10670,8 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  $Body='{\"properties\":{\"extensions\":[{\"isEnabled\":\"True\",\"name\":\"SensitiveDataDiscovery\"},{\"isEnabled\":\"True\",\"name\":\"ContainerRegistriesVulnerabilityAssessments\"},{\"isEnabled\":\"True\",\"name\":\"AgentlessDiscoveryForKubernetes\"},{\"additionalExtensionProperties\":{\"ExclusionTags\":\"[]\"},\"isEnabled\":\"True\",\"name\":\"AgentlessVmScanning\"}],\"pricingTier\":\"Standard\"}}'
  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/CloudPosture/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
  # Api
- $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ # $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
+ $Body = '{\"properties\":{\"pricingTier\":\"Free\"}}'
  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Api/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
 }
 # DevOps
@@ -10671,11 +10762,12 @@ Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Sl
 }
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast)
  # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
- $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
+ $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value
  While ($CurrentResult.'@odata.nextLink') {
   $NextRequest = $CurrentResult.'@odata.nextLink'
   $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
+  Start-Sleep -Seconds 1 # Added to not be throttled
   $CurrentResult.Value
  }
 }
@@ -10863,7 +10955,8 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
   [Parameter(Mandatory)]$Subject
  )
 
- Open-MgGraphConnection -Scopes 'Mail.Send' -ContextScope 'Process'
+ $CurrentConnection = Get-MgContext | where-object { ($_.ContextScope -eq "Process") -and ($_.Scopes -contains "Mail.Send") }
+ if (!$CurrentConnection) { Open-MgGraphConnection -Scopes 'Mail.Send' -ContextScope 'Process' }
 
  $params = @{
   Message = @{
