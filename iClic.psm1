@@ -11102,7 +11102,7 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
 }
-Function Get-AzureSKUs {
+Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
  ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
 }
 
@@ -11122,3 +11122,6 @@ Function LoadMMC { mmc "$env:OneDriveCommercial\RootConsole.msc" }
 Set-Alias -Name jd -value Start-Jdownloader
 Set-Alias -Name Home -value "LoginHome"
 Set-Alias -Name Which -value "Get-Command"
+
+if ( (test-path $env:iClic_Addon_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Addon_Path }
+if ( (test-path $env:iClic_Perso_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Perso_Path }
