@@ -38,6 +38,7 @@
 # Example to add all Members to an Object without knowing the name first
 # $TagList = [PSCustomObject]@{}
 # $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] }
+# Check Get-AzureADObjectInfo to see Error Management for Az Cli cmdlines
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -1103,12 +1104,21 @@ Function Assert-IsDLLInRegistry {
 Function Assert-IsInAAD {
  Param (
   [Parameter(Mandatory=$true)]$NameOrID, # Works with Name (UPN for users) & ID
-  [ValidateSet("Group","User")]$Type="User"
+  [ValidateSet("Group","User")]$Type="User",
+  [switch]$PrintError
  )
  if ($Type -eq 'Group') {
-  $Result = az ad group show -g $NameOrID 2>$ErrorMessage
+  $ResultJson = az ad group show -g $NameOrID 2>&1
+  $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+  $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+  if ($ErrorMessage) {
+   if ($ErrorMessage -like "*More than one group*") {
+    write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]"
+   }
+   if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]" }
+  }
  } else {
-  $Result = az ad user show --id $NameOrID 2>$ErrorMessage
+  $Result = az ad user show --id $NameOrID 2>&1
  }
  if ($Result) { return $True } else { return $False }
 }
@@ -9112,10 +9122,15 @@ Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
   $subscriptionName = $_.name
   Progress -Message "Checking resources of subscription : " -Value $subscriptionName -PrintTime
   az account set --subscription $subscriptionId
-  $CurrentSubscriptionResources = az resource list --output json | ConvertFrom-Json
-  $CurrentSubscriptionResources | ForEach-Object {
-   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
-   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+  $CurrentSubscriptionResources = az resource list --output json
+  try {
+   $CurrentSubscriptionResources | ConvertFrom-Json -ErrorAction Stop | ForEach-Object {
+    $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
+    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+   }
+  } Catch {
+   Write-host -ForegroundColor Red -Object "Error in Subscription $subscriptionName ($subscriptionId)"
+   "$subscriptionName;$subscriptionId;$($Error[0])" | Out-File "C:\Temp\AzureAllResources_Error_$([DateTime]::Now.ToString("yyyyMMdd")).log" -Append
   }
   $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
@@ -9139,6 +9154,9 @@ Function Get-AzureResourceGroups { # Get all Azure Resource Groups for all Subsc
  return $ExportFileName
 }
 Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (Checks ACLs)
+ Param (
+  [switch]$ShowAccessPolicies # Will add a huge time on the check
+ )
  Get-AzureSubscriptions | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
@@ -9147,29 +9165,82 @@ Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (C
   $CurrentSubscriptionResources = az keyvault list --output json | ConvertFrom-Json
   $CurrentSubscriptionResources | ForEach-Object {
    Progress -Message "Checking Keyvaults of subscription : $subscriptionName : " -Value $_.Name -PrintTime
-   # $PublicAccess = az keyvault show --name $_.name --query '{publicNetworkAccess:properties.publicNetworkAccess}' -o tsv
    $KV_Properties = az keyvault show --name $_.name --query '{properties:properties}' -o json | ConvertFrom-Json
    $Bypass = $KV_Properties.properties.networkAcls.bypass
-   $PublicMode = if (($KV_Properties.properties.publicNetworkAccess -eq "Enabled") -or ($KV_Properties.properties.networkAcls.defaultAction -eq "Allow")) {
-    "Public"
-   } elseif (($KV_Properties.properties.publicNetworkAccess -eq "Disabled") -and $Bypass) {
-    "Private with Bypass ($Bypass)"
-   } elseif ($KV_Properties.properties.publicNetworkAccess -eq "Disabled") {
-    "FullPrivate"
+   $PublicAccess = $KV_Properties.properties.publicNetworkAccess
+   $NetworkACLsDefaultAction = $KV_Properties.properties.networkAcls.defaultAction
+   if ($KV_Properties.properties.networkAcls.ipRules.count -eq 0) { $OpenIPs = $False } else { $OpenIPs = $True }
+   if ($KV_Properties.properties.networkAcls.virtualNetworkRules.count -eq 0) { $PublicVNET = $False } else { $PublicVNET = $True }
+   if ($KV_Properties.properties.privateEndpointConnections.count -eq 0) { $PrivateEndpoint = $False } else { $PrivateEndpoint = $True }
+   if ($Bypass) {$BypassText = " with Bypass ($Bypass)"} else {$BypassText = ""}
+   if (($PublicAccess -eq "Enabled") -and ($NetworkACLsDefaultAction -eq "Deny")) {$PublicFiltered = $True} else { $PublicFiltered = $False }
+   if (($NetworkACLsDefaultAction -eq "Allow") -or (($PublicAccess -eq "Enabled") -and (! $NetworkACLsDefaultAction))) {$Public = $True} else { $Public = $False }
+   if (($PublicAccess -eq "Disabled")) {$Private = $True} else { $Private = $True }
+
+   $PublicMode = `
+   if ($Public) {
+    "Allow public access from all networks"
+   } elseif ($PublicFiltered -and $OpenIPs -and $PublicVNET -and $PrivateEndpoint ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs, VNETs and Private Endpoint$BypassText"
+   } elseif ($PublicFiltered -and $OpenIPs -and $PublicVNET ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs and VNETs$BypassText"
+   } elseif ($PublicFiltered -and $PublicVNET -and $PrivateEndpoint ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public VNETs and Private Endpoint$BypassText"
+   } elseif ($PublicFiltered -and $PublicVNET ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public VNETs$BypassText"
+   } elseif ($PublicFiltered -and $OpenIPs -and $PrivateEndpoint ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs and Private Endpoint$BypassText"
+   } elseif ($PublicFiltered -and $OpenIPs ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs$BypassText"
+   } elseif ($PublicFiltered) {
+    "Allow public access from specific virtual networks and IP addresses$BypassText"
+   } elseif ($Private -and $Bypass -and (!$PrivateEndpoint)) {
+    "$Bypass only"
+   } elseif ($Private -and $PrivateEndpoint) {
+    "Private$BypassText"
    } else {
-    "Public Filtered"
+    "Unmanaged"
    }
+
+   $AccessPolicies_Users = $AccessPolicies_Apps = $AccessPolicies_Other = $AccessPolicies_Groups = @()
+   if ($KV_Properties.properties.enableRbacAuthorization) {
+    $AccessPolicies_Users = $AccessPolicies_Apps = $AccessPolicies_Other = $AccessPolicies_Groups = "RBAC"
+   } else {
+    if ($ShowAccessPolicies) {
+     $KV_Properties.properties.accessPolicies | ForEach-Object {
+      $CurrentPolicyID = Get-AzureADObjectInfo -ObjectID $_.objectId
+      if ($CurrentPolicyID.Type -eq "#microsoft.graph.user") {
+       $AccessPolicies_Users+=$CurrentPolicyID.DisplayName
+      } elseif ($CurrentPolicyID.Type -eq "#microsoft.graph.servicePrincipal") {
+       $AccessPolicies_Apps+=$CurrentPolicyID.DisplayName
+      } elseif ($CurrentPolicyID.Type -eq "#microsoft.graph.group") {
+       $AccessPolicies_Groups+=$CurrentPolicyID.DisplayName
+      } else {
+       $AccessPolicies_Other+=$CurrentPolicyID.ID
+      }
+     }
+    } else {
+     $AccessPolicies_Users = $AccessPolicies_Apps = $AccessPolicies_Other = $AccessPolicies_Groups = "Use_ShowAccessPolicies_For_Details"
+    }
+   }
+
    $_ | Add-Member -NotePropertyName RBAC_Enabled -NotePropertyValue $KV_Properties.properties.enableRbacAuthorization
    $_ | Add-Member -NotePropertyName Access_Policies_Count -NotePropertyValue $KV_Properties.properties.accessPolicies.count
    $_ | Add-Member -NotePropertyName SKU -NotePropertyValue $KV_Properties.properties.sku.name
-   $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $PublicMode # Check if it's enough
-   # $_ | Add-Member -NotePropertyName Network_Public_Mode -NotePropertyValue $KV_Properties.properties.publicNetworkAccess
+   $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $PublicMode
+   $_ | Add-Member -NotePropertyName Network_Public_Access -NotePropertyValue $KV_Properties.properties.publicNetworkAccess
    $_ | Add-Member -NotePropertyName Network_Bypass -NotePropertyValue $KV_Properties.properties.networkAcls.bypass
-   $_ | Add-Member -NotePropertyName Network_Open_IP -NotePropertyValue $KV_Properties.properties.networkAcls.ipRules.count
-   $_ | Add-Member -NotePropertyName Network_Open_VNET -NotePropertyValue $KV_Properties.properties.networkAcls.virtualNetworkRules.count
-   $_ | Add-Member -NotePropertyName Network_Default_Action -NotePropertyValue $KV_Properties.properties.networkAcls.defaultAction
+   $_ | Add-Member -NotePropertyName Network_Public_IP -NotePropertyValue $KV_Properties.properties.networkAcls.ipRules.count
+   $_ | Add-Member -NotePropertyName Network_Public_VNET -NotePropertyValue $KV_Properties.properties.networkAcls.virtualNetworkRules.count
+   $_ | Add-Member -NotePropertyName Network_Private_Endpoints -NotePropertyValue $KV_Properties.properties.privateEndpointConnections.count
+   $_ | Add-Member -NotePropertyName Network_Default_Action -NotePropertyValue $NetworkACLsDefaultAction
    $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+   $_ | Add-Member -NotePropertyName AccessPolicies_Users -NotePropertyValue ($AccessPolicies_Users -join ",")
+   $_ | Add-Member -NotePropertyName AccessPolicies_Groups -NotePropertyValue ($AccessPolicies_Groups -join ",")
+   $_ | Add-Member -NotePropertyName AccessPolicies_Apps -NotePropertyValue ($AccessPolicies_Apps -join ",")
+   $_ | Add-Member -NotePropertyName AccessPolicies_Other -NotePropertyValue ($AccessPolicies_Other -join ",")
+
   }
   $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllKeyvaults_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
@@ -9681,7 +9752,7 @@ Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions f
    Write-Host -ForegroundColor Green "No OAuth2Permissions found on App Registration $AppID"
   }
 }
-Function New-AppRegistrationBlank { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
+Function New-AzureAppRegistrationBlank { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationName,
   [Switch]$CreateAssociatedServicePrincipal
@@ -9718,7 +9789,7 @@ Function New-AzureServicePrincipal { # Create an Enterprise App linked to existi
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationName
  )
- New-AppRegistrationBlank -CreateAssociatedServicePrincipal -AppRegistrationName $AppRegistrationName
+ New-AzureAppRegistrationBlank -CreateAssociatedServicePrincipal -AppRegistrationName $AppRegistrationName
 }
 Function New-AzureAppSP_NONSSO { # Create App Registration with all required info : Associated SP, Permission, Owners etc. (Check function for more info)
  Param (
@@ -9739,10 +9810,10 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
 
  $ObjectsToCreate | ForEach-Object {
   if ($_.CreateServicePrincipal) {
-   $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name -CreateAssociatedServicePrincipal
+   $App_AppID = New-AzureAppRegistrationBlank -AppRegistrationName $_.Name -CreateAssociatedServicePrincipal
    $SP_AppID = (Get-AzureServicePrincipalInfo -DisplayName $_.Name).ID
   } else {
-   $App_AppID = New-AppRegistrationBlank -AppRegistrationName $_.Name
+   $App_AppID = New-AzureAppRegistrationBlank -AppRegistrationName $_.Name
   }
   $AppRegistrationOwner = $_.AppRegistrationOwner
   $ServicePrincipalOwner = $_.ServicePrincipalOwner
@@ -9759,7 +9830,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
   # Permission Management
   $_.RightsToAdd | ForEach-Object {
    if (! $BackendAPI_ID) {Return}
-   Add-AzureAppRegistrationPermission -AppID $App_AppID -PolicyID $BackendAPI_ID -RightName $_
+   Add-AzureAppRegistrationPermission -AppID $App_AppID -ServicePrincipalID $BackendAPI_ID -RightName $_
    Progress -Message "Check API Permissions on " -Value $App_AppID -PrintTime
   }
 
@@ -9857,11 +9928,12 @@ Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Ri
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationID,
-  $AppRegistrationName
+  $AppRegistrationName,
+  [switch]$Readable
  )
  if (!$AppRegistrationName) {$AppRegistrationName = $AppRegistrationID}
  $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
- ($PermissionListJson | Select-Object @{name="Rules";expression={
+ $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
    $Rules_List=@()
    $PolicyID = $_.resourceAppId
    # $PolicyExpiration = $_.expiryTime
@@ -9876,7 +9948,11 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
    $Rules_List
   }
  }
- ).Rules
+ If ($Readable) {
+  Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $AppRegistrationID
+ } else {
+  $Result.Rules
+ }
 }
 Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App Registration of a Tenant
  Param (
@@ -9941,28 +10017,40 @@ Function Get-AzureAppRegistrationAPIPermissionsSingle { # Check permission for a
   Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AppRegistrationPermissions
  }
 }
-Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to but fully working)
+Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to be fully working) - Remove Automated Consent, need to manually consent when all permissions are added
  Param (
   [Parameter(Mandatory=$true)]$AppID,
-  [Parameter(Mandatory=$true)]$PolicyID,
+  [parameter(Mandatory=$true,ParameterSetName="ID")]$ServicePrincipalID, # Service Principal Object ID that holds the Permission
+  [parameter(Mandatory=$true,ParameterSetName="Name")]$ServicePrincipalName, # App Name that holds the Permission - Example : 'Microsoft Graph'
   [Parameter(Mandatory=$true)]$RightName
  )
  # Find Rights ID depending on backend_API_ID
- $RightsToAdd_ID = (Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $PolicyID | Where-Object "Value" -eq $RightName).RuleID
- if (! $RightsToAdd_ID) {
-  Write-Host -Foregroundcolor "Red" "$RightName was not found in API $PolicyID, please check"
+ if ($PolicyName) {
+  $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $PolicyName
+ }
+
+ $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object "Value" -eq $RightName
+
+ if (! $RightsToAdd) {
+  Write-Host -Foregroundcolor "Red" "$RightName was not found in API $ServicePrincipalID, please check"
   return
  } else {
-  $RightsToAdd_ID = $RightsToAdd_ID + "=Role"
+  $RuleID = $RightsToAdd.RuleID
+  $PolicyID = $RightsToAdd.PolicyID
+  if ($RightsToAdd.PermissionType -eq 'Delegated') { # For Application Permission : Role, For Delegated : Scope
+   $RightsToAdd_ID = $RuleID + "=Scope"
+  } else {
+   $RightsToAdd_ID = $RuleID + "=Role"
+  }
  }
 
  # Add Rights
- Progress -Message "Adding API Permissions on $AppID : " -Value $RightName -PrintTime
- az ad app permission add --only-show-errors --id $AppID --api $PolicyID --api-permissions $RightsToAdd_ID
+ Progress -Message "Adding API Permissions on $AppID $($RightsToAdd.PermissionType): " -Value $RightName -PrintTime
+ az ad app permission add --id $AppID --api $PolicyID --api-permissions $RightsToAdd_ID
 
  # Commit Rights
  Progress -Message "Commit API Permissions on $AppID : " -Value $RightName -PrintTime
- az ad app permission grant --only-show-errors --id $AppID --api $PolicyID --scope $RightName | Out-Null
+ az ad app permission grant --id $AppID --api $PolicyID --scope $RightsToAdd_ID
 }
 Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret
  Param (
@@ -10382,13 +10470,24 @@ Function Get-AzureServicePrincipalPermission { # Get Assigned API Permission
  }
  $Result
 }
-Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity)
+Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST
  Param (
   [Parameter(Mandatory=$true)]$principalId, # ID of the Service Principal to change
   [Parameter(Mandatory=$true)]$resourceDisplayName, # DisplayName of the API to use : example : Microsoft Graph
-  [Parameter(Mandatory=$true)]$resourceId, # (Application) ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
-  [Parameter(Mandatory=$true)]$appRoleId # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
+  $resourceId, # (Application) ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
+  [parameter(Mandatory=$true,ParameterSetName="ID")]$appRoleId, # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
+  [parameter(Mandatory=$true,ParameterSetName="NAME")]$appRoleName # ID of the Role to use : Example : User.Read.All
  )
+ if ((! $resourceId) -or ($appRoleName)) {
+  $AppInfo = (Get-AzureServicePrincipalInfo -DisplayName $resourceDisplayName)
+ }
+ If (! $resourceId) {
+  $resourceId = $AppInfo.Id
+ }
+ if ($appRoleName) {
+  $appRoleId = ($AppInfo.AppRoles | Where-Object value -eq $appRoleName).id
+ }
+
  $Body = '{\"appRoleId\": \"'+$appRoleId+'\",\"principalId\": \"'+$principalId+'\",\"resourceDisplayName\": \"'+$resourceDisplayName+'\",\"resourceId\": \"'+$resourceId+'\"}'
  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" `
   --headers 'Content-Type=application/json' `
@@ -10676,6 +10775,7 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
 }
 # DevOps
 Function Get-ADOUsers {
+ # This needs to be setup first : az devops configure -d organization=ORG_URL
  (az devops user list --top 1000 -o json | convertfrom-json).Members | Select-Object dateCreated,lastAccessedDate,
   @{Name="DisplayName";Expression={$_.User.displayName}},
   @{Name="principalName";Expression={$_.User.principalName}},
@@ -10688,6 +10788,20 @@ Function Get-ADOUsers {
   @{Name="LicenseStatus";Expression={$_.accessLevel.status}},
   @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "C:\Temp\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
 }
+Function Get-ADOPermissions_Groups {
+ # Get all project list
+ $AzureDevopsProjectList = ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
+ # Get all permission name and ID
+ $AzureDevopsProjectList[0..10] | ForEach-Object {
+  $ProjectRealName = $_
+  $ProjectName = $ProjectRealName -replace " ","_" -replace " - ","-"
+  (az devops security group list --project $_ -o json | convertfrom-json).graphGroups | Select-Object `
+   @{Name="ProjectRealName";Expression={Progress -Message "Checking Project : " -Value $ProjectRealName -PrintTime ; $ProjectRealName}},
+   @{Name="ProjectName";Expression={$ProjectName}},
+   @{Name="PermissionName";Expression={$_.displayName}},
+   @{Name="PermissionID";Expression={$_.descriptor}},origin,isCrossProject
+  }
+ }
 # MFA
 Function Get-AzureADUserMFAGraph { # Get MFA Status of User, uses MgGraph
  Param (
@@ -10760,7 +10874,7 @@ Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Sl
   $CurrentUser
  } | Export-CSV "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
 }
-Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast)
+Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Less detail
  # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value
@@ -10860,7 +10974,8 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  Param (
   [Parameter(Mandatory)]$UPNorID,
   [Switch]$Detailed,
-  [Switch]$ShowManager
+  [Switch]$ShowManager,
+  [Switch]$ShowMemberOf
  )
  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
  if ($Verbose) {
@@ -10886,6 +11001,16 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName ManagerUPN -NotePropertyValue $Manager.ManagerUPN
   $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
  }
+ # if ($ShowMemberOf) {
+ #  $MemberOf=@()
+ #  $MemberOfTmp = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/memberOf" --headers Content-Type=application/json | ConvertFrom-Json
+ #  While ($MemberOfTmp.'@odata.nextLink') {
+ #   $MemberOf += $MemberOfTmp.Value.displayName
+ #   $MemberOfTmp = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
+ #   $NextRequest = $CurrentResult.'@odata.nextLink'
+ #  }
+ #  $MemberOf
+ # }
  $Result
 }
 Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
@@ -10935,16 +11060,25 @@ Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell usi
 Function Get-AzureADObjectInfo { # Get Object GUID Info
  Param (
   [Parameter(Mandatory)][GUID]$ObjectID,
+  [Switch]$PrintError,
   [Switch]$ShowAll
  )
- $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json | ConvertFrom-Json
- if ($ShowAll) {
-  $Result
+ $ResultJson = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json 2>&1
+ $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+ $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+ if ($ErrorMessage) {
+  if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for ObjectID $ObjectID [$ErrorMessage]" }
+  [pscustomobject]@{ID=$ObjectID;Type="Unknown";DisplayName="ID Not Found in Azure";mail="Unknown";userPrincipalName="Unknown"}
  } else {
-  $Result | Select-Object `
-   @{name="ID";expression={$_.id}},
-   @{name="Type";expression={$_.'@odata.type'}},
-   @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
+  $Result = $ResultJson | ConvertFrom-Json
+  if ($ShowAll) {
+   $Result
+  } else {
+   $Result | Select-Object `
+    @{name="ID";expression={$_.id}},
+    @{name="Type";expression={$_.'@odata.type'}},
+    @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
+  }
  }
 }
 Function Send-Mail {  # To make automated Email, it requires an account with a mailbox
@@ -10967,6 +11101,9 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
   SaveToSentItems = "true"
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
+}
+Function Get-AzureSKUs {
+ ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
 }
 
 #Alias
