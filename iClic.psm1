@@ -10792,7 +10792,7 @@ Function Get-ADOPermissions_Groups {
  # Get all project list
  $AzureDevopsProjectList = ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
  # Get all permission name and ID
- $AzureDevopsProjectList[0..10] | ForEach-Object {
+ $AzureDevopsProjectList | ForEach-Object {
   $ProjectRealName = $_
   $ProjectName = $ProjectRealName -replace " ","_" -replace " - ","-"
   (az devops security group list --project $_ -o json | convertfrom-json).graphGroups | Select-Object `
