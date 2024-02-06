@@ -10818,6 +10818,14 @@ Function Get-ADOPermissions_Groups { # Project Level Permission Only
    [Parameter(Mandatory)]$Organization,
    $AmountOfReturnValues = '1000' # Max 1000
   )
+
+  Examples :
+ # Users on Organization Level :
+ # $Users = (Get-ADO_Request -RequestURI "graph/users" -Header $header -Organization dekracloud -BaseURI "https://vssps.dev.azure.com/")
+ # Groups on Organization level :
+ # $Groups = (Get-ADO_Request -RequestURI "graph/groups" -Header $header -Organization dekracloud -BaseURI "https://vssps.dev.azure.com/")
+
+
   $FullResult = @()
   $URI = $BaseURI + $Organization + "/_apis/" + $RequestURI
   $Result = Invoke-WebRequest -Uri $Uri -Method Get -ContentType "application/json" -Headers $header
