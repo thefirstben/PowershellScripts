@@ -10788,7 +10788,7 @@ Function Get-ADOUsers {
   @{Name="LicenseStatus";Expression={$_.accessLevel.status}},
   @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "C:\Temp\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
 }
-Function Get-ADOPermissions_Groups {
+Function Get-ADOPermissions_Groups { # Project Level Permission Only
  # Get all project list
  $AzureDevopsProjectList = ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
  # Get all permission name and ID
@@ -10801,6 +10801,35 @@ Function Get-ADOPermissions_Groups {
    @{Name="PermissionName";Expression={$_.displayName}},
    @{Name="PermissionID";Expression={$_.descriptor}},origin,isCrossProject
   }
+ }
+ Function Get-ADO_AuthenticationHeader { # Convert Azure DevOps PAT Token to usable Header Object
+  Param (
+   [Parameter(Mandatory)]$PersonalAccessToken
+  )
+  $token = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$($PersonalAccessToken)"))
+  $header = @{authorization = "Basic $token"}
+  return $header
+ }
+ Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops
+  Param (
+   [Parameter(Mandatory)]$RequestURI, # Example : projects
+   $BaseURI="https://dev.azure.com/", # For DevOps Graph the URL is : https://vssps.dev.azure.com/
+   [Parameter(Mandatory)]$Header,
+   [Parameter(Mandatory)]$Organization,
+   $AmountOfReturnValues = '1000' # Max 1000
+  )
+  $FullResult = @()
+  $URI = $BaseURI + $Organization + "/_apis/" + $RequestURI
+  $Result = Invoke-WebRequest -Uri $Uri -Method Get -ContentType "application/json" -Headers $header
+  $FullResult += ($Result.Content | ConvertFrom-Json).Value
+  $ContinuationToken = $Result.headers.'x-ms-continuationtoken'
+  while ($ContinuationToken) {
+   $ContinuationUri = $URI + "?continuationToken=" + $ContinuationToken
+   $Result = Invoke-WebRequest -Uri $ContinuationUri -Method Get -ContentType "application/json" -Headers $header
+   $FullResult += ($Result.Content | ConvertFrom-Json).Value
+   $ContinuationToken = $Result.headers.'x-ms-continuationtoken'
+  }
+  $FullResult
  }
 # MFA
 Function Get-AzureADUserMFAGraph { # Get MFA Status of User, uses MgGraph
