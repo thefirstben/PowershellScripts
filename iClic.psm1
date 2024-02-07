@@ -10840,7 +10840,7 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
  $FullResult
 }
 # MFA
-Function Get-AzureADUserMFAGraph { # Get MFA Status of User, uses MgGraph
+Function Get-AzureADUserMFAGraph { # Get MFA Status of User, uses MgGraph | DEPRECATED
  Param (
   [Parameter(Mandatory)]$UserID
  )
@@ -10894,7 +10894,7 @@ Function Get-AzureADUserMFAGraph { # Get MFA Status of User, uses MgGraph
 	}
 	$MFA_Status
 }
-Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Slow - Uses MGGraph From Get-AzureADUserMFAGraph
+Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Slow - Uses MGGraph From Get-AzureADUserMFAGraph | DEPRECATED
  Param (
   [Parameter(Mandatory)]$UserListPath # Create file using 'Get-AzureADUsers -Graph'
  )
@@ -10911,16 +10911,49 @@ Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Sl
   $CurrentUser
  } | Export-CSV "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
 }
-Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Less detail
+Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
+ Param (
+  $SleepDurationInS = 2
+ )
+ $Count=0
+ $GlobalResult = @()
+ $ContinueRunning = $True
+ $FirstRun=$True
  # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
- $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
- $CurrentResult.Value
- While ($CurrentResult.'@odata.nextLink') {
+
+ While ($ContinueRunning -eq $True) {
+  Progress -Message "Getting all MFA Status of Users Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count
+  if ($FirstRun) {
+   $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
+   $FirstRun=$Talse
+  } else {
+   $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+   If ($ErrorMessage) {
+    Write-Host -ForegroundColor "Red" -Object "Detected Error ; Restart Current Loop after a 10s sleep"
+    Start-Sleep 10
+    Continue
+   }
+   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+  }
   $NextRequest = $CurrentResult.'@odata.nextLink'
-  $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
-  Start-Sleep -Seconds 1 # Added to not be throttled
-  $CurrentResult.Value
+  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
+  $Count++
+  $GlobalResult += $CurrentResult.Value | Select-Object *,
+  @{Name="Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
+  @{Name="Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
+  @{Name="Method_email";Expression={$_.methodsRegistered -contains 'email'}},
+  @{Name="Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
+  @{Name="Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
+  @{Name="Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
+  @{Name="Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
+  @{Name="Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
+  @{Name="Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
+  @{Name="Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
+  @{Name="Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
+  Start-Sleep -Seconds $SleepDurationInS # Added to not be throttled
  }
+ $GlobalResult | Export-CSV "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
 }
 # AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
@@ -11015,14 +11048,18 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   [Switch]$ShowMemberOf
  )
  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
- if ($Verbose) {
-  if ($UserGUID) { Write-Host "Working with GUID" } else { Write-Host "Working with UPN" }
- }
+ if ($UserGUID) { Write-Verbose "Working with GUID" } else { Write-Verbose "Working with UPN" }
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
   # az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json 2>null
   $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
  } else {
-  $Result = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=id,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
+  $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity"
+ if ($UserGUID) {
+  $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
+ } else {
+  $RestResult = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=$Filter&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ }
+  $Result = $RestResult | Select-Object `
   id,onPremisesImmutableId,displayName,userPrincipalName,accountEnabled,createdDateTime,
   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
   @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}}
@@ -11038,16 +11075,39 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName ManagerUPN -NotePropertyValue $Manager.ManagerUPN
   $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
  }
- # if ($ShowMemberOf) {
- #  $MemberOf=@()
- #  $MemberOfTmp = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/memberOf" --headers Content-Type=application/json | ConvertFrom-Json
- #  While ($MemberOfTmp.'@odata.nextLink') {
- #   $MemberOf += $MemberOfTmp.Value.displayName
- #   $MemberOfTmp = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
- #   $NextRequest = $CurrentResult.'@odata.nextLink'
- #  }
- #  $MemberOf
- # }
+ if ($ShowMemberOf) {
+  $MemberOf=@()
+  $MemberOfTmp = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/memberOf" --headers Content-Type=application/json | ConvertFrom-Json
+  $MemberOf += $MemberOfTmp.Value
+  While ($MemberOfTmp.'@odata.nextLink') {
+   $MemberOf += $MemberOfTmp.Value
+   $MemberOfTmp = az rest --method get --uri $MemberOfTmp.'@odata.nextLink' --header Content-Type="application/json" -o json | convertfrom-json
+  }
+  $MemberOfFinal = $MemberOf | Select-Object id,displayName,@{name="Type";expression={
+   if (($_.'@odata.type' -eq '#microsoft.graph.group') -and ($_.securityEnabled) -and ($_.onPremisesSyncEnabled)) {
+    "AD_SecurityGroup"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.group') -and (! $_.securityEnabled) -and ($_.onPremisesSyncEnabled)) {
+    "AD_Group"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.administrativeUnit') -and ($_.membershipType -eq 'Dynamic') ) {
+    "AdminUnit_Dynamic"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.administrativeUnit') -and ($_.membershipType -ne 'Dynamic') ) {
+    "AdminUnit_Fixed"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.group') -and ($_.groupTypes -contains 'DynamicMembership') -and ($_.securityEnabled) -and (! $_.onPremisesSyncEnabled)) {
+    "Entra_Dynamic_SecurityGroup"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.group') -and ($_.groupTypes -Contains 'DynamicMembership') -and (! $_.securityEnabled) -and (! $_.onPremisesSyncEnabled)) {
+    "Entra_Dynamic_Group"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.group') -and ($_.groupTypes -contains 'Unified') -and ($_.securityEnabled) -and (! $_.onPremisesSyncEnabled)) {
+    "Entra_Unified_SecurityGroup"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.group') -and ($_.groupTypes -contains 'Unified') -and (! $_.securityEnabled) -and (! $_.onPremisesSyncEnabled)) {
+    "Entra_Unified_Group"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.group') -and ($_.securityEnabled) -and (! $_.onPremisesSyncEnabled)) {
+    "Entra_Security_Group"
+   } elseif (($_.'@odata.type' -eq '#microsoft.graph.group') -and (! $_.securityEnabled) -and (! $_.onPremisesSyncEnabled)) {
+    "Entra_Group"
+   }
+  }}
+  $Result | Add-Member -NotePropertyName MemberOf -NotePropertyValue $MemberOfFinal
+ }
  $Result
 }
 Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
@@ -11160,5 +11220,7 @@ Set-Alias -Name jd -value Start-Jdownloader
 Set-Alias -Name Home -value "LoginHome"
 Set-Alias -Name Which -value "Get-Command"
 
-if ( (test-path $env:iClic_Addon_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Addon_Path }
-if ( (test-path $env:iClic_Perso_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Perso_Path }
+if (Assert-MinPSVersion 6 -Silent) {
+ if ( (test-path $env:iClic_Addon_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Addon_Path }
+ if ( (test-path $env:iClic_Perso_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Perso_Path }
+}
