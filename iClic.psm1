@@ -65,7 +65,6 @@ if ($IsLinux) {
 } else {
  $username=([System.Security.Principal.WindowsIdentity]::GetCurrent().name).ToUpper()
 }
-
 # TO CLEAN
 Function PSElevate { # Open an elevated Powershell window (not possible to elevate without opening a new window). If already elevated will open another window
  Param (
@@ -8530,7 +8529,7 @@ Function Set-CurrentUserLangToAllUsers { # Set the current local from current us
 }
 Function Set-PowershellProfileForAllUsers { # Set a file as the profile for all users
  Param (
-  $ProfilePath="$env:OneDriveConsumer\Git\VsCode-Repo\iClic-Perso.ps1"
+  $ProfilePath="$env:OneDrive\Git\PowershellScripts\iClic.ps1"
  )
  $ProfileList=$($PROFILE.AllUsersAllHosts,$PROFILE.CurrentUserAllHosts)
  $ProfileList | ForEach-Object {
@@ -11005,13 +11004,15 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   While ($ContinueRunning) {
    Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
    if ($FirstRun) {
-    $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes" -o json  | ConvertFrom-Json
+    # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes" -o json  | ConvertFrom-Json
+    # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$top=999" -o json  | ConvertFrom-Json
+    $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes&`$top=999" -o json  | ConvertFrom-Json
     $FirstRun=$Talse
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
     $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-    If ($ErrorMessage) {
-     Write-Host -ForegroundColor "Red" -Object "Detected Error ; Restart Current Loop after a 10s sleep"
+    If ($ErrorMessage -contains "ERROR") {
+     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
      Start-Sleep 10
      Continue
     }
@@ -11038,6 +11039,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}}
   }
   $GlobalResult | Export-CSV "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+  return "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
  } else {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
  }
