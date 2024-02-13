@@ -9359,7 +9359,7 @@ Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add a
  }
 }
 Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
- (Get-AzContext -ListAvailable).Subscription | Where-Object State -eq Enabled | ForEach-Object {
+ Get-AzureSubscriptions | Where-Object State -eq Enabled | ForEach-Object {
   Set-AzContext -Subscription $_.id | Out-Null
   get-AzPolicyExemption -IncludeDescendent | Select-Object -ExcludeProperty Properties,SystemData,ResourceType,Name,ResourceName,*,
   @{N="P_DiplayName";E={$_.Properties.DisplayName}},
