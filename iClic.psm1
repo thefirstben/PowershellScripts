@@ -9364,7 +9364,9 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
   $CurrentSubscriptionName = $_.name
   az account set -n $CurrentSubscriptionID
   az policy exemption list -i --only-show-errors | convertfrom-json | Select-Object -ExcludeProperty policyDefinitionReferenceIds,systemData,metadata -Property *,
-   @{N="Sys_createdAt";E={Progress -Message "Checking Policy of subscription $CurrentSubscriptionName : " -Value $_.displayName ; $_.systemData.createdAt}},
+   @{N="PolicyName";E={Progress -Message "Checking Policy of subscription $CurrentSubscriptionName : " -Value $_.displayName ; ($_.policyAssignmentId -split("/"))[-1]}},
+   @{N="Scope";E={($_.id.Split("/providers/"))[0]}},
+   @{N="Sys_createdAt";E={$_.systemData.createdAt}},
    @{N="Sys_createdBy";E={$_.systemData.createdBy}},
    @{N="Sys_createdByDisplay";E={Get-AzureADUserFromUPN $_.systemData.createdBy -Fast}},
    @{N="Sys_createdByType";E={$_.systemData.createdByType}},
