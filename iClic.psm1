@@ -9365,7 +9365,7 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
   az account set -n $CurrentSubscriptionID
   az policy exemption list -i --only-show-errors | convertfrom-json | Select-Object -ExcludeProperty policyDefinitionReferenceIds,systemData,metadata -Property *,
    @{N="PolicyName";E={Progress -Message "Checking Policy of subscription $CurrentSubscriptionName : " -Value $_.displayName ; ($_.policyAssignmentId -split("/"))[-1]}},
-   @{N="Scope";E={($_.id.Split("/providers/"))[0]}},
+   @{N="Scope";E={($_.id.Split("/providers/Microsoft.Authorization/"))[0]}},
    @{N="Sys_createdAt";E={$_.systemData.createdAt}},
    @{N="Sys_createdBy";E={$_.systemData.createdBy}},
    @{N="Sys_createdByDisplay";E={Get-AzureADUserFromUPN $_.systemData.createdBy -Fast}},
@@ -10061,7 +10061,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
  Progress -Message "Commit API Permissions on $AppID : " -Value $RightName -PrintTime
  az ad app permission grant --id $AppID --api $PolicyID --scope $RightsToAdd_ID
 }
-Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret
+Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret - Does not see Federated Credential, as the data is not seen in the JSON
  Param (
   $Expiration = 30,
   $MaxExpiration = 730
