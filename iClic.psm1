@@ -9360,22 +9360,30 @@ Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add a
 }
 Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
  Get-AzureSubscriptions | Where-Object State -eq Enabled | ForEach-Object {
-  Set-AzContext -Subscription $_.id | Out-Null
-  get-AzPolicyExemption -IncludeDescendent | Select-Object -ExcludeProperty Properties,SystemData,ResourceType,Name,ResourceName,*,
-  @{N="P_DiplayName";E={$_.Properties.DisplayName}},
-  @{N="P_ExemptionCategory";E={$_.Properties.ExemptionCategory}},
-  @{N="P_Description";E={$_.Properties.Description}},
-  @{N="P_Expiration";E={$_.Properties.ExpiresOn}},
-  @{N="P_Reference";E={$_.Properties.ExpiresOn}},
-  @{N="P_Meta";E={$_.Properties.Metadata}}
- } | Export-Csv "C:\Temp\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+  $CurrentSubscriptionID = $_.id
+  $CurrentSubscriptionName = $_.name
+  az account set -n $CurrentSubscriptionID
+  az policy exemption list -i | convertfrom-json | Select-Object -ExcludeProperty policyDefinitionReferenceIds,systemData,metadata -Property *,
+   @{N="Sys_createdAt";E={Progress -Message "Checking Policy of subscription $CurrentSubscriptionName : " -Value $_.displayName ; $_.systemData.createdAt}},
+   @{N="Sys_createdBy";E={$_.systemData.createdBy}},
+   @{N="Sys_createdByDisplay";E={Get-AzureADUserFromUPN $_.systemData.createdBy -Fast}},
+   @{N="Sys_createdByType";E={$_.systemData.createdByType}},
+   @{N="Sys_lastModifiedAt";E={$_.systemData.lastModifiedAt}},
+   @{N="Sys_lastModifiedBy";E={$_.systemData.lastModifiedBy}},
+   @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "C:\Temp\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ }
 }
 # Convert Methods
 Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  Param (
-  [Parameter(Mandatory=$true)]$UPN
+  [Parameter(Mandatory=$true)]$UPN,
+  [switch]$Fast
  )
- $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' --only-show-errors | ConvertFrom-Json
+ if ($Fast) {
+  $Result = az ad user list --output json --filter "userprincipalname  eq '$UPN'" --query '[].{displayName:displayName}' -o tsv
+ } else {
+  $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' --only-show-errors | ConvertFrom-Json
+ }
  if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found starting with $UPN" }
 }
 Function Get-AzureADUserFromMail { # Find Azure Ad User info from email
