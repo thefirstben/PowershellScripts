@@ -1684,6 +1684,8 @@ Function Get-WindowsVersion {
    }
   }
 
+  $BuildVersion = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").DisplayVersion
+
   if ($AdvCommandAvailable ) {
    if ($ServerName) {
     $ComputerInfo=invoke-command -ComputerName $ServerName -ScriptBlock {Get-ComputerInfo -Property OsName,WindowsVersion,OsHardwareAbstractionLayer,BiosFirmwareType,OsLanguage,OsArchitecture} -ErrorAction Stop
@@ -1693,7 +1695,7 @@ Function Get-WindowsVersion {
 
    if ($($ComputerInfo.WindowsVersion)) { $OsSpecificVersion=$ComputerInfo.WindowsVersion } else { $OsSpecificVersion="("+$ComputerInfo.OsHardwareAbstractionLayer+")" }
    if ($($ComputerInfo.BiosFirmwareType.Value)) { $BiosType=$ComputerInfo.BiosFirmwareType.Value } else { $BiosType=$ComputerInfo.BiosFirmwareType }
-   $version=$ComputerInfo.OsName + " " + $OsSpecificVersion + " [" + $BiosType + "]" + "[" + $ComputerInfo.OsLanguage + "]" + "[" + $ComputerInfo.OsArchitecture + "] "
+   $version=$ComputerInfo.OsName + " " + $OsSpecificVersion + " [" + $BiosType + "]" + "[" + $ComputerInfo.OsLanguage + "]" + "[" + $ComputerInfo.OsArchitecture + "]" + "[" + $BuildVersion + "] "
 
   } else {
 
@@ -1714,7 +1716,7 @@ Function Get-WindowsVersion {
    if ($OSINFO.CSDVersion) { $OSSP=" - "+$OSINFO.CSDVersion.trim() } else { $OSSP="" }
    $OSBUILD=$OSINFO.Version.trim()
    if ($OSINFO.OSArchitecture) { $OSArchitecture=$OSINFO.OSArchitecture.Trim() } else { $OSArchitecture="N/A" }
-   $version="$OSNAME $OSSP ($OSBUILD$Revision | $OSArchitecture)"
+   $version="$OSNAME $OSSP ($OSBUILD$Revision | $OSArchitecture | $BuildVersion)"
   }
   return $version
  } catch {
@@ -8038,11 +8040,8 @@ Function Get-TeamviewerSettings { # Get all Teamviewer settings locally or remot
  }
 }
 Function Get-AntiVirus { # Get Current antivirus used (Only if the antivirus respects Microsoft Implementations)
- Param (
-  $computername=$env:computername
- )
  Try {
-  $AntiVirusProducts = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName AntiVirusProduct -ComputerName $computername -ErrorAction Stop
+  $AntiVirusProducts = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction Stop
  } Catch {Return}
 
  Function Format-AntivirusIdToStatus ($AntivirusStatusID) {
