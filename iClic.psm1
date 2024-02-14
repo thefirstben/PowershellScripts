@@ -10035,17 +10035,24 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   [Parameter(Mandatory=$true)]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")]$ServicePrincipalID, # Service Principal Object ID that holds the Permission
   [parameter(Mandatory=$true,ParameterSetName="Name")]$ServicePrincipalName, # App Name that holds the Permission - Example : 'Microsoft Graph'
-  [Parameter(Mandatory=$true)]$RightName
+  [Parameter(Mandatory=$true)]$RightName,
+  [ValidateSet("Application","Delegated")]$PermissionType
  )
  # Find Rights ID depending on backend_API_ID
  if ($PolicyName) {
   $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $PolicyName
  }
-
- $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object "Value" -eq $RightName
+ if ($PermissionType) {
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) } 
+ } else {
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object "Value" -eq $RightName
+ }
 
  if (! $RightsToAdd) {
-  Write-Host -Foregroundcolor "Red" "$RightName was not found in API $ServicePrincipalID, please check"
+  Write-Host -Foregroundcolor "Red" "$RightName ($PermissionType) was not found in API $ServicePrincipalID, please check"
+  return
+ } elseif ($RightsToAdd.Count -gt 1) {
+  Write-Host -Foregroundcolor "Red" "$RightName contains multiple values in API $ServicePrincipalID, please check or force the permission type"
   return
  } else {
   $RuleID = $RightsToAdd.RuleID
@@ -10953,17 +10960,17 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
   $Count++
   $GlobalResult += $CurrentResult.Value | Select-Object *,
-  @{Name="Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
-  @{Name="Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
-  @{Name="Method_email";Expression={$_.methodsRegistered -contains 'email'}},
-  @{Name="Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
-  @{Name="Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
-  @{Name="Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
-  @{Name="Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
-  @{Name="Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
-  @{Name="Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
-  @{Name="Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
-  @{Name="Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
+  @{Name="MFA_Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
+  @{Name="MFA_Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
+  @{Name="MFA_Method_email";Expression={$_.methodsRegistered -contains 'email'}},
+  @{Name="MFA_Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
+  @{Name="MFA_Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
+  @{Name="MFA_Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
+  @{Name="MFA_Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
+  @{Name="MFA_Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
+  @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
+  @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
+  @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
   Start-Sleep -Seconds $SleepDurationInS # Added to not be throttled
  }
  $GlobalResult | Export-CSV "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
@@ -11018,9 +11025,9 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   While ($ContinueRunning) {
    Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
    if ($FirstRun) {
-    # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes" -o json  | ConvertFrom-Json
+    $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes" -o json  | ConvertFrom-Json
     # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$top=999" -o json  | ConvertFrom-Json
-    $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes&`$top=999" -o json  | ConvertFrom-Json
+    # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes&`$top=999" -o json  | ConvertFrom-Json
     $FirstRun=$Talse
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
@@ -11153,6 +11160,52 @@ Function Set-AzureADManager { # Set Manager on User in Azure
   "@odata.id"="https://graph.microsoft.com/v1.0/users/$ManagerID"
  }
  Set-MgUserManagerByRef -UserId $UserID -BodyParameter $ManagerOdataObject
+}
+# Graph Management
+Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for App Reg with Secret
+ Param (
+  [parameter(Mandatory = $True)]$TenantID,
+  [parameter(Mandatory = $True, ParameterSetName="AppRegistration")]$ApplicationID,
+  [parameter(Mandatory = $True, ParameterSetName="AppRegistration")]$ClientKey
+ )
+
+ #Default Values for Login & Graph
+ $LoginURL = "https://login.microsoftonline.com/$tenantId/oauth2/token"
+ $Resource = "https://graph.microsoft.com/"
+
+ Write-Host "Requesting API Token from Graph using $ApplicationID"
+
+ $Body = @{
+  grant_type    = 'client_credentials'
+  client_id     = $ApplicationID 
+  client_secret = $ClientKey
+  resource      = $Resource
+ }
+ # Return Token
+ $token = Invoke-RestMethod -Method POST -Uri $LoginURL -Body $Body
+ return $token
+}
+Function Get-AzureGraph { # Send base graph request without any requirements
+ Param (
+  [parameter(Mandatory = $True)]$Token,
+  [parameter(Mandatory = $True)]$GraphRequest,
+  $BaseURL = 'https://graph.microsoft.com/beta'
+  
+ )
+
+ # Set Header
+ $header = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+
+ # Build the Base URL for the API call
+ $URL = $BaseURL + $GraphRequest
+
+ # Call the REST-API
+ $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri $url
+
+ return $RestResult.value
 }
 # Misc
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
