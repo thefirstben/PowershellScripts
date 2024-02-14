@@ -1611,10 +1611,15 @@ Function Get-OSInfo {
 
   $LSA_Info = Try { Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" } catch { "" }
   $RunAsPPLColor="Red"
-  if ($LSA_Info.RunAsPPL -eq 0) { $RunAsPPL = 'Disabled' ; $RunAsPPLColor = "Red" } elseif ( $LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled' ; $RunAsPPLColor = "DarkYellow" } else { $RunAsPPL = "Unknown" ; $RunAsPPLColor = "Red" }
-  if ($LSA_Info.RunAsPPLBoot -gt 0 ) { $RunAsPPL = 'Enabled OnBoot' ; $RunAsPPLColor = "Green" }
+  if ($LSA_Info.RunAsPPL -eq 0) { 
+    $RunAsPPL = 'Disabled' ; $RunAsPPLColor = "Red" 
+  } elseif ( $LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled with UEFI Lock' ; $RunAsPPLColor = "Green" 
+  } elseif ( $LSA_Info.RunAsPPL -eq 2 ) { $RunAsPPL = 'Enabled without UEFI Lock' ; $RunAsPPLColor = "DarkYellow" 
+  } else { $RunAsPPL = "Unknown" ; $RunAsPPLColor = "Red" }
+  if ($LSA_Info.RunAsPPLBoot -gt 0 ) { $RunAsPPLOnBoot = 'Enabled' ; $RunAsPPLOnBootColor = "Green" } else { $RunAsPPLOnBoot = 'Disabled' ; $RunAsPPLOnBootColor = "Red" }
 
   Write-Colored -Color $RunAsPPLColor -NonColoredText (Align -Variable "RunAsPPL" -Size $Tabsize -Ending " : ") -ColoredText $RunAsPPL
+  Write-Colored -Color $RunAsPPLOnBootColor -NonColoredText (Align -Variable "RunAsPPLOnBoot" -Size $Tabsize -Ending " : ") -ColoredText $RunAsPPLOnBoot
 
   #Anvitirus
   $AntivirusResult=Get-AntiVirus
@@ -10939,7 +10944,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
    If ($ErrorMessage) {
-    Write-Host -ForegroundColor "Red" -Object "Detected Error ; Restart Current Loop after a 10s sleep"
+    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
     Start-Sleep 10
     Continue
    }
