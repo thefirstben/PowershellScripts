@@ -9075,7 +9075,7 @@ Function Get-AzureEnvironment { # Get Current Environment used by Az Cli
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
 # Global Extracts
-Function Get-AzureSubscriptions { # Get all subscription of a Tenant
+Function Get-AzureSubscriptions { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
  [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
   [Switch]$ShowAll,
@@ -10527,7 +10527,7 @@ Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal a
   $AllApps | Select-Object appdisplayname,servicePrincipalType,accountEnabled,appRoleAssignmentRequired | Group-Object signInAudience,servicePrincipalType,appRoleAssignmentRequired
  }
 }
-Function Set-AzureServicePrincipalAssignementRequired {
+Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on enterprise app to ensure Assignement is required
  Param (
   [Parameter(Mandatory=$true)]$ServicePrincipalID
  )
@@ -10539,35 +10539,31 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
   $MaxExpiration = 730
  )
 
- # To have an idea of the result : Get-AzureServicePrincipalExpiration | ? AppAudience -eq AzureADMyOrg | sort TimeUntilExpiration | ? TimeUntilExpiration -lt 30 | Select-Object -ExcludeProperty AppID,id | ft
+ # To have an idea of the result : Get-AzureServicePrincipalExpiration | sort TimeUntilExpiration | ? TimeUntilExpiration -lt 30 | Select-Object -ExcludeProperty AppID,id | ft
 
- $AppList = az ad sp list --all -o json --query "[].{DisplayName:displayName,id:id,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials}" | ConvertFrom-Json
+ $AppList = az ad sp list --all -o json --query "[].{DisplayName:displayName,id:id,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,servicePrincipalType:servicePrincipalType,preferredSingleSignOnMode:preferredSingleSignOnMode,notificationEmailAddresses:notificationEmailAddresses}" | ConvertFrom-Json
  $Date_Today = Get-Date
  $AppList | Where-Object passwordCredentials | Select-Object `
-  @{Name="AppName";Expression={$_.DisplayName}},AppID,ID,
+  @{Name="AppName";Expression={$_.DisplayName}},AppID,ID,preferredSingleSignOnMode,servicePrincipalType,
+  @{Name="Contacts";Expression={$_.notificationEmailAddresses -join ","}},
   @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
-  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | Select-Object -Property `
+  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | `
+   Select-Object -Property `
    @{Name="SecretDescription";Expression={$_.DisplayName}},
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
    @{Name="SecretExpiration";Expression={$_.endDateTime}},
-   @{Name="SecretType";Expression={"SAML"}},
-   @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
+   @{Name="SecretType";Expression={$_.preferredSingleSignOnMode}},
+   @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
+    Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
     @{Name="Status";Expression={
-     If ($_.TimeUntilExpiration -gt $MaxExpiration) {
-      "Infinite"
-     } elseif ($_.TimeUntilExpiration -ge $Expiration) {
-      "OK for at least $Expiration days"
-     } elseif (($_.TimeUntilExpiration -le $Expiration) -and ($_.TimeUntilExpiration -gt 0)) {
-      "Expiring in $($_.TimeUntilExpiration) days"
-     } elseif ($_.TimeUntilExpiration -eq 0) {
-      "Expires today"
-     } elseif ($_.TimeUntilExpiration -lt 0) {
-      "Expired"
-     } else {
-      $_.TimeUntilExpiration
-     }
-  }
- }
+     If ($_.TimeUntilExpiration -gt $MaxExpiration) { "Infinite" }
+     elseif ($_.TimeUntilExpiration -ge $Expiration) { "OK for at least $Expiration days" }
+     elseif (($_.TimeUntilExpiration -le $Expiration) -and ($_.TimeUntilExpiration -gt 0)) { "Expiring in $($_.TimeUntilExpiration) days" }
+     elseif ($_.TimeUntilExpiration -eq 0) { "Expires today" }
+     elseif ($_.TimeUntilExpiration -lt 0) { "Expired" }
+     else { $_.TimeUntilExpiration }}},
+    @{Name="CertificateCount";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}}
+    # @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}}
 }
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
@@ -10839,7 +10835,7 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
   $AmountOfReturnValues = '1000' # Max 1000
  )
 
- Examples :
+# Examples :
 # Users on Organization Level :
 # $Users = (Get-ADO_Request -RequestURI "graph/users" -Header $header -Organization dekracloud -BaseURI "https://vssps.dev.azure.com/")
 # Groups on Organization level :
