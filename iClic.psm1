@@ -9125,9 +9125,10 @@ Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
   $subscriptionName = $_.name
   Progress -Message "Checking resources of subscription : " -Value $subscriptionName -PrintTime
   az account set --subscription $subscriptionId
-  $CurrentSubscriptionResources = az resource list --output json
+  $CurrentSubscriptionResourcesJson = az resource list --output json
   try {
-   $CurrentSubscriptionResources | ConvertFrom-Json -ErrorAction Stop | ForEach-Object {
+   $CurrentSubscriptionResources = $CurrentSubscriptionResourcesJson | ConvertFrom-Json -ErrorAction Stop
+   $CurrentSubscriptionResources | ForEach-Object {
     $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
     $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
    }
@@ -10039,8 +10040,12 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   [ValidateSet("Application","Delegated")]$PermissionType
  )
  # Find Rights ID depending on backend_API_ID
- if ($PolicyName) {
-  $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $PolicyName
+ if ($ServicePrincipalName) {
+  $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName
+ }
+ if (! $ServicePrincipalID) {
+  write-host -ForegroundColor Red "Service Principal `'$ServicePrincipalName`' was not found"
+  return
  }
  if ($PermissionType) {
   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) } 
@@ -10371,6 +10376,7 @@ Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to na
    PolicyID=$AppID
    RuleID=$_.id
    PermissionType = "Application"
+   Type = $_.allowedMemberTypes
    Value = $_.value
    Description = $Description
   }
@@ -10379,7 +10385,7 @@ Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to na
 }}
 
  if ($PolicyContent.oauth2Permissions -and $PolicyContent.appRoles) {
-  $PolicyContent.appRoles + $PolicyContent.oauth2Permissions
+  @($PolicyContent.appRoles) + @($PolicyContent.oauth2Permissions)
  } elseif ($PolicyContent.oauth2Permissions) { $PolicyContent.oauth2Permissions
  } elseif ($PolicyContent.appRoles) { $PolicyContent.appRoles
  }
@@ -10562,8 +10568,7 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
      elseif ($_.TimeUntilExpiration -eq 0) { "Expires today" }
      elseif ($_.TimeUntilExpiration -lt 0) { "Expired" }
      else { $_.TimeUntilExpiration }}},
-    @{Name="CertificateCount";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}}
-    # @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}}
+    @{Name="CertificateCount";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
 }
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
@@ -10929,7 +10934,7 @@ Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Sl
 }
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
-  $SleepDurationInS = 2
+  $SleepDurationInS = 5
  )
  $Count=0
  $GlobalResult = @()
@@ -11057,7 +11062,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   }
   $GlobalResult | Export-CSV "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
   return "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
- } else {
+ } else { # Not currently used
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
  }
 }
