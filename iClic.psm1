@@ -208,7 +208,8 @@ Function prompt { # Used to have a "pretty" Powershell prompt showing important 
  write-colored $promptcolor -ColoredText $P_UserDomain -nonewline
  write-colored $ColorGray -ColoredText "|" -nonewline
  write-colored $promptcolor -ColoredText $P_ComputerName -nonewline
- write-colored $ColorGray -ColoredText "] " -nonewline
+ # write-colored $ColorGray -ColoredText "] " -nonewline
+ write-colored $ColorGray -ColoredText "] "
 
  $CurrentPath = "$($executionContext.SessionState.Path.CurrentLocation)" -replace "Microsoft.PowerShell.Core\\FileSystem::",""
 
@@ -10542,14 +10543,13 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
 Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration)
  Param (
   $Expiration = 30,
-  $MaxExpiration = 730
+  [switch]$PrintOnly,
+  $NameFilterInclusion,
+  $NameFilterExclusion
  )
-
- # To have an idea of the result : Get-AzureServicePrincipalExpiration | sort TimeUntilExpiration | ? TimeUntilExpiration -lt 30 | Select-Object -ExcludeProperty AppID,id | ft
-
  $AppList = az ad sp list --all -o json --query "[].{DisplayName:displayName,id:id,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,servicePrincipalType:servicePrincipalType,preferredSingleSignOnMode:preferredSingleSignOnMode,notificationEmailAddresses:notificationEmailAddresses}" | ConvertFrom-Json
  $Date_Today = Get-Date
- $AppList | Where-Object passwordCredentials | Select-Object `
+ $Result = $AppList | Where-Object passwordCredentials | Select-Object `
   @{Name="AppName";Expression={$_.DisplayName}},AppID,ID,preferredSingleSignOnMode,servicePrincipalType,
   @{Name="Contacts";Expression={$_.notificationEmailAddresses -join ","}},
   @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
@@ -10559,16 +10559,16 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
    @{Name="SecretExpiration";Expression={$_.endDateTime}},
    @{Name="SecretType";Expression={$_.preferredSingleSignOnMode}},
-   @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
+   @{Name="ExpiresIn";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
     Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
-    @{Name="Status";Expression={
-     If ($_.TimeUntilExpiration -gt $MaxExpiration) { "Infinite" }
-     elseif ($_.TimeUntilExpiration -ge $Expiration) { "OK for at least $Expiration days" }
-     elseif (($_.TimeUntilExpiration -le $Expiration) -and ($_.TimeUntilExpiration -gt 0)) { "Expiring in $($_.TimeUntilExpiration) days" }
-     elseif ($_.TimeUntilExpiration -eq 0) { "Expires today" }
-     elseif ($_.TimeUntilExpiration -lt 0) { "Expired" }
-     else { $_.TimeUntilExpiration }}},
     @{Name="CertificateCount";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
+ if ($NameFilterInclusion) { $Result = $Result | Where-Object AppName -like $NameFilterInclusion }
+ if ($NameFilterExclusion) { $Result = $Result | Where-Object AppName -notlike $NameFilterExclusion }
+ if ($PrintOnly) {
+  $Result | Sort-Object ExpiresIn | Where-Object ExpiresIn -lt $Expiration | Select-Object -ExcludeProperty AppID,id,SecretDescription,preferredSingleSignOnMode | Format-Table
+ } else {
+  $Result
+ }
 }
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
@@ -11250,7 +11250,7 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
   }
  }
 }
-Function Send-Mail {  # To make automated Email, it requires an account with a mailbox
+Function Send-Mail {  # To make automated Email, it requires an account with a mailbox | Should add a From Option
  Param (
   [Parameter(Mandatory)]$UserMail,
   [Parameter(Mandatory)]$SenderUPN,
