@@ -36,9 +36,13 @@
 # To add dynamic number of values (Example to show all tags)
 #  Get-MDCConfiguration
 # Example to add all Members to an Object without knowing the name first
-# $TagList = [PSCustomObject]@{}
-# $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] }
+#  $TagList = [PSCustomObject]@{}
+#  $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] }
 # Check Get-AzureADObjectInfo to see Error Management for Az Cli cmdlines
+# Methods to look into a hastable from slowest to fastest
+#  Measure-Command {$AppRegistrationExpiration.apptags | Where-Object {$_.Contact -eq "$ValueToSearch"}}
+#  Measure-Command {$AppRegistrationExpiration.apptags.Where{$_.Contact -eq "$ValueToSearch"}}
+#  Measure-Command {$AppRegistrationExpiration[$AppRegistrationExpiration.apptags.indexof($ValueToSearch)]}
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
