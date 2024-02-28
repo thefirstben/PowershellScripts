@@ -9385,7 +9385,7 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
    @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "C:\Temp\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
-Function Get-AppServiceCertificates { # 
+Function Get-AppServiceCertificates { # Get All Azure App Service Certificate in the tenant
  Get-AzureSubscriptions | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
@@ -9401,6 +9401,17 @@ Function Get-AppServiceCertificates { #
     }
     $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllAppServiceCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
    }
+  }
+ }
+}
+Function Get-AzureReservation {
+ Param (
+  [Switch]$ShowPermissions
+ )
+ $Reservationlist = az reservations reservation-order list | convertfrom-json
+ if (! $ShowPermissions) { Return $Reservationlist} else {
+  $Reservationlist | ForEach-Object {
+   az role assignment list --scope $_.id | convertfrom-json
   }
  }
 }
