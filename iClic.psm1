@@ -9385,6 +9385,25 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
    @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "C:\Temp\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
+Function Get-AppServiceCertificates { # 
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking App Service Certificates of subscription : " -Value $subscriptionName -PrintTime
+  az account set --subscription $subscriptionId
+  $RG_WithCertificates = ($(az resource list --output json).tolower() | convertfrom-json | Where-Object type -like "*certificates*" | Select-Object resourcegroup -Unique).resourcegroup
+  if ($RG_WithCertificates.count -gt 0) { # Skip if no Certificate found in Subscription
+   $RG_WithCertificates | ForEach-Object {
+    $CurrentSubscriptionResources = az webapp config ssl list -g $_ | convertfrom-json 
+    $CurrentSubscriptionResources | ForEach-Object {
+     $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
+     $_ | Add-Member -NotePropertyName subscriptionId -NotePropertyValue $subscriptionId
+    }
+    $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllAppServiceCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+   }
+  }
+ }
+}
 # Convert Methods
 Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  Param (
@@ -10569,7 +10588,7 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  if ($NameFilterInclusion) { $Result = $Result | Where-Object AppName -like $NameFilterInclusion }
  if ($NameFilterExclusion) { $Result = $Result | Where-Object AppName -notlike $NameFilterExclusion }
  if ($PrintOnly) {
-  $Result | Sort-Object ExpiresIn | Where-Object ExpiresIn -lt $Expiration | Select-Object -ExcludeProperty AppID,id,SecretDescription,preferredSingleSignOnMode | Format-Table
+  $Result | Sort-Object ExpiresIn | Where-Object ExpiresIn -lt $Expiration | Select-Object -ExcludeProperty AppID,id,SecretDescription,preferredSingleSignOnMode
  } else {
   $Result
  }
