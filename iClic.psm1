@@ -9410,7 +9410,7 @@ Function Get-AzureCertificates {
   $subscriptionName = $_.name
   Progress -Message "Checking Certificates of subscription : " -Value $subscriptionName -PrintTime
   $CertificateList = (az rest --method GET --uri "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Web/certificates?api-version=2022-03-01" | convertfrom-json).value
-  $CertificateList | Select-Object -ExpandProperty properties -ExcludeProperty tags,properties *,@{Name="SubscriptionID";Expression={$subscriptionId}},@{Name="SubscriptionName";Expression={$subscriptionName}} `
+  $CertificateList | Select-Object -ExpandProperty properties -ExcludeProperty tags,properties,keyVaultId *,@{Name="SubscriptionID";Expression={$subscriptionId}},@{Name="SubscriptionName";Expression={$subscriptionName}} `
    | Export-Csv "C:\Temp\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
