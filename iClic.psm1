@@ -9385,7 +9385,7 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
    @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "C:\Temp\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
-Function Get-AppServiceCertificates { # Get All Azure App Service Certificate in the tenant
+Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the tenant
  Get-AzureSubscriptions | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
@@ -9399,9 +9399,19 @@ Function Get-AppServiceCertificates { # Get All Azure App Service Certificate in
      $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
      $_ | Add-Member -NotePropertyName subscriptionId -NotePropertyValue $subscriptionId
     }
-    $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllAppServiceCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+    $CurrentSubscriptionResources | Export-Csv "C:\Temp\WebAppCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
    }
   }
+ }
+}
+Function Get-AzureCertificates {
+ Get-AzureSubscriptions | ForEach-Object {
+  $subscriptionId = $_.id
+  $subscriptionName = $_.name
+  Progress -Message "Checking Certificates of subscription : " -Value $subscriptionName -PrintTime
+  $CertificateList = (az rest --method GET --uri "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Web/certificates?api-version=2022-03-01" | convertfrom-json).value
+  $CertificateList | Select-Object -ExpandProperty properties -ExcludeProperty tags,properties *,@{Name="SubscriptionID";Expression={$subscriptionId}},@{Name="SubscriptionName";Expression={$subscriptionName}} `
+   | Export-Csv "C:\Temp\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzureReservation {
