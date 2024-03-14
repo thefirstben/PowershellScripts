@@ -1136,27 +1136,27 @@ Function Assert-IsGUID {
 }
 
 # Tests
-Function Test-Port {
+Function Test-Port { # TO DO : ADD UDP TEST : system.Net.Sockets.UDPClient
  Param (
-  $server,
-  $port,
-  $timeout=1000,
-  [switch]$verbose
+  [Parameter(Mandatory)]$Server,
+  [Parameter(Mandatory)]$Port,
+  $Timeout=1000,
+  [Switch]$UDP
+  # [switch]$Verbose
  )
  # Code based on http://poshcode.org/85
 
  if ( ! (Assert-IsCommandAvailable Resolve-DNSName) ) { Write-Colored -Color "red" -NonColoredText  "Resolve-DNSName if not available, please use Test-PortOld (IPv6 test will not be available)" ; return $false }
- if( ! $server -or ! $port ) { Write-Colored -Color "red" -NonColoredText  "" "Please enter at least the server name (server = $server) and the port (port= $port) to test" ; return $false }
 
  #If it is a name that is used as argument
  try {
-  $IPType=([ipaddress]$server).AddressFamily
+  $IPType=([ipaddress]$Server).AddressFamily
  } catch {
-  # if ($server.contains(".")) { $ServerName=$server.split(".")[0] } else {$ServerName=$server}
+  # if ($Server.contains(".")) { $ServerName=$Server.split(".")[0] } else {$ServerName=$Server}
   try {
-   $ServerIP=(Resolve-DNSName -ErrorAction Stop $server)
+   $ServerIP=(Resolve-DNSName -ErrorAction Stop $Server)
   } catch {
-   if ($verbose) {Write-Colored -Color "red" -NonColoredText  "Error during dns check : " $error[0]}
+   if ($Verbose) {Write-Colored -Color "red" -NonColoredText  "Error during dns check : " $error[0]}
    return $false
   }
   #Check if a CNAME responds
@@ -1174,25 +1174,51 @@ Function Test-Port {
  if ($IPType -eq "InterNetwork" ) {
   #OK
  } elseif ($IPType -eq "InterNetworkV6" ) {
-  Write-Colored -Color "red" -NonColoredText  "" "Test does not work with IPv6 - Please enter IPv4 $((Resolve-DNSName $server)[1].ipaddress)"
+  Write-Colored -Color "red" -NonColoredText  "" "Test does not work with IPv6 - Please enter IPv4 $((Resolve-DNSName $Server)[1].ipaddress)"
   return $false
  } else {
   Write-Colored -Color "red" -NonColoredText  "Error while checking IP type : " $error[0]
   return $false
  }
 
- # Create TCP Client
- $tcpclient = new-Object system.Net.Sockets.TcpClient
+ if ($UDP) {
+  $UDPclient = new-Object system.Net.Sockets.Udpclient
+  $UDPclient.Connect($Server,$Port)
+  $UDPclient.Client.ReceiveTimeout = $Timeout
+  $EncodingObject = new-object system.text.asciiencoding
+  $byte = $EncodingObject.GetBytes("Anyone there ?")
+  [void]$UDPclient.Send($byte,$byte.length)
+  $RemoteEndpoint = New-Object system.net.ipendpoint([system.net.ipaddress]::Any,0)
+  Try {
+   $receivebytes = $UDPclient.Receive([ref]$RemoteEndpoint)
+  } Catch {
+   if ($Verbose) {Write-Warning "$($Error[0])"}
+  }
+  If ($receivebytes) {
+   if ($Verbose) {
+    [string]$returndata = $EncodingObject.GetString($receivebytes)
+    $returndata
+   }
+   return $true
+  } Else {
+   if ($Verbose) {Write-Colored -Color "red" -ColoredText "$Server : No response from Port $Port in UDP"}
+   return $false
+  }
+  $UDPclient.close()
+ } else {
+  # Create TCP Client
+  $tcpclient = new-Object system.Net.Sockets.TcpClient
+
  # Tell TCP Client to connect to machine on Port
- $iar = $tcpclient.BeginConnect($server,$port,$null,$null)
+ $iar = $tcpclient.BeginConnect($Server,$Port,$null,$null)
  # Set the wait time
- $wait = $iar.AsyncWaitHandle.WaitOne($timeout,$false)
+ $wait = $iar.AsyncWaitHandle.WaitOne($Timeout,$false)
 
  #If connection failed return error
  $error.Clear()
  if( ! $wait ) {
   $tcpclient.Close()
-  if ($verbose) {Write-Colored -Color "red" -NonColoredText  "" "$server : No response from port $port"}
+  if ($Verbose) {Write-Colored -Color "red" -ColoredText "$Server : No response from Port $Port"}
   return $false
  }
 
@@ -1207,13 +1233,14 @@ Function Test-Port {
 
  # If no failure return $true
  return $true
+ }
 }
 Function Test-PortOld {
  Param (
   $server,
   $port,
   $timeout=1000,
-  $verbose
+  $Verbose
  )
  #Does not require anything
  # Found part of code on http://poshcode.org/85
@@ -1257,6 +1284,29 @@ Function Test-PortList {
   Write-Colored -Color $defaultblue -NonColoredText " | Port " (Align -Variable $_.Port 5) -nonewline
   Write-Colored -Color $defaultblue -NonColoredText " | " "" -nonewline
   if (Test-Port $_.IP $_.Port) {write-colored "DarkGreen" "" "Access OK"} else {Write-Colored -Color "red" -NonColoredText  "" "No Access"}
+ }
+}
+Function Test-ADPorts {
+ Param (
+  [Parameter(Mandatory)]$Domain
+ )
+ $DNSServerList = (Resolve-DnsName auto-contact.com).IPAddress
+ $portlist = $('135','389','636','3268','3269','53','88','445','138','139','42')
+
+ $DNSServerList | ForEach-Object {
+  $CurrentServer = $_
+  $portlist | ForEach-Object {
+   Write-Colored -Color $defaultblue -NonColoredText "Testing " (Align -Variable TCP 3) -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | " (Align -Variable $CurrentServer 15) -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | Port " (Align -Variable $_ 5) -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | " "" -nonewline
+   if (Test-Port -Server $CurrentServer -Port $_) {write-colored "DarkGreen" -ColoredText "Access OK"} else {Write-Colored -Color "red" -ColoredText "No Access"}
+   Write-Colored -Color $defaultblue -NonColoredText "Testing " (Align -Variable UDP 3) -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | " (Align -Variable $CurrentServer 15) -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | Port " (Align -Variable $_ 5) -nonewline
+   Write-Colored -Color $defaultblue -NonColoredText " | " "" -nonewline
+   if (Test-Port -Server $CurrentServer -Port $_ -UDP) {write-colored "DarkGreen" -ColoredText "Access OK"} else {Write-Colored -Color "red" -ColoredText "No Access"}
+  }
  }
 }
 Function Test-Account {
@@ -9146,7 +9196,9 @@ Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
  ProgressClear
 }
 Function Get-AzureResourceGroups { # Get all Azure Resource Groups for all Subscriptions
- $ExportFileName = "C:\Temp\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+ Param (
+  $ExportFileName = "C:\Temp\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+ )
  Get-AzureSubscriptions | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
@@ -9174,7 +9226,7 @@ Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (C
   $CurrentSubscriptionResources = az keyvault list --output json | ConvertFrom-Json
   $CurrentSubscriptionResources | ForEach-Object {
    Progress -Message "Checking Keyvaults of subscription : $subscriptionName : " -Value $_.Name -PrintTime
-   $KV_Properties = az keyvault show --name $_.name --query '{properties:properties}' -o json | ConvertFrom-Json
+   $KV_Properties = az keyvault show --name $_.name --query '{properties:properties,systemData:systemData}' -o json | ConvertFrom-Json
    $Bypass = $KV_Properties.properties.networkAcls.bypass
    $PublicAccess = $KV_Properties.properties.publicNetworkAccess
    $NetworkACLsDefaultAction = $KV_Properties.properties.networkAcls.defaultAction
@@ -9249,7 +9301,11 @@ Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (C
    $_ | Add-Member -NotePropertyName AccessPolicies_Groups -NotePropertyValue ($AccessPolicies_Groups -join ",")
    $_ | Add-Member -NotePropertyName AccessPolicies_Apps -NotePropertyValue ($AccessPolicies_Apps -join ",")
    $_ | Add-Member -NotePropertyName AccessPolicies_Other -NotePropertyValue ($AccessPolicies_Other -join ",")
-
+   $_ | Add-Member -NotePropertyName createdAt -NotePropertyValue  $KV_Properties.systemData.createdAt
+   $_ | Add-Member -NotePropertyName createdBy -NotePropertyValue  $KV_Properties.systemData.createdBy
+   $_ | Add-Member -NotePropertyName lastModifiedAt -NotePropertyValue  $KV_Properties.systemData.lastModifiedAt
+   $_ | Add-Member -NotePropertyName lastModifiedBy -NotePropertyValue  $KV_Properties.systemData.lastModifiedBy
+   $_ | Add-Member -NotePropertyName lastModifiedByType -NotePropertyValue  $KV_Properties.systemData.lastModifiedByType
   }
   $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllKeyvaults_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
@@ -9404,7 +9460,7 @@ Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the ten
   }
  }
 }
-Function Get-AzureCertificates {
+Function Get-AzureCertificates { # Check All Azure Web Certificates
  Get-AzureSubscriptions | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
@@ -9414,7 +9470,7 @@ Function Get-AzureCertificates {
    | Export-Csv "C:\Temp\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
-Function Get-AzureReservation {
+Function Get-AzureReservation { # Check all Azure Reservation Orders
  Param (
   [Switch]$ShowPermissions
  )
@@ -9736,25 +9792,49 @@ Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one 
  }
  $CurrentRights | Where-Object Type -ne User | ForEach-Object { "User $($UserPrincipalName) has permission to Scope $($_.scope) because of the Principal $($_.PrincipalName)" }
 }
-Function Add-AzureADGroupRBACRightsOnRG { # Add RBAC Rights for an AAD Group to multiple RG of a Subscription following a naming query
+Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandatory - at least name)
+ [CmdletBinding(DefaultParameterSetName='ScopeID')]
  Param (
-  [Parameter(Mandatory=$true)]$AAD_ID, # Group Name
-  [Parameter(Mandatory=$true)]$RolesToAdd, # Role Name
-  [Parameter(Mandatory=$true)]$RGFilter # RG Naming filter
+  [Parameter(Mandatory=$true)]$ObjectID, # Object ID of element that will have the permissions
+  [Parameter(Mandatory=$true)]$Role, # Name of the permission to add
+  [Parameter(Mandatory=$true, ParameterSetName = 'SubscriptionID')]$SubscriptionID,
+  [Parameter(Mandatory=$true, ParameterSetName = 'SubscriptionName')]$SubscriptionName,
+  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionID')]
+  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionName')]
+  [Parameter(Mandatory=$false, ParameterSetName = 'ResourceRG')]$ResourceGroup,
+  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionID')]
+  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionName')]
+  [Parameter(Mandatory=$false, ParameterSetName = 'Resource')]$Resource,
+  [Parameter(Mandatory=$False, ParameterSetName = "ScopeID")]$ScopeID
  )
+ if (! $SubscriptionID) {
+  Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime
+  $SubscriptionID = (Get-AzureSubscriptions | Where-Object Name -eq $SubscriptionName).ID
+ }
 
- #Get Group ObjectID
- $GroupObjectID = (az ad group show -g $AAD_ID -o json --only-show-errors | ConvertFrom-Json).ID
- az group list -o json | ConvertFrom-Json | select-object Name,Location,tag,id | where-object name -like $RGFilter| ForEach-Object {
-  $ScopeID = $_.ID
-  $RolesToAdd | ForEach-Object {
-   $RoleName = $_
-   write-host "Adding role $RoleName for group $GroupObjectID in scope $ScopeID"
-   az role assignment create --assignee $GroupObjectID --role $RoleName --scope $ScopeID
-  }
+ az account set --subscription $subscriptionId
+
+ if ($Resource) {
+  $ScopeID = ((az resource list --output json).tolower() | convertfrom-json | Where-Object name -eq $Resource).ID
+ } elseif ($ResourceGroup) {
+  $ScopeID = (az group show --resource-group $ResourceGroup | ConvertFrom-Json).ID
+ } else {
+  $ScopeID = "/subscriptions/$SubscriptionID"
+ }
+ $ResultJson = az role assignment create --assignee $ObjectID --role $Role --scope $ScopeID 2>&1
+ $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+ $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ConvertFrom-Json
+ if ($ErrorMessage) {
+  write-host -ForegroundColor "Red" -Object "Error adding permission for ObjectID $ObjectID [$ErrorMessage]"
+ } else {
+  $principalId = $Result.principalId
+  $principalType = $Result.principalType
+  $scope = $Result.scope
+  $roleDefinitionName = $Result.roleDefinitionName
+  write-host -ForegroundColor "Green" -Object "Successfully added $roleDefinitionName permission for $principalId [$principalType] on scope $scope"
  }
 }
-Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
+Function Add-AzureADRBACRightsWithType { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
  Param (
   [parameter(Mandatory = $true, ParameterSetName="UserName")]$UserName,
   [parameter(Mandatory = $true, ParameterSetName="ID")][GUID]$Id,
@@ -9919,8 +9999,7 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
  } elseif ($DisplayName) {
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
  }
-}
-Function Get-AzureAppRegistration {  # Get all App Registration of a Tenant
+}Function Get-AzureAppRegistration { # Get all App Registration of a Tenant
  az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
@@ -10504,9 +10583,24 @@ Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add
 }
 Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned Users and Groups
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID
+  [Parameter(Mandatory=$true)]$ServicePrincipalID,
+  [switch]$ShowAppRole,
+  [switch]$Readable
  )
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty appRoleId,deletedDateTime
+ $AppAssigments = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty deletedDateTime
+ If ($ShowAppRole) {
+  $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID
+  $AppAssigments | ForEach-Object {
+   if ($AppRole) { $CurrentRole = $AppRole[$AppRole.RuleID.indexof($_.appRoleId)] }
+   $_ | Add-Member -MemberType NoteProperty -Name RoleName -Value $CurrentRole.value
+   $_ | Add-Member -MemberType NoteProperty -Name RoleDescription -Value $CurrentRole.Description
+  }
+ }
+ If ($Readable) {
+  $AppAssigments | Select-Object -ExcludeProperty appRoleId,id,principalId,resourceId
+ } else {
+  $AppAssigments
+ }
 }
 Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assignement IDs are recommended, but UserName is possible but will be a lot slower
  Param (
@@ -10547,7 +10641,8 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
   [Parameter(Mandatory=$true)]$resourceDisplayName, # DisplayName of the API to use : example : Microsoft Graph
   $resourceId, # (Application) ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
   [parameter(Mandatory=$true,ParameterSetName="ID")]$appRoleId, # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
-  [parameter(Mandatory=$true,ParameterSetName="NAME")]$appRoleName # ID of the Role to use : Example : User.Read.All
+  [parameter(Mandatory=$true,ParameterSetName="NAME")]$appRoleName, # ID of the Role to use : Example : User.Read.All
+  [ValidateSet("Application","Delegated")]$PermissionType
  )
  if ((! $resourceId) -or ($appRoleName)) {
   $AppInfo = (Get-AzureServicePrincipalInfo -DisplayName $resourceDisplayName)
@@ -10555,9 +10650,31 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
  If (! $resourceId) {
   $resourceId = $AppInfo.Id
  }
- if ($appRoleName) {
-  $appRoleId = ($AppInfo.AppRoles | Where-Object value -eq $appRoleName).id
+
+ # Does not work for delegated will replace with other value below
+ # if ($appRoleName) { 
+ #  if ($PermissionType -eq "Delegated") {
+ #   $appRoleId = ($AppInfo.oauth2PermissionScopes | Where-Object value -eq $appRoleName).id    
+ #  } else {
+ #   $appRoleId = ($AppInfo.AppRoles | Where-Object value -eq $appRoleName).id 
+ #  }
+ # }
+
+ if ($PermissionType) {
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object {($_.Value -eq $appRoleName) -and ($_.PermissionType -eq $PermissionType) } 
+ } else {
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object "Value" -eq $appRoleName
  }
+ if (! $RightsToAdd) {
+  Write-Host -Foregroundcolor "Red" "$appRoleName ($PermissionType) was not found in API $resourceId, please check"
+  return
+ } elseif ($RightsToAdd.Count -gt 1) {
+  Write-Host -Foregroundcolor "Red" "$appRoleName contains multiple values in API $resourceId, please check or force the permission type"
+  return
+ } else {
+  $appRoleId = $RightsToAdd.RuleID
+ }
+ #End New Block
 
  $Body = '{\"appRoleId\": \"'+$appRoleId+'\",\"principalId\": \"'+$principalId+'\",\"resourceDisplayName\": \"'+$resourceDisplayName+'\",\"resourceId\": \"'+$resourceId+'\"}'
  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" `
@@ -10588,16 +10705,20 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  Param (
   $Expiration = 30,
   [switch]$PrintOnly,
+  [switch]$ExcludeLegacy,
   $NameFilterInclusion,
   $NameFilterExclusion
  )
- $AppList = az ad sp list --all -o json --query "[].{DisplayName:displayName,id:id,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,servicePrincipalType:servicePrincipalType,preferredSingleSignOnMode:preferredSingleSignOnMode,notificationEmailAddresses:notificationEmailAddresses}" | ConvertFrom-Json
+ $AppList = az ad sp list --all -o json --query "[].{DisplayName:displayName,id:id,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,servicePrincipalType:servicePrincipalType,preferredSingleSignOnMode:preferredSingleSignOnMode,notificationEmailAddresses:notificationEmailAddresses,replyUrls:replyUrls}" | ConvertFrom-Json
  $Date_Today = Get-Date
  $Result = $AppList | Where-Object passwordCredentials | Select-Object `
-  @{Name="AppName";Expression={$_.DisplayName}},AppID,ID,preferredSingleSignOnMode,servicePrincipalType,
+  @{Name="Name";Expression={$_.DisplayName}},AppID,ID,
+  @{Name="Mode";Expression={$_.preferredSingleSignOnMode}},
+  @{Name="Type";Expression={$_.servicePrincipalType}},
   @{Name="Contacts";Expression={$_.notificationEmailAddresses -join ","}},
   @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
-  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | `
+  @{Name="URLs";Expression={$_.replyUrls -join ","}},
+  @{Name="Audience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | `
    Select-Object -Property `
    @{Name="SecretDescription";Expression={$_.DisplayName}},
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
@@ -10605,11 +10726,12 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
    @{Name="SecretType";Expression={$_.preferredSingleSignOnMode}},
    @{Name="ExpiresIn";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
     Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
-    @{Name="CertificateCount";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
- if ($NameFilterInclusion) { $Result = $Result | Where-Object AppName -like $NameFilterInclusion }
- if ($NameFilterExclusion) { $Result = $Result | Where-Object AppName -notlike $NameFilterExclusion }
+    @{Name="Count";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
+ if ($NameFilterInclusion) { $Result = $Result | Where-Object Name -like $NameFilterInclusion }
+ if ($NameFilterExclusion) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
+ if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
  if ($PrintOnly) {
-  $Result | Sort-Object ExpiresIn | Where-Object ExpiresIn -lt $Expiration | Select-Object -ExcludeProperty AppID,id,SecretDescription,preferredSingleSignOnMode
+  $Result | Sort-Object ExpiresIn | Where-Object ExpiresIn -lt $Expiration | Select-Object Name,Type,Audience,Mode,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs
  } else {
   $Result
  }
@@ -10649,7 +10771,7 @@ $RoleAssignementConverted=@()
  }
  Return $RoleAssignementConverted
 }
-Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory Level and users assigned to them | Checked also Scoped members when available
+Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory Level and users assigned to them | Checked also Scoped members when available - With BETA endpoint we have Service Principal
  $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
  $AdminUnitList = Get-AzureADAdministrativeUnit
  $RoleDefinitionList | ForEach-Object {
@@ -10657,8 +10779,9 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
   $RoleDescription = $($_.Description)
   Progress -Message "Checking Role (Members) : " -Value $CurrentRole -PrintTime
   #Non Scoped Members
-  (az rest --method GET --uri https://graph.microsoft.com/v1.0/directoryRoles/$($_.ID)/members --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
+  (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/members --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
    @{name="AdministrativeRole";expression={$CurrentRole}},
+   @{name="Type";expression={($_.'@odata.type'.split("."))[-1]}},
    displayName,id,userPrincipalName,mail,
    @{name="RoleDescription";expression={$RoleDescription}},
    @{name="PermissionType";expression={'Permanent'}},
@@ -10666,12 +10789,13 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
 
   Progress -Message "Checking Role (Scoped Members) : " -Value $CurrentRole -PrintTime
   #Scoped Members
-  (az rest --method GET --uri https://graph.microsoft.com/v1.0/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
+  (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
   @{name="UserInfo";expression={
    Progress -Message "Checking Role (Scoped Members) : " -Value "$CurrentRole - $($_.roleMemberInfo.ID)" -PrintTime
    Get-AzureADUserInfo -UPNorID $_.roleMemberInfo.ID
    }},* | Select-Object `
    @{name="AdministrativeRole";expression={$CurrentRole}},
+   @{name="Type";expression={($_.'@odata.type'.split("."))[-1]}},
    @{name="displayName";expression={$_.roleMemberInfo.DisplayName}},
    @{name="id";expression={$_.roleMemberInfo.ID}},
    @{name="userPrincipalName";expression={$_.UserInfo.userPrincipalName}},
@@ -10692,11 +10816,13 @@ Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligi
 }
 Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role - Requires module : Microsoft.Graph.DeviceManagement.Enrolment
 
- Open-MgGraphConnection -Scopes 'RoleManagement.Read.All' -ContextScope 'Process'
+ $CurrentConnection = Get-MgContext | where-object { ($_.ContextScope -eq "Process") -and ($_.Scopes -contains "RoleManagement.Read.All") }
+ if (!$CurrentConnection) { Open-MgGraphConnection -Scopes 'RoleManagement.Read.All' -ContextScope 'Process' }
 
  $EligibleRoles = Get-MgRoleManagementDirectoryRoleEligibilityScheduleInstance
  Convert-AzureADRoleAssignements $($EligibleRoles | Select-Object DirectoryScopeId,PrincipalId,RoleDefinitionId) -Verbose | Select-Object `
- @{name="AdministrativeRole";expression={$_.RoleName}},displayName,
+ @{name="AdministrativeRole";expression={$_.RoleName}},
+ @{name="Type";expression={($_.ObjectType.split("."))[-1]}},displayName,
  @{name="Id";expression={$_.ObjectID}},
  @{name="userPrincipalName";expression={$_.UPN}},
  @{name="mail";expression={$_.Mail}},
@@ -11043,11 +11169,19 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
 }
 Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
  Param (
-  $GroupName
+  [Parameter(Mandatory)]$GroupName,
+  [Switch]$ShowMembers,
+  [Switch]$ExcludeDynamicGroups
  )
- az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json |`
+ $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
+ if ($ExcludeDynamicGroups) {
+  $GroupList = $GroupList | Where-Object {! $_.membershipRule}
+ }
+ $GroupList |`
   Select-Object displayName,description,
-  @{Name="Members";Expression={Get-AzureADGroupMembers $_.displayName}}
+  @{Name="Members";Expression={if ($ShowMembers) {Get-AzureADGroupMembers $_.displayName} else {"Use Switch to get value"}}},
+  @{Name="Type";Expression={if ($_.membershipRule) {"Dynamic"} else {"Fixed"} }},
+   membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
 }
 # AAD User Management
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
@@ -11057,7 +11191,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
   $SleepDurationInS = 2
  )
- # Get rights of all AAD users (takes some minutes with 50k+ users)
+ # Get list of all AAD users (takes some minutes with 50k+ users)
  if ($Fast) {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName}' --output json --only-show-errors | ConvertFrom-Json
  } elseif ($Advanced) {
@@ -11070,9 +11204,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   While ($ContinueRunning) {
    Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
    if ($FirstRun) {
-    $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes" -o json  | ConvertFrom-Json
-    # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$top=999" -o json  | ConvertFrom-Json
-    # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes&`$top=999" -o json  | ConvertFrom-Json
+    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes"' -o json  | ConvertFrom-Json
     $FirstRun=$Talse
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
@@ -11091,6 +11223,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
+    @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
     @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
     @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
     @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
