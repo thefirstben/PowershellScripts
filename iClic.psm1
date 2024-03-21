@@ -9447,7 +9447,7 @@ Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the ten
   $subscriptionName = $_.name
   Progress -Message "Checking App Service Certificates of subscription : " -Value $subscriptionName -PrintTime
   az account set --subscription $subscriptionId
-  $RG_WithCertificates = ($(az resource list --output json).tolower() | convertfrom-json | Where-Object type -like "*certificates*" | Select-Object resourcegroup -Unique).resourcegroup
+  $RG_WithCertificates = ($(az resource list --output json).tolower() | convertfrom-json | Where-Object type -like "*certificate*" | Select-Object resourcegroup -Unique).resourcegroup
   if ($RG_WithCertificates.count -gt 0) { # Skip if no Certificate found in Subscription
    $RG_WithCertificates | ForEach-Object {
     $CurrentSubscriptionResources = az webapp config ssl list -g $_ | convertfrom-json 
@@ -9460,7 +9460,7 @@ Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the ten
   }
  }
 }
-Function Get-AzureCertificates { # Check All Azure Web Certificates
+Function Get-AzureCertificates { # Check All Azure Web Certificates -> Check keyVaultId error
  Get-AzureSubscriptions | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
@@ -9792,7 +9792,7 @@ Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one 
  }
  $CurrentRights | Where-Object Type -ne User | ForEach-Object { "User $($UserPrincipalName) has permission to Scope $($_.scope) because of the Principal $($_.PrincipalName)" }
 }
-Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandatory - at least name)
+Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandatory - at least name) | Not yet fully tested but works on Subscription
  [CmdletBinding(DefaultParameterSetName='ScopeID')]
  Param (
   [Parameter(Mandatory=$true)]$ObjectID, # Object ID of element that will have the permissions
@@ -9999,7 +9999,8 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
  } elseif ($DisplayName) {
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
  }
-}Function Get-AzureAppRegistration { # Get all App Registration of a Tenant
+}
+Function Get-AzureAppRegistration { # Get all App Registration of a Tenant
  az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
@@ -11120,7 +11121,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   } else {
    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-   If ($ErrorMessage) {
+   If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
     Start-Sleep 10
     Continue
@@ -11159,13 +11160,16 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
  }
 }
-Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - WTF It does not list Service principals
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - WTF It does not list Service principals | When using GUID, it uses Graph : More info and faster, without graph the GUID is not available
  Param (
   [Parameter(Mandatory)]$Group
  )
- az ad group member list -g $Group --query "[].{userPrincipalName: userPrincipalName, displayName:displayName, mail:mail, UserID:id}" -o json | ConvertFrom-Json
-
- # Using graph : (az rest --method get --uri "https://graph.microsoft.com/beta/groups/76a49819-71e0-4004-9372-7e63531c7fe1/members" --headers "Content-Type=application/json" | ConvertFrom-Json)
+ if (Assert-IsGUID $Group) {
+  (az rest --method get --uri "https://graph.microsoft.com/beta/groups/$Group/members?`$select=userPrincipalName,displayName,mail,accountEnabled,id" --headers "Content-Type=application/json" | ConvertFrom-Json).Value | `
+   Select-Object userPrincipalName, displayName, mail, accountEnabled, id
+ } else {
+  az ad group member list -g $Group --query "[].{userPrincipalName: userPrincipalName, displayName:displayName, mail:mail, accountEnabled:accountEnabled, id:id}" -o json | ConvertFrom-Json
+ }
 }
 Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
  Param (
@@ -11178,11 +11182,40 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   $GroupList = $GroupList | Where-Object {! $_.membershipRule}
  }
  $GroupList |`
-  Select-Object displayName,description,
-  @{Name="Members";Expression={if ($ShowMembers) {Get-AzureADGroupMembers $_.displayName} else {"Use Switch to get value"}}},
+  Select-Object displayName,description,@{Name="GroupID";Expression={$_.Id}},
+  @{Name="Members";Expression={if ($ShowMembers) {Get-AzureADGroupMembers $_.id} else {"Use Switch to get value"}}},
   @{Name="Type";Expression={if ($_.membershipRule) {"Dynamic"} else {"Fixed"} }},
    membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
 }
+Function Remove-AzureADDisabledUsersFromGroups {
+ Param (
+  [Parameter(Mandatory)]$GroupPrefix,
+  [switch]$PrintOnly
+ )
+ $Result = (Get-AzureADGroups -Group $GroupPrefix -ShowMembers -ExcludeDynamicGroups) | 
+  `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} | 
+  `Where-Object {! $_.accountEnabled} | 
+  `Where-Object userPrincipalName | 
+  `Select-Object userPrincipalName,displayName,accountEnabled,GroupName,id
+ 
+ if ($($Result.Count) -eq 0) {
+  Write-Host -Foregroundcolor Green "No disabled user found in group $GroupPrefix, nothing to do"
+ } else {
+  write-host "Found $($Result.Count) disabled account in group $GroupPrefix*"
+  if ($PrintOnly) {
+   $Result
+  } else {
+   $QuestionResult = Question "Are you sure you want to remove the users from their respective Groups"
+   if ($QuestionResult) {
+    $Result | ForEach-Object { 
+     Write-Host "Removing user $($_.displayName) ($($_.userPrincipalName)) from group $($_.GroupName)"
+     az ad group member remove --group $_.GroupName --member-id $_.id 
+    }
+   }
+  }
+ }
+}
+
 # AAD User Management
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
