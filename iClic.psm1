@@ -9111,8 +9111,6 @@ Function Open-MgGraphConnection {
  )
  $MgGraphParam = $PSBoundParameters
 
- Import-Module Microsoft.Graph.DeviceManagement.Enrolment
-
  if (!(Get-MgContext)) {
   Connect-MgGraph @MgGraphParam | Out-Null
   $CurrentContext = Get-MgContext
@@ -10393,7 +10391,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   if ($Fast) {
    $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
   } else {
-   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl}"'
+   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls}"'
   }
  }
  if ($filter) {
@@ -10848,7 +10846,7 @@ Function Get-AzureADUserAssignedRoleFromUPN { # Slow - Only for Single User usag
  Convert-AzureADRoleAssignements (Get-AzureADUserAssignedRole -UserObjectID (Get-AzureADUserInfo $UserUPN).ID)
 }
 # Administrative Unit Management
-Function Get-AzureADAdministrativeUnit {
+Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
 }
 # Schema Extensions
@@ -11032,80 +11030,10 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
  $FullResult
 }
 # MFA
-Function Get-AzureADUserMFAGraph { # Get MFA Status of User, uses MgGraph | DEPRECATED
- Param (
-  [Parameter(Mandatory)]$UserID
- )
- Connect-MgGraph -Scopes "User.Read.All", "UserAuthenticationMethod.Read.All" -ContextScope Process
-
-	$MFA_Status = [PSCustomObject]@{
-		MFA_Status                 = "Disabled"  # Initialize to "Disabled"
-		MFA_Email                     = "-"
-		MFA_Fido2                     = "-"
-		MFA_MicrosoftAuthenticatorApp = "-"
-		MFA_Phone                     = "-"
-		MFA_SoftwareOath              = "-"
-		MFA_TemporaryAccessPass       = "-"
-		MFA_WindowsHelloForBusiness   = "-"
-	}
-
-	$MFAData = Get-MgUserAuthenticationMethod -UserId $UserID
-
-	foreach ($method in $MFAData) {
-
-		Switch ($method.AdditionalProperties["@odata.type"]) {
-			"#microsoft.graph.emailAuthenticationMethod" {
-				$MFA_Status.MFA_Email = $true
-				$MFA_Status.MFA_Status = "Enabled"
-			}
-			"#microsoft.graph.fido2AuthenticationMethod" {
-				$MFA_Status.MFA_Fido2 = $true
-				$MFA_Status.MFA_Status = "Enabled"
-			}
-			"#microsoft.graph.microsoftAuthenticatorAuthenticationMethod" {
-				$MFA_Status.MFA_MicrosoftAuthenticatorApp = $true
-				$MFA_Status.MFA_Status = "Enabled"
-			}
-			"#microsoft.graph.phoneAuthenticationMethod" {
-				$MFA_Status.MFA_Phone = $true
-				$MFA_Status.MFA_Status = "Enabled"
-			}
-			"#microsoft.graph.softwareOathAuthenticationMethod" {
-				$MFA_Status.MFA_SoftwareOath = $true
-				$MFA_Status.MFA_Status = "Enabled"
-			}
-			"#microsoft.graph.temporaryAccessPassAuthenticationMethod" {
-				$MFA_Status.MFA_TemporaryAccessPass = $true
-				$MFA_Status.MFA_Status = "Enabled"
-			}
-			"#microsoft.graph.windowsHelloForBusinessAuthenticationMethod" {
-				$MFA_Status.MFA_WindowsHelloForBusiness = $true
-				$MFA_Status.MFA_Status = "Enabled"
-			}
-		}
-	}
-	$MFA_Status
-}
-Function Get-AzureADUsersMFAGraph { # Add MFA Status to user List - Immensely Slow - Uses MGGraph From Get-AzureADUserMFAGraph | DEPRECATED
- Param (
-  [Parameter(Mandatory)]$UserListPath # Create file using 'Get-AzureADUsers -Graph'
- )
- $Count=0
- $TotalValues = $UserListPath.Count
- $UserListPath | ForEach-Object {
-  $Count++
-  $CurrentUser = $_
-  Progress -Message "Checking user $Count/$TotalValues : " -PrintTime -Value $CurrentUser.displayName
-  $UserMFA_Status = Get-AzureADUserMFAGraph $_.ID
-  ($UserMFA_Status | get-member -MemberType NoteProperty).Name | ForEach-Object {
-   $CurrentUser | Add-Member -MemberType NoteProperty -Name $_ -Value $UserMFA_Status.$_
-  }
-  $CurrentUser
- } | Export-CSV "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
-}
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
-  $SleepDurationInS = 5
+  $SleepDurationInS = 5,
+  $ExportFileName = "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
  )
  $Count=0
  $GlobalResult = @()
@@ -11117,7 +11045,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   Progress -Message "Getting all MFA Status of Users Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
   if ($FirstRun) {
    $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
-   $FirstRun=$Talse
+   $FirstRun=$False
   } else {
    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
@@ -11145,7 +11073,8 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
   Start-Sleep -Seconds $SleepDurationInS # Added to not be throttled
  }
- $GlobalResult | Export-CSV "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+ $GlobalResult | Export-CSV $ExportFileName
+ Return $ExportFileName
 }
 # AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
@@ -11187,19 +11116,20 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   @{Name="Type";Expression={if ($_.membershipRule) {"Dynamic"} else {"Fixed"} }},
    membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
 }
-Function Remove-AzureADDisabledUsersFromGroups {
+Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Groups
  Param (
   [Parameter(Mandatory)]$GroupPrefix,
   [switch]$PrintOnly
  )
- $Result = (Get-AzureADGroups -Group $GroupPrefix -ShowMembers -ExcludeDynamicGroups) | 
-  `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} | 
+ $GroupList = Get-AzureADGroups -Group $GroupPrefix -ShowMembers -ExcludeDynamicGroups
+ $Result = $GroupList | 
+  `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} -ErrorAction SilentlyContinue | 
   `Where-Object {! $_.accountEnabled} | 
   `Where-Object userPrincipalName | 
-  `Select-Object userPrincipalName,displayName,accountEnabled,GroupName,id
+  `Select-Object userPrincipalName,displayName,accountEnabled,GroupName,id -ErrorAction SilentlyContinue
  
  if ($($Result.Count) -eq 0) {
-  Write-Host -Foregroundcolor Green "No disabled user found in group $GroupPrefix, nothing to do"
+  Write-Host -Foregroundcolor Green "No disabled user found in groups starting with $GroupPrefix, nothing to do in $($GroupList.Count) groups"
  } else {
   write-host "Found $($Result.Count) disabled account in group $GroupPrefix*"
   if ($PrintOnly) {
@@ -11215,13 +11145,13 @@ Function Remove-AzureADDisabledUsersFromGroups {
   }
  }
 }
-
 # AAD User Management
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
   [parameter(Mandatory = $false, ParameterSetName="Fast")][Switch]$Fast,
   [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
   [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
+  $ExportFileName = "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $SleepDurationInS = 2
  )
  # Get list of all AAD users (takes some minutes with 50k+ users)
@@ -11237,12 +11167,12 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   While ($ContinueRunning) {
    Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
    if ($FirstRun) {
-    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes"' -o json  | ConvertFrom-Json
-    $FirstRun=$Talse
+    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses"' -o json  | ConvertFrom-Json
+    $FirstRun=$False
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
     $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-    If ($ErrorMessage -contains "ERROR") {
+    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
      Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
      Start-Sleep 10
      Continue
@@ -11270,9 +11200,9 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
     @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}}
   }
-  $GlobalResult | Export-CSV "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
-  return "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
- } else { # Not currently used
+  $GlobalResult | Export-CSV $ExportFileName
+  return $ExportFileName
+ } else { # When launched without param
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
  }
 }
