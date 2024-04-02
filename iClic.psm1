@@ -11094,10 +11094,30 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   [Parameter(Mandatory)]$Group
  )
  if (Assert-IsGUID $Group) {
-  (az rest --method get --uri "https://graph.microsoft.com/beta/groups/$Group/members?`$select=userPrincipalName,displayName,mail,accountEnabled,id" --headers "Content-Type=application/json" | ConvertFrom-Json).Value | `
-   Select-Object userPrincipalName, displayName, mail, accountEnabled, id
+  $GroupGUID = $Group
  } else {
-  az ad group member list -g $Group --query "[].{userPrincipalName: userPrincipalName, displayName:displayName, mail:mail, accountEnabled:accountEnabled, id:id}" -o json | ConvertFrom-Json
+  $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
+ }
+ $FirstRun = $True
+ $ContinueRunning = $True
+ While ($ContinueRunning) {
+  if ($FirstRun) {
+   $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/members?$top=999&$select=userPrincipalName,displayName,mail,accountEnabled,id,onPremisesExtensionAttributes"'
+   $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
+   $FirstRun=$False
+  } else {
+   $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+   If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
+    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
+    Start-Sleep 10
+    Continue
+   }
+   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+  }
+  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
+  $CurrentResult.Value | Sort-Object displayName | Select-Object userPrincipalName, displayName, mail, accountEnabled, id, onPremisesExtensionAttributes
  }
 }
 Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
@@ -11160,6 +11180,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
  } elseif ($Advanced) {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
  } elseif ($Graph) {
+  $SKUList = Get-AzureSKUs # To Add License check
   $Count=0
   $GlobalResult = @()
   $FirstRun = $True
@@ -11198,7 +11219,8 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     @{name="extensionAttribute9";expression={$_.onPremisesExtensionAttributes.extensionAttribute9}},
     @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
     @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
-    @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}}
+    @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}},
+    @{name="License";expression={(($_.assignedLicenses | ForEach-Object { ($SKUList[$SKUList.skuId.indexof($_.skuid)]).skuPartNumber}) | Sort-Object ) -join "," }}
   }
   $GlobalResult | Export-CSV $ExportFileName
   return $ExportFileName
@@ -11223,12 +11245,13 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  if ($UserGUID) {
   $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
  } else {
-  $RestResult = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=$Filter&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+  $RestResult = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=$Filter&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
  }
   $Result = $RestResult | Select-Object `
   id,onPremisesImmutableId,displayName,userPrincipalName,accountEnabled,createdDateTime,
   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
-  @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}}
+  @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
+  @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}}
   # $Result = az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object id,userPrincipalName,displayName
  }
  if ($ShowManager) {
@@ -11301,6 +11324,52 @@ Function Set-AzureADManager { # Set Manager on User in Azure
   "@odata.id"="https://graph.microsoft.com/v1.0/users/$ManagerID"
  }
  Set-MgUserManagerByRef -UserId $UserID -BodyParameter $ManagerOdataObject
+}
+Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud Only Users
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
+  [Parameter(Mandatory)]$Value,
+  [Switch]$ShowResult
+ )
+ if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
+ if ($UserGUID) { Write-Verbose "Working with GUID" } else { 
+  Write-Verbose "Working with UPN, will be slower" 
+  $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
+ }
+
+ if (! $UserGUID) {
+  Write-Host -ForegroundColor Red "User $UPNorID not found"
+  Return
+ }
+
+ $Body = '{\"onPremisesExtensionAttributes\": {\"extensionAttribute'+$ExtensionAttributeNumber+'\": \"'+$Value+'\"}}'
+ az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json --body $body
+ if ($ShowResult) {
+  (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
+ }
+}
+Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Switch]$ShowResult
+ )
+ if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
+ if ($UserGUID) { Write-Verbose "Working with GUID" } else { 
+  Write-Verbose "Working with UPN, will be slower" 
+  $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
+ }
+
+ if (! $UserGUID) {
+  Write-Host -ForegroundColor Red "User $UPNorID not found"
+  Return
+ }
+
+ $Body = '{\"accountEnabled\": \"false\"}}'
+ az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json --body $body
+ if ($ShowResult) {
+  (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
+ }
 }
 # Graph Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for App Reg with Secret
@@ -11395,7 +11464,8 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
   [Parameter(Mandatory)]$UserMail,
   [Parameter(Mandatory)]$SenderUPN,
   [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
-  [Parameter(Mandatory)]$Subject
+  [Parameter(Mandatory)]$Subject,
+  $From
  )
 
  $CurrentConnection = Get-MgContext | where-object { ($_.ContextScope -eq "Process") -and ($_.Scopes -contains "Mail.Send") }
@@ -11408,6 +11478,9 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
    ToRecipients = @( @{ EmailAddress = @{ Address = $UserMail } } )
   }
   SaveToSentItems = "true"
+ }
+ if ($From) {
+  $params.Message.Add("From",@( @{ From = @{ Address = $From } } ))
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
 }
