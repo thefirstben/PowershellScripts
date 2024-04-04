@@ -11089,7 +11089,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
  }
 }
-Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - WTF It does not list Service principals | When using GUID, it uses Graph : More info and faster, without graph the GUID is not available
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - Before beta it did not list Service principals | When using GUID, it uses Graph : More info and faster, without graph the GUID is not available
  Param (
   [Parameter(Mandatory)]$Group
  )
@@ -11135,6 +11135,18 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   @{Name="Members";Expression={if ($ShowMembers) {Get-AzureADGroupMembers $_.id} else {"Use Switch to get value"}}},
   @{Name="Type";Expression={if ($_.membershipRule) {"Dynamic"} else {"Fixed"} }},
    membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
+}
+Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI)
+ Param (
+  [Parameter(Mandatory)]$GroupName,
+  [Parameter(Mandatory)]$UPNorID
+ )
+ if (Assert-IsGUID $UPNorID) {
+  $UserGUID = $UPNorID
+ } else { 
+  $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+ }
+ az ad group member remove --group $GroupName --member-id $UserGUID
 }
 Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Groups
  Param (
@@ -11235,27 +11247,25 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   [Switch]$ShowManager,
   [Switch]$ShowMemberOf
  )
- if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
- if ($UserGUID) { Write-Verbose "Working with GUID" } else { Write-Verbose "Working with UPN" }
+ if (Assert-IsGUID $UPNorID) {
+  $UserGUID = $UPNorID
+ } else { 
+  $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+ }
+ if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
-  # az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json 2>null
   $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
  } else {
   $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity"
- if ($UserGUID) {
-  $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
- } else {
-  $RestResult = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=$Filter&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
- }
+  $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
   $Result = $RestResult | Select-Object `
   id,onPremisesImmutableId,displayName,userPrincipalName,accountEnabled,createdDateTime,
   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
   @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
   @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}}
-  # $Result = az ad user show --id $UPNorID --only-show-errors -o json | convertfrom-json | Select-Object id,userPrincipalName,displayName
  }
  if ($ShowManager) {
-  $Manager = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/manager" --headers Content-Type=application/json | ConvertFrom-Json `
+  $Manager = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json `
   | Select-Object `
     @{name="ManagerdisplayName";expression={$_.displayName}},
     @{name="ManagerUPN";expression={$_.userPrincipalName}},
@@ -11266,7 +11276,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  if ($ShowMemberOf) {
   $MemberOf=@()
-  $MemberOfTmp = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID/memberOf" --headers Content-Type=application/json | ConvertFrom-Json
+  $MemberOfTmp = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/memberOf" --headers Content-Type=application/json | ConvertFrom-Json
   $MemberOf += $MemberOfTmp.Value
   While ($MemberOfTmp.'@odata.nextLink') {
    $MemberOf += $MemberOfTmp.Value
