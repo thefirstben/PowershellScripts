@@ -9999,7 +9999,35 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
  }
 }
 Function Get-AzureAppRegistration { # Get all App Registration of a Tenant
- az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
+ Param (
+  $Filter,
+  [Switch]$ShowAllColumns,
+  [Switch]$Fast,
+  $URLFilter
+ )
+ # $Result = az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
+ $Arguments = '--output', 'json', '--all', '--only-show-errors'
+
+ if ( ! $ShowAllColumns ) {
+  $Arguments += '--query'
+  if ($Fast) {
+   $Arguments += '"[].{DisplayName:displayName,AppID:appId}"'
+  } else {
+   $Arguments += '"[].{DisplayName:displayName,AppID:appId,id:id,appRoles:appRoles,createdDateTime:createdDateTime,'+
+    'defaultRedirectUri:defaultRedirectUri,groupMembershipClaims:groupMembershipClaims,identifierUris:identifierUris,'+
+    'keyCredentials:keyCredentials,passwordCredentials:passwordCredentials,publisherDomain:publisherDomain,'+
+    'signInAudience:signInAudience,tags:tags,publicClient:publicClient,spa:spa,web:web}"'
+  } # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
+ }
+ if ($filter) {
+  $Arguments += "--filter"
+  $Arguments += $filter
+ }
+ $Result = az ad app list @Arguments | ConvertFrom-Json | Select-Object *,@{Name="URLs";Expression={($_.publicClient.redirectUris -join ",") + ($_.sap.redirectUris -join ",") + ($_.web.redirectUris -join ",")}}
+ if ($URLFilter) {
+  $Result = $Result | Where-Object URLs -like "*$URLFilter*"
+ }
+ $Result
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
@@ -10008,7 +10036,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
 }
 Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Registration
- Get-AzureAppRegistration | ForEach-Object {
+ Get-AzureAppRegistration -Fast | ForEach-Object {
   Progress -Message "Checking current App : " -Value $_.DisplayName
   Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID
  } | Export-Csv "C:\Temp\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
@@ -10382,7 +10410,8 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
  Param (
   $Filter,
   [Switch]$ShowAllColumns,
-  [Switch]$Fast
+  [Switch]$Fast,
+  $URLFilter
  )
  $Arguments = '--output', 'json', '--all', '--only-show-errors'
 
@@ -10398,7 +10427,11 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   $Arguments += "--filter"
   $Arguments += $filter
  }
- az ad sp list @Arguments | ConvertFrom-Json
+ $Result = az ad sp list @Arguments | ConvertFrom-Json | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
+ if ($URLFilter) {
+  $Result = $Result | Where-Object URLs -like "*$URLFilter*"
+ }
+ $Result
 }
 Function Get-AzureServicePrincipalIDFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
  Param (
@@ -10582,10 +10615,14 @@ Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add
 }
 Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned Users and Groups
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID,
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID")]$ServicePrincipalID,
+  [parameter(Mandatory=$true,ParameterSetName="SP_Name")]$ServicePrincipalName,
   [switch]$ShowAppRole,
   [switch]$Readable
  )
+ if ($ServicePrincipalName) {
+  $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName
+ }
  $AppAssigments = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty deletedDateTime
  If ($ShowAppRole) {
   $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID
@@ -10704,6 +10741,7 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  Param (
   $Expiration = 30,
   [switch]$PrintOnly,
+  [switch]$ShowAll,
   [switch]$ExcludeLegacy,
   $NameFilterInclusion,
   $NameFilterExclusion
@@ -10730,7 +10768,10 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  if ($NameFilterExclusion) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
  if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
  if ($PrintOnly) {
-  $Result | Sort-Object ExpiresIn | Where-Object ExpiresIn -lt $Expiration | Select-Object Name,Type,Audience,Mode,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs
+  if (! $ShowAll) {
+   $Result = $Result | Where-Object ExpiresIn -lt $Expiration 
+  }
+  $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs
  } else {
   $Result
  }
@@ -10771,6 +10812,9 @@ $RoleAssignementConverted=@()
  Return $RoleAssignementConverted
 }
 Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory Level and users assigned to them | Checked also Scoped members when available - With BETA endpoint we have Service Principal
+ Param (
+  $ExportFile = "C:\Temp\AzureADRoleAssignements_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+ )
  $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
  $AdminUnitList = Get-AzureADAdministrativeUnit
  $RoleDefinitionList | ForEach-Object {
@@ -10778,7 +10822,7 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
   $RoleDescription = $($_.Description)
   Progress -Message "Checking Role (Members) : " -Value $CurrentRole -PrintTime
   #Non Scoped Members
-  (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/members --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
+  $DirectMembers += (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/members --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
    @{name="AdministrativeRole";expression={$CurrentRole}},
    @{name="Type";expression={($_.'@odata.type'.split("."))[-1]}},
    displayName,id,userPrincipalName,mail,
@@ -10788,7 +10832,7 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
 
   Progress -Message "Checking Role (Scoped Members) : " -Value $CurrentRole -PrintTime
   #Scoped Members
-  (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
+  $ScopedMembers += (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
   @{name="UserInfo";expression={
    Progress -Message "Checking Role (Scoped Members) : " -Value "$CurrentRole - $($_.roleMemberInfo.ID)" -PrintTime
    Get-AzureADUserInfo -UPNorID $_.roleMemberInfo.ID
@@ -10803,6 +10847,7 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
    @{name="PermissionType";expression={'Permanent (Scoped)'}},
    @{name="Scope";expression={$AdminUnitID = $_.administrativeUnitId ; ($AdminUnitList | Where-Object { $_.ID -eq $AdminUnitID } ).displayName} }
  }
+ $DirectMembers + $ScopedMembers | Export-Csv $ExportFile
 }
 Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligible role (Using PIM API v3) - Not Working from Powershell in Az Cli for some reason : SP Right ?
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
