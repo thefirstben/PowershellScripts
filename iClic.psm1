@@ -9998,42 +9998,71 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
  }
 }
-Function Get-AzureAppRegistration { # Get all App Registration of a Tenant
+Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
  Param (
-  $Filter,
   [Switch]$ShowAllColumns,
+  [Switch]$ShowOwners,
   [Switch]$Fast,
+  $NameFilter,
   $URLFilter
  )
- # $Result = az ad app list --only-show-errors --output json --all --query "[].{DisplayName:displayName,AppID:appId}" | ConvertFrom-Json
- $Arguments = '--output', 'json', '--all', '--only-show-errors'
 
- if ( ! $ShowAllColumns ) {
-  $Arguments += '--query'
-  if ($Fast) {
-   $Arguments += '"[].{DisplayName:displayName,AppID:appId}"'
+ $CmdLine = '"https://graph.microsoft.com/beta/applications?$top=999'
+ if ($ShowAllColumns) {
+  $CmdLine += "`""
+ } else {
+  if ($fast) {
+   $CmdLine += '&$select=DisplayName,appId,id"'
   } else {
-   $Arguments += '"[].{DisplayName:displayName,AppID:appId,id:id,appRoles:appRoles,createdDateTime:createdDateTime,'+
-    'defaultRedirectUri:defaultRedirectUri,groupMembershipClaims:groupMembershipClaims,identifierUris:identifierUris,'+
-    'keyCredentials:keyCredentials,passwordCredentials:passwordCredentials,publisherDomain:publisherDomain,'+
-    'signInAudience:signInAudience,tags:tags,publicClient:publicClient,spa:spa,web:web}"'
-  } # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
+   $CmdLine += '&$select=DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,'+
+   'keyCredentials,passwordCredentials,publisherDomain,signInAudience,tags,publicClient,spa,web"'
+  }
  }
- if ($filter) {
-  $Arguments += "--filter"
-  $Arguments += $filter
+
+ $Count=0
+ $GlobalResult = @()
+ $ContinueRunning = $True
+ $FirstRun=$True
+ While ($ContinueRunning -eq $True) {
+  Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
+  if ($FirstRun) {
+   $CurrentResult = az rest --method get --uri $CmdLine --header Content-Type="application/json" -o json | convertfrom-json
+   $FirstRun=$False
+  } else {
+   $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+   If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
+    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 5s sleep"
+    Start-Sleep 5
+    Continue
+   }
+   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+  }
+  $Count++
+  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
+  $GlobalResult += $CurrentResult.Value
  }
- $Result = az ad app list @Arguments | ConvertFrom-Json | Select-Object *,@{Name="URLs";Expression={($_.publicClient.redirectUris -join ",") + ($_.sap.redirectUris -join ",") + ($_.web.redirectUris -join ",")}}
- if ($URLFilter) {
-  $Result = $Result | Where-Object URLs -like "*$URLFilter*"
+
+ $Result = $GlobalResult | Select-Object *,@{Name="URLs";Expression={($_.publicClient.redirectUris -join ",") + ($_.sap.redirectUris -join ",") + ($_.web.redirectUris -join ",")}}
+ if ($URLFilter -and (! $Fast)) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
+ if ($NameFilter) { $Result = $Result | Where-Object displayName -like "*$NameFilter*" }
+ if ($ShowOwners) { $Result = $Result | Select-Object *,@{Name="Owner";Expression={ 
+  Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ; Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID }} 
  }
  $Result
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationID
+  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
+  [parameter(Mandatory=$true,ParameterSetName="ObjectID")]$AppRegistrationObjectID,
+  [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName
  )
- az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
+ if ($AppRegistrationID) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).ID }
+ if ($AppRegistrationName) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).ID }
+
+ (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value | Select-Object id,userPrincipalName,displayName
+ # az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
 }
 Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Registration
  Get-AzureAppRegistration -Fast | ForEach-Object {
