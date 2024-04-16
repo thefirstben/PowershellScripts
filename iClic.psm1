@@ -9946,11 +9946,12 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
  # }
 
  $ObjectsToCreate | ForEach-Object {
+  $AppRegistrationName = $_.Name
   if ($_.CreateServicePrincipal) {
-   $App_AppID = New-AzureAppRegistrationBlank -AppRegistrationName $_.Name -CreateAssociatedServicePrincipal
-   $SP_AppID = (Get-AzureServicePrincipalInfo -DisplayName $_.Name).ID
+   $App_AppID = New-AzureAppRegistrationBlank -AppRegistrationName $AppRegistrationName -CreateAssociatedServicePrincipal
+   $SP_AppID = (Get-AzureServicePrincipalInfo -DisplayName $AppRegistrationName).ID
   } else {
-   $App_AppID = New-AzureAppRegistrationBlank -AppRegistrationName $_.Name
+   $App_AppID = New-AzureAppRegistrationBlank -AppRegistrationName $AppRegistrationName
   }
   $AppRegistrationOwner = $_.AppRegistrationOwner
   $ServicePrincipalOwner = $_.ServicePrincipalOwner
@@ -9979,7 +9980,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
   az ad app permission admin-consent --id $App_AppID
 
   #Check Rights :
-  Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $App_AppID
+  Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $App_AppID -AppRegistrationName $AppRegistrationName
  }
 }
 # App Registration [Only]
@@ -10086,7 +10087,7 @@ Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
   Write-Host -ForegroundColor "Red" "Error adding owner for user $OwnerUPN on AppID $AppRegistrationID : $($Error[0])"
  }
 }
-Function Remove-AzureAppRegistrationOwner { # Add an owner to an App Registration
+Function Remove-AzureAppRegistrationOwner { # remove an owner to an App Registration
  Param (
   [Parameter(Mandatory=$true)]$OwnerUPN,
   [Parameter(Mandatory=$true)]$AppRegistrationID
@@ -10105,6 +10106,14 @@ Function Remove-AzureAppRegistrationOwner { # Add an owner to an App Registratio
   Write-Host -ForegroundColor "Red" "Error adding owner for user $OwnerUPN on AppID $AppRegistrationID : $($Error[0])"
  }
 }
+Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Registration
+ Param (
+  [Parameter(Mandatory=$true)]$AppRegistrationID
+ )
+ Get-AzureAppRegistrationOwner -AppRegistrationID $AppRegistrationID | ForEach-Object {
+  az ad app owner remove --id $AppRegistrationID --owner-object-id $_.id
+ }
+}
 Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Rights of ONE or Multiple Subscriptions
  Param (
   [Parameter(Mandatory)]$AppRegistration, # Must be an object containing ID and Name of App Registration
@@ -10121,11 +10130,16 @@ Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Ri
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
  Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationID,
-  $AppRegistrationName,
-  [switch]$Readable
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+  [switch]$Readable,
+  [switch]$HideGUID
  )
- if (!$AppRegistrationName) {$AppRegistrationName = $AppRegistrationID}
+
+ 
+
+ if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationID).displayName}
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
  $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
  $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
    $Rules_List=@()
@@ -10143,7 +10157,12 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
   }
  }
  If ($Readable) {
-  Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $AppRegistrationID
+  $ReadablePermissionList = Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
+  if ($HideGUID) {
+   $ReadablePermissionList | Select-Object -ExcludeProperty *ID
+  } else {
+   $ReadablePermissionList
+  }
  } else {
   $Result.Rules
  }
@@ -10203,9 +10222,12 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
 }
 Function Get-AzureAppRegistrationAPIPermissionsSingle { # Check permission for a single App registration (Do not use for multiple app registration - Use Get-AzureAppRegistrationAPIPermissions instead)
  Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationID
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
  )
- $AppRegistrationName = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).DisplayName
+ if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationID).displayName}
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+
  $AppRegistrationPermissions = Get-AzureAppRegistrationPermissions -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
  if ($AppRegistrationPermissions) {
   Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AppRegistrationPermissions
@@ -10844,6 +10866,8 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
  Param (
   $ExportFile = "C:\Temp\AzureADRoleAssignements_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
  )
+ $Global_DirectMembers = @()
+ $Global_ScopedMembers = @()
  $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
  $AdminUnitList = Get-AzureADAdministrativeUnit
  $RoleDefinitionList | ForEach-Object {
@@ -10851,17 +10875,17 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
   $RoleDescription = $($_.Description)
   Progress -Message "Checking Role (Members) : " -Value $CurrentRole -PrintTime
   #Non Scoped Members
-  $DirectMembers += (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/members --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
+  $DirectMembers = (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/members --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
    @{name="AdministrativeRole";expression={$CurrentRole}},
    @{name="Type";expression={($_.'@odata.type'.split("."))[-1]}},
    displayName,id,userPrincipalName,mail,
    @{name="RoleDescription";expression={$RoleDescription}},
    @{name="PermissionType";expression={'Permanent'}},
    @{name="Scope";expression={"Directory"}}
-
+  
   Progress -Message "Checking Role (Scoped Members) : " -Value $CurrentRole -PrintTime
   #Scoped Members
-  $ScopedMembers += (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
+  $ScopedMembers = (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
   @{name="UserInfo";expression={
    Progress -Message "Checking Role (Scoped Members) : " -Value "$CurrentRole - $($_.roleMemberInfo.ID)" -PrintTime
    Get-AzureADUserInfo -UPNorID $_.roleMemberInfo.ID
@@ -10875,8 +10899,11 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
    @{name="RoleDescription";expression={$RoleDescription}},
    @{name="PermissionType";expression={'Permanent (Scoped)'}},
    @{name="Scope";expression={$AdminUnitID = $_.administrativeUnitId ; ($AdminUnitList | Where-Object { $_.ID -eq $AdminUnitID } ).displayName} }
+
+   $Global_DirectMembers += $DirectMembers
+   $Global_ScopedMembers += $ScopedMembers
  }
- $DirectMembers + $ScopedMembers | Export-Csv $ExportFile
+ $Global_DirectMembers + $Global_ScopedMembers
 }
 Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligible role (Using PIM API v3) - Not Working from Powershell in Az Cli for some reason : SP Right ?
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
@@ -11053,17 +11080,26 @@ Function Get-ADOUsers {
   @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "C:\Temp\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
 }
 Function Get-ADOPermissions_Groups { # Project Level Permission Only
+ Param (
+  $ProjectName
+ )
  # Get all project list
- $AzureDevopsProjectList = ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
+ if ($ProjectName) {
+  $AzureDevopsProjectList = (az devops project show -p "$ProjectName" | convertfrom-json).Name
+ } else {
+  $AzureDevopsProjectList = ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
+ }
  # Get all permission name and ID
  $AzureDevopsProjectList | ForEach-Object {
   $ProjectRealName = $_
   $ProjectName = $ProjectRealName -replace " - ","-" -replace "- ","_" -replace "--","-" -replace " ","_"
-  (az devops security group list --project $_ -o json | convertfrom-json).graphGroups | Select-Object `
+  $GroupList = (az devops security group list --project $_ -o json | convertfrom-json).graphGroups
+  $GroupList | Select-Object `
    @{Name="ProjectRealName";Expression={Progress -Message "Checking Project : " -Value $ProjectRealName -PrintTime ; $ProjectRealName}},
    @{Name="ProjectName";Expression={$ProjectName}},
    @{Name="PermissionName";Expression={$_.displayName}},
-   @{Name="PermissionID";Expression={$_.descriptor}},origin,isCrossProject
+   @{Name="PermissionID";Expression={$_.descriptor}},origin,isCrossProject,subjectKind,
+   @{Name="AADGroupCount";Expression={($GroupList | Where-Object origin -eq "aad").Count}}
  }
 }
 Function Get-ADO_AuthenticationHeader { # Convert Azure DevOps PAT Token to usable Header Object
