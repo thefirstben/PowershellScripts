@@ -9989,7 +9989,7 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
   [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
-  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain"
+  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient"
  )
  if ($AppID) {
   (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'" --headers Content-Type=application/json | ConvertFrom-Json).value
@@ -10706,20 +10706,27 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
  }
  az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
 }
-Function Get-AzureServicePrincipalPermission { # Get Assigned API Permission
+Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission
  Param (
-  [Parameter(Mandatory=$true)]$principalId, # ID of the App to be changed
-  [switch]$ConvertDisplayName # Slowed but adds readable Role definition
+  [Parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalId, # ID of the App to be changed
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalName, # Display Name of App Registration
+  [switch]$Readable, # Slower but adds readable Role definition
+  [switch]$HideGUID,
+  [switch]$HideDate
  )
+ if (!$principalId) {$principalId = (Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $principalName)}
+
  $Result = (az rest --method get --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" --headers 'Content-Type=application/json' | ConvertFrom-Json).Value
- if ($ConvertDisplayName) {
-  $Result | ForEach-Object {
-   # $AppRoleDisplayName = (Get-AzureAppRegistrationInfo -DisplayName $_.resourceDisplayName -ValuesToShow appRoles).appRoles | Where-Object id -eq $_.appRoleId
-   $AppRoleDisplayName = (Get-AzureServicePrincipalInfo -ID $_.resourceId -ValuesToShow appRoles).appRoles | Where-Object id -eq $_.appRoleId
-   $_ | Add-Member -MemberType NoteProperty -Name appRoleDisplayName -Value $AppRoleDisplayName.displayName
-   $_ | Add-Member -MemberType NoteProperty -Name appRoleValue -Value $AppRoleDisplayName.value
-  }
+
+ If ($Readable) {
+   $Result | ForEach-Object {
+    $AppRoleDisplayName = (Get-AzureServicePrincipalInfo -ID $_.resourceId -ValuesToShow appRoles).appRoles | Where-Object id -eq $_.appRoleId
+    $_ | Add-Member -MemberType NoteProperty -Name appRoleDisplayName -Value $AppRoleDisplayName.displayName
+    $_ | Add-Member -MemberType NoteProperty -Name appRoleValue -Value $AppRoleDisplayName.value
+   }
  }
+ if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
+ if ($HideDate) { $Result = $Result | Select-Object -ExcludeProperty *DateTime }
  $Result
 }
 Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST
@@ -10828,8 +10835,10 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  }
 }
 # User Role Assignement (Not RBAC)
-Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph
+Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph - Does not work with custom roles
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
+ # (az rest --method GET --uri "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,templateId,isBuiltIn,description | Sort-Object DisplayName
+ 
 }
 Function Convert-AzureADRoleAssignements { # Convert list of Role Assignement with ObjectID and RoleID to Readable list
  Param (
@@ -10844,6 +10853,7 @@ $RoleAssignementConverted=@()
   $RoleID = $_.roleDefinitionId
   $ObjectInfo = Get-AzureADObjectInfo -ObjectID $_.principalId
   $RoleInfo = $RoleDefinitionList | Where-Object roleTemplateId -eq $RoleID
+  # $RoleInfo = $RoleDefinitionList | Where-Object templateId -eq $RoleID
   if ($Verbose) {
    Progress -Message "Checking Role $($RoleInfo.displayName) and UPN : " -Value $($ObjectInfo.userPrincipalName) -PrintTime
   }
@@ -10864,11 +10874,17 @@ $RoleAssignementConverted=@()
 }
 Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory Level and users assigned to them | Checked also Scoped members when available - With BETA endpoint we have Service Principal
  Param (
-  $ExportFile = "C:\Temp\AzureADRoleAssignements_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+  $ExportFile = "C:\Temp\AzureADRoleAssignements_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $NameFilter
  )
+ # graph information from here is better https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AZ Cli with User Authentication. Missing Consent
+
  $Global_DirectMembers = @()
  $Global_ScopedMembers = @()
  $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
+ if ($NameFilter) {
+  $RoleDefinitionList = $RoleDefinitionList | Where-Object displayName -Like "*$NameFilter*"
+ }
  $AdminUnitList = Get-AzureADAdministrativeUnit
  $RoleDefinitionList | ForEach-Object {
   $CurrentRole = $($_.displayName)
