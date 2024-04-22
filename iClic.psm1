@@ -11321,6 +11321,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   $SKUList = Get-AzureSKUs # To Add License check
   $Count=0
   $GlobalResult = @()
+  $Date_Today = Get-Date
   $FirstRun = $True
   $ContinueRunning = $True
   While ($ContinueRunning) {
@@ -11346,6 +11347,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
     @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
+    @{name="DaysSinceLastUse";expression={(NEW-TIMESPAN -Start $_.signInActivity.lastSuccessfulSignInDateTime -End $Date_Today).Days}},
     @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
     @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
     @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
