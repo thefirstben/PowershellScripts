@@ -11306,6 +11306,15 @@ Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI)
  }
  az ad group member add --group $GroupName --member-id $UserGUID
 }
+Function Copy-AzureADGroupMembers {
+ Param (
+  [Parameter(Mandatory)]$SourceGroupName,
+  [Parameter(Mandatory)]$DestinationGroupName
+ )
+ Get-AzureADGroupMembers -Group SourceGroupName | ForEach-Object {
+  Add-AzureADGroupMember -GroupName $DestinationGroupName -UPNorID $_.id
+ }
+}
 Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Groups
  Param (
   [Parameter(Mandatory)]$GroupPrefix,
