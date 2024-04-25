@@ -11311,7 +11311,7 @@ Function Copy-AzureADGroupMembers {
   [Parameter(Mandatory)]$SourceGroupName,
   [Parameter(Mandatory)]$DestinationGroupName
  )
- Get-AzureADGroupMembers -Group SourceGroupName | ForEach-Object {
+ Get-AzureADGroupMembers -Group $SourceGroupName | ForEach-Object {
   Add-AzureADGroupMember -GroupName $DestinationGroupName -UPNorID $_.id
  }
 }
