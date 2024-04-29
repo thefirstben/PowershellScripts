@@ -10466,6 +10466,30 @@ Function Set-AzureAppRegistrationConsent {
  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
  az ad app permission admin-consent --id $AppRegistrationID
 }
+Function Get-AzureAppRegistrationAPIExposed { # List Service Principal Exposed API (Equivalent of portal 'Expose an API' values)
+Param (
+ [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+ [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+ [switch]$HideGUID
+)
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+
+ # az ad sp show --id $AppRegistrationID --query "oauth2Permissions[]" --only-show-errors | ConvertFrom-Json
+ $Result = (az ad app show --id $AppRegistrationID --query '{Exposed:api.oauth2PermissionScopes}'  | ConvertFrom-Json).Exposed
+ if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty ID }
+ $Result
+}
+FunctioN Get-AzureAppRegistrationAPPRoles {
+ Param (
+ [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+ [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+ [switch]$HideGUID
+)
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+$Result = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
+if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
+$Result
+}
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
  Param (
@@ -10569,12 +10593,6 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" `
    --headers Content-Type=application/json `
    --body $Body
-}
-Function Get-AzureServicePrincipalAPIExposed { # List Service Principal Exposed API (Equivalent of portal 'Expose an API' values)
- Param (
-  [Parameter(Mandatory)]$AppID
- )
- az ad sp show --id $AppID --query "oauth2Permissions[]" --only-show-errors | ConvertFrom-Json
 }
 Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example)
  Param (
@@ -10861,9 +10879,8 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
 }
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph - Does not work with custom roles
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
- # (az rest --method GET --uri "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,templateId,isBuiltIn,description | Sort-Object DisplayName
- 
+ # (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
+ (az rest --method GET --uri "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,templateId,isBuiltIn,description | Sort-Object DisplayName
 }
 Function Convert-AzureADRoleAssignements { # Convert list of Role Assignement with ObjectID and RoleID to Readable list
  Param (
@@ -10897,7 +10914,7 @@ $RoleAssignementConverted=@()
  }
  Return $RoleAssignementConverted
 }
-Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory Level and users assigned to them | Checked also Scoped members when available - With BETA endpoint we have Service Principal
+Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory Level and users assigned to them | Checked also Scoped members when available (will miss all Custom Roles and many other roles)
  Param (
   $ExportFile = "C:\Temp\AzureADRoleAssignements_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $NameFilter
@@ -10946,6 +10963,45 @@ Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory
  }
  $Global_DirectMembers + $Global_ScopedMembers
 }
+Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
+ Param (
+  [Switch]$HideGUID
+ )
+ # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AZ Cli with User Authentication. Missing Consent
+ # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
+
+ Progress -Message "Current step" -Value "RoleDefinitionList" -PrintTime
+ $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
+ Progress -Message "Current step" -Value "AdminUnitList" -PrintTime
+ $AdminUnitList = Get-AzureADAdministrativeUnit
+ Progress -Message "Current step" -Value "Get full roles information" -PrintTime
+ $DirectMembersGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$top=999" --header Content-Type=application/json | ConvertFrom-Json).value
+ Progress -Message "Current step" -Value "Get All unique user informations (May take a while depending on the amount of unique objects to check)" -PrintTime
+ $PrincipalInfo = $DirectMembersGUID.principalId | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_ }
+
+ Progress -Message "Current step" -Value "Converting GUID to readable values" -PrintTime
+ $Result = $DirectMembersGUID | Select-Object *,
+  @{name="roleDefinitionName";expression={($RoleDefinitionList[$RoleDefinitionList.id.indexof($_.roleDefinitionId)]).displayName}},
+  @{name="directoryScopeInfo";expression={
+   if ($_.directoryScopeID -like "/administrativeUnits/*" ) {
+    $DirectoryScopeID = (($_.directoryScopeID).split('/'))[-1]
+    [pscustomobject]@{Name=$(($AdminUnitList[$AdminUnitList.id.indexof($DirectoryScopeID)]).displayName);Type="Administrative Unit"}
+   } elseif ($_.directoryScopeID -eq "/") {
+    [pscustomobject]@{Name="Directory";Type="Directory"}
+   } else {
+    $ObjectInfo = (Get-AzureADObjectInfo -ObjectID (($_.directoryScopeID).split('/'))[-1])
+    [pscustomobject]@{Name=$($ObjectInfo.DisplayName);Type=$($ObjectInfo.Type)}
+   }
+  }},
+  @{name="PrincipalInfo";expression={($PrincipalInfo[$PrincipalInfo.id.indexof($_.principalId)])} } | Select-Object -ExcludeProperty directoryScopeInfo,PrincipalInfo *,
+  @{name="directoryScopeName";expression={$_.directoryScopeInfo.Name}},
+  @{name="directoryScopeType";expression={$_.directoryScopeInfo.Type}},
+  @{name="principalName";expression={$_.PrincipalInfo.DisplayName}},
+  @{name="principalType";expression={$_.PrincipalInfo.Type}}
+
+  $Result = $Result | Select-Object -ExcludeProperty *ID
+}
+
 Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligible role (Using PIM API v3) - Not Working from Powershell in Az Cli for some reason : SP Right ?
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
@@ -10989,7 +11045,10 @@ Function Get-AzureADUserAssignedRoleFromUPN { # Slow - Only for Single User usag
 }
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
+ Param (
+  $Filter
+ )
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits$Filter" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName  
 }
 # Schema Extensions
 Function Get-AzureADExtension { # Extract all schema extension of Azure AD
