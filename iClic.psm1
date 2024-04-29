@@ -11660,6 +11660,9 @@ Function Get-AzureGraph { # Send base graph request without any requirements
 
  return $RestResult.value
 }
+Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
+ (az account get-access-token --scope https://graph.microsoft.com/.default | ConvertFrom-Json).accessToken | Get-JwtPayload | ConvertFrom-Json
+}
 # Misc
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
  Param (
