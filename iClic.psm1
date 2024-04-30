@@ -9480,6 +9480,14 @@ Function Get-AzureReservation { # Check all Azure Reservation Orders
   }
  }
 }
+Function Get-AzureApplicationGateway {
+ Get-AzureSubscriptions | ForEach-Object {
+  $SubscriptionID = $_.id
+  $SubscriptionName = $_.name
+  az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Web/certificates?api-version=2022-03-01" `
+   | ConvertFrom-Json | Select-Object  -ExpandProperty value *,@{Name="SubscriptionID";Expression={$SubscriptionID}},@{Name="SubscriptionName";Expression={$SubscriptionName}}
+  }
+}
 # Convert Methods
 Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  Param (
