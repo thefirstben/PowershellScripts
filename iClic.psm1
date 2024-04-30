@@ -9484,6 +9484,7 @@ Function Get-AzureApplicationGateway {
  Get-AzureSubscriptions | ForEach-Object {
   $SubscriptionID = $_.id
   $SubscriptionName = $_.name
+  Progress -Message "Currently processing " -Value $SubscriptionName -PrintTime
   az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Web/certificates?api-version=2022-03-01" `
    | ConvertFrom-Json | Select-Object  -ExpandProperty value *,@{Name="SubscriptionID";Expression={$SubscriptionID}},@{Name="SubscriptionName";Expression={$SubscriptionName}}
   }
