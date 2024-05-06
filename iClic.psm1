@@ -9485,9 +9485,9 @@ Function Get-AzureApplicationGateway {
   $SubscriptionID = $_.id
   $SubscriptionName = $_.name
   Progress -Message "Currently processing " -Value $SubscriptionName -PrintTime
-  az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Web/certificates?api-version=2022-03-01" `
-   | ConvertFrom-Json | Select-Object  -ExpandProperty value *,@{Name="SubscriptionID";Expression={$SubscriptionID}},@{Name="SubscriptionName";Expression={$SubscriptionName}}
-  }
+  (az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Network/applicationGateways?api-version=2023-11-01"| ConvertFrom-Json).value `
+   | Select-Object -ExcludeProperty properties *,@{Name="Listeners";Expression={($_.properties.httpListeners.properties.hostName + $_.properties.httpListeners.properties.hostNames) -join ";"}}
+ }
 }
 # Convert Methods
 Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
@@ -9644,6 +9644,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   [parameter(Mandatory = $true, ParameterSetName="GroupName")]$GroupName,
   [Switch]$Advanced, # Will add about 2 seconds per rights
   [Switch]$IncludeInherited,
+  [Switch]$HideProgress,
   [parameter(Mandatory = $false, ParameterSetName="ShowAll")][Switch]$ShowAll
  )
 
@@ -9653,7 +9654,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
  $TenantID = az account show --query '"{tenantId:tenantId}"' -o tsv
 
  # Get all subscriptions information
- Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime
+ if (! $HideProgress ) { Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime }
  $AllSubscription = Get-AzureSubscriptions
 
  if ($Advanced) { # If it's requested to convert all display names it will add initial time to the request
@@ -9715,7 +9716,9 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   $ArgumentsOfCurrentSubscription = $Arguments
   $ArgumentsOfCurrentSubscription += '--subscription' , $CurrentSubscriptionID
 
-  Progress -Message "Checking subscription : " -Value $CurrentSubscriptionName -PrintTime
+  if (! $HideProgress ) { 
+   Progress -Message "Checking subscription : " -Value $CurrentSubscriptionName -PrintTime
+  }
 
   $CurrentSubscription = az role assignment list @ArgumentsOfCurrentSubscription | ConvertFrom-Json | `
   Select-object `
@@ -9785,7 +9788,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   $GlobalStatus += $CurrentSubscription
  }
  #Print result
- ProgressClear
+ if (! $HideProgress ) { ProgressClear }
  # $GlobalStatus | Sort-Object -Unique id
  $GlobalStatus
 }
@@ -10138,6 +10141,17 @@ Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Ri
    Get-AzureADUserRBACRights -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserPrincipalName $_.appId -UserDisplayName $_.appDisplayName
   }
  }
+}
+Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Rights on a single App Registration
+ Param (
+  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
+  [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName,
+  $SubscriptionName
+ )
+ if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID }
+
+ Get-AzureADUserRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
+  @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
  Param (
