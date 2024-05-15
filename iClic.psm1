@@ -8243,6 +8243,41 @@ if ($([System.Net.ServicePointManager]::CertificatePolicy).ToString() -ne "Syste
   }
 
 }
+Function Get-Certificate { # built from here : https://gist.github.com/jstangroome/5945820 - Works on PS Core
+ Param (
+  [Parameter(Mandatory=$true)][string]$Domain,
+  [Parameter(Mandatory=$true)][Int16]$Port,
+  [Int]$Timeout = 1000
+
+ )
+ $certificate = $null
+ $TcpClient = New-Object -TypeName System.Net.Sockets.TcpClient
+ $TcpClient.ReceiveTimeout = $Timeout
+ $TcpClient.SendTimeout = $Timeout
+
+ try {
+  $TcpClient.Connect($Domain, $Port)
+  $TcpStream = $TcpClient.GetStream()
+  $Callback = { param($sendername, $cert, $chain, $errors) return $true }
+  $SslStream = New-Object -TypeName System.Net.Security.SslStream -ArgumentList @($TcpStream, $true, $Callback)
+  try {
+   $SslStream.AuthenticateAsClient($domain)
+   $certificate = $SslStream.RemoteCertificate
+  }
+  finally {
+   $SslStream.Dispose()
+  }
+ }
+ finally {
+  $TcpClient.Dispose()
+ }
+ if ($certificate) {
+  if ($certificate -isnot [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
+   $certificate = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $certificate
+  }
+ }
+ return $certificate
+}
 Function Get-Weather { # Shows weather
  Param (
   $Town = "Bordeaux"
@@ -9498,15 +9533,27 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  if ($Fast) {
   $Result = az ad user list --output json --filter "userprincipalname  eq '$UPN'" --query '[].{displayName:displayName}' -o tsv
  } else {
-  $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' --only-show-errors | ConvertFrom-Json
+  $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
  }
  if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found starting with $UPN" }
+}
+Function Get-AzureADUserFromDisplayName { # Find Azure Ad User info from part of displayname
+ Param (
+  [Parameter(Mandatory=$true)]$DisplayName,
+  [switch]$Fast
+ )
+ if ($Fast) {
+  $Result = az ad user list --output json --filter "displayName  eq '$DisplayName'" --query '[].{objectId:id}' -o tsv
+ } else {
+  $Result = az ad user list --output json --filter "startswith(displayName, '$DisplayName')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
+ }
+ if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found starting with $DisplayName" }
 }
 Function Get-AzureADUserFromMail { # Find Azure Ad User info from email
  Param (
   [Parameter(Mandatory=$true)]$Mail
  )
- $Result = az ad user list --output json --filter "mail eq '$Mail'" --query '[].{userPrincipalName:userPrincipalName,mail:mail,displayName:displayName,objectId:id}' --only-show-errors | ConvertFrom-Json
+ $Result = az ad user list --output json --filter "mail eq '$Mail'" --query '[].{userPrincipalName:userPrincipalName,mail:mail,displayName:displayName,objectId:id}' | ConvertFrom-Json
  if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found with email $Mail" }
 }
 Function Get-AzureSubscriptionNameFromID { #Retrieve name of Subscription from the ID
@@ -9845,7 +9892,7 @@ Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandato
   write-host -ForegroundColor "Green" -Object "Successfully added $roleDefinitionName permission for $principalId [$principalType] on scope $scope"
  }
 }
-Function Add-AzureADRBACRightsWithType { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
+Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
  Param (
   [parameter(Mandatory = $true, ParameterSetName="UserName")]$UserName,
   [parameter(Mandatory = $true, ParameterSetName="ID")][GUID]$Id,
@@ -10146,12 +10193,12 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
   [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName,
-  $SubscriptionName
+  [parameter(Mandatory=$true)]$SubscriptionName
  )
  if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID }
 
  Get-AzureADUserRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
-  @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup
+  @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
  Param (
@@ -10797,13 +10844,25 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission
 }
 Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST
  Param (
-  [Parameter(Mandatory=$true)]$principalId, # ID of the Service Principal to change
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleID")]$principalId, # ID of the Service Principal to change
+  [parameter(Mandatory=$true,ParameterSetName="SP_NAME")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleName")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleID")]$principalName, # Name of the Service Principal to change
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleID")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleID")]$appRoleId, # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
+  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleName")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]$appRoleName, # ID of the Role to use : Example : User.Read.All
   [Parameter(Mandatory=$true)]$resourceDisplayName, # DisplayName of the API to use : example : Microsoft Graph
   $resourceId, # (Application) ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
-  [parameter(Mandatory=$true,ParameterSetName="ID")]$appRoleId, # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
-  [parameter(Mandatory=$true,ParameterSetName="NAME")]$appRoleName, # ID of the Role to use : Example : User.Read.All
   [ValidateSet("Application","Delegated")]$PermissionType
  )
+
+ if ($principalName) {
+  $principalId = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $principalName
+ }
+
  if ((! $resourceId) -or ($appRoleName)) {
   $AppInfo = (Get-AzureServicePrincipalInfo -DisplayName $resourceDisplayName)
  }
@@ -11029,7 +11088,7 @@ Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligi
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  While ($CurrentResult.'@odata.nextLink') {
-  $NextRequest = $CurrentResult.'@odata.nextLink'
+  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
   $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  }
@@ -11079,10 +11138,11 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  # ($result | ? targetTypes -Contains "user").count
  # ($result | ? targetTypes -Contains "Group").count
  # ($result | ? targetTypes -Contains "Message").count
- $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/schemaExtensions" --header Content-Type="application/json" -o json | convertfrom-json
+ # $CurrentResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/schemaExtensions" --header Content-Type="application/json" -o json | convertfrom-json
+ $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/v1.0/schemaExtensions?$top=999"' --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  While ($CurrentResult.'@odata.nextLink') {
-  $NextRequest = $CurrentResult.'@odata.nextLink'
+  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   $CurrentResult = az rest --method GET --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
   $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  }
@@ -11289,7 +11349,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
    }
    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
   }
-  $NextRequest = $CurrentResult.'@odata.nextLink'
+  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
   $Count++
   $GlobalResult += $CurrentResult.Value | Select-Object *,
@@ -11335,7 +11395,8 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
  $ContinueRunning = $True
  While ($ContinueRunning) {
   if ($FirstRun) {
-   $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/members?$top=999&$select=userPrincipalName,displayName,mail,accountEnabled,id,onPremisesSyncEnabled,onPremisesExtensionAttributes"'
+   # $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/members?$top=999&$select=userPrincipalName,displayName,mail,accountEnabled,id,onPremisesSyncEnabled,onPremisesExtensionAttributes"'
+   $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/members?$top=999"'
    $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
    $FirstRun=$False
   } else {
@@ -11350,7 +11411,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   }
   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-  $CurrentResult.Value | Sort-Object displayName | Select-Object userPrincipalName, displayName, mail, accountEnabled, id, onPremisesSyncEnabled, onPremisesExtensionAttributes
+  $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$Group}},userPrincipalName, displayName, mail, accountEnabled, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
  }
 }
 Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
