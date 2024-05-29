@@ -10920,7 +10920,7 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
  )
  az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
 }
-Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration)
+Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration) - Used to get SAML certificate Expiration
  Param (
   $Expiration = 30,
   [switch]$PrintOnly,
