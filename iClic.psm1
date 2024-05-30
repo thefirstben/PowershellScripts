@@ -8349,7 +8349,8 @@ Function New-Password { # Generate random password.  Will not start with : @ | a
  Param (
   [int]$Length=16,
   [ValidateSet("ASCII","ASCII-Limited","AlphaNum")]$Type="ASCII",
-  [Switch]$Clip
+  [Switch]$Clip,
+  [Switch]$ScriptCompatible
  )
 
  Switch ($Type) {
@@ -8358,14 +8359,37 @@ Function New-Password { # Generate random password.  Will not start with : @ | a
   AlphaNum {[string[]]$sourcedata=For ($a=65;$a -le 90;$a++) {$sourcedata+=,[char][byte]$a} ; For ($a=97;$a -le 122;$a++) {$sourcedata+=,[char][byte]$a} ;For ($a=48;$a -le 57;$a++) {$sourcedata+=,[char][byte]$a}} #AlphaNum
  }
 
+ #[char][byte]32 =  
+ #[char][byte]34 = "
+ #[char][byte]37 = %
+ #[char][byte]39 = '
+ #[char][byte]44 = ,
+ #[char][byte]58 = :
+ #[char][byte]59 = ;
+ #[char][byte]60 = <
+ #[char][byte]61 = =
+ #[char][byte]62 = >
+ #[char][byte]63 = ?
+ #[char][byte]64 = @
+ #[char][byte]94 = ^
+ #[char][byte]96 = `
+ #[char][byte]126 = ~
+
+ $Hashlist = "$([char][byte]39)$([char][byte]32)$([char][byte]37)$([char][byte]94)$([char][byte]44)$([char][byte]60)$([char][byte]62)$([char][byte]63)$([char][byte]34)$([char][byte]126)$([char][byte]96)"
+ if ($ScriptCompatible) {
+  $Hashlist = $Hashlist + $([char][byte]64) + $([char][byte]61) + $([char][byte]58) + $([char][byte]59)
+ }
+ 
+ $HashlistFirstCharacter = $HashlistFirst + $([char][byte]64)
+
  For ($loop=1; $loop -le $length; $loop++) {
   $Temp = $($sourcedata | GET-RANDOM)
   if ($loop -eq 1) {
-   while ("$([char][byte]39)$([char][byte]32)$([char][byte]37)$([char][byte]94)$([char][byte]44)$([char][byte]60)$([char][byte]62)$([char][byte]34)$([char][byte]126)$([char][byte]96)$([char][byte]64)".Contains($Temp)) {
+   while ("$HashlistFirstCharacter".Contains($Temp)) {
     $Temp = $($sourcedata | GET-RANDOM)
    }
   } else {
-   while ("$([char][byte]39)$([char][byte]32)$([char][byte]37)$([char][byte]94)$([char][byte]44)$([char][byte]60)$([char][byte]62)$([char][byte]34)$([char][byte]126)$([char][byte]96)".Contains($Temp)) {
+   while ("$Hashlist".Contains($Temp)) {
     $Temp = $($sourcedata | GET-RANDOM)
    }
   }
