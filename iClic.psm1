@@ -9552,6 +9552,7 @@ Function Get-AzureApplicationGateway {
 Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  Param (
   [Parameter(Mandatory=$true)]$UPN,
+  [switch]$HideError,
   [switch]$Fast
  )
  if ($Fast) {
@@ -9559,7 +9560,11 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  } else {
   $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
  }
- if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found starting with $UPN" }
+ if ($result) { 
+  return $Result
+ } else { 
+  if (! $HideError ) {write-host -ForegroundColor Red "No user found starting with $UPN" }
+ }
 }
 Function Get-AzureADUserFromDisplayName { # Find Azure Ad User info from part of displayname
  Param (
@@ -10064,7 +10069,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
   az ad app permission admin-consent --id $App_AppID
 
   #Check Rights :
-  Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $App_AppID -AppRegistrationName $AppRegistrationName
+  Get-AzureAppRegistrationPermissions -AppRegistrationID $App_AppID -Readable
  }
 }
 # App Registration [Only]
@@ -10232,8 +10237,6 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
   [switch]$HideGUID
  )
 
- 
-
  if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationID).displayName}
  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
  $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
@@ -10252,8 +10255,8 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
    $Rules_List
   }
  }
- If ($Readable) {
-  $ReadablePermissionList = Get-AzureAppRegistrationAPIPermissionsSingle -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
+ If ($Readable -and $Result.Rules) {
+  $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules
   if ($HideGUID) {
    $ReadablePermissionList | Select-Object -ExcludeProperty *ID
   } else {
@@ -10315,19 +10318,6 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
  # Convert GUID To READABLE (Takes a couple seconds)
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
  Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
-}
-Function Get-AzureAppRegistrationAPIPermissionsSingle { # Check permission for a single App registration (Do not use for multiple app registration - Use Get-AzureAppRegistrationAPIPermissions instead)
- Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
- )
- if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationID).displayName}
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
-
- $AppRegistrationPermissions = Get-AzureAppRegistrationPermissions -AppRegistrationID $AppRegistrationID -AppRegistrationName $AppRegistrationName
- if ($AppRegistrationPermissions) {
-  Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AppRegistrationPermissions
- }
 }
 Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to be fully working) - Remove Automated Consent, need to manually consent when all permissions are added
  Param (
@@ -10552,7 +10542,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
   $Result | Select-Object ApplicationDisplayName,ApplicationID,displayName,secretText,startDateTime,endDateTime
  }
 }
-Function Set-AzureAppRegistrationConsent {
+Function Set-AzureAppRegistrationConsent { # Consent on permission (Warning : It consents all permissions on an App, you cannot select what permission to consent, so check before)
  Param (
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
@@ -10573,7 +10563,7 @@ Param (
  if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty ID }
  $Result
 }
-FunctioN Get-AzureAppRegistrationAPPRoles {
+FunctioN Get-AzureAppRegistrationAPPRoles { # List App Roles defined on an App Registration
  Param (
  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
