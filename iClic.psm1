@@ -7219,7 +7219,7 @@ Function Install-MSIRemote { #Copy and Install a MSI on a remote computer
   Remove-PSSession $ServerSessionID
  }
 }
-Function Get-GITHUB_App_LatestVersion {
+Function Get-GITHUB_App_LatestVersion { # Find latest version on Github if using standardized tree
  Param (
   [Parameter(Mandatory=$true)]$Developper,
   [Parameter(Mandatory=$true)]$ApplicationName,
@@ -7548,6 +7548,26 @@ Function Install-Filezilla { # Download and install latest Filezilla [ZIP]
  Move-Item $InstallDestination\$ProductName-*\* $InstallDestination\ -Force
  Remove-Item $InstallDestination\$ProductName-*\
  Add-ToPath $InstallDestination
+}
+Function Install-OpenSSL { # Download and install lastest OpenSSL (from firedaemon)
+ Param (
+  $InstallDestination="C:\Apps\OpenSSL"
+ )
+ $RootURL = "https://kb.firedaemon.com/support/solutions/articles/4000121705"
+ $ProductName = "OpenSSL"
+
+ #Must add intermediate link to follow link
+ $DownloadLinks = ((Invoke-WebRequest $RootURL).links  | Where-Object { ($_ -like  "*$ProductName-*.zip*")}).href
+ # Get latest version : 
+ $LatestVersionNumber = (($DownloadLinks | ForEach-Object { ($_ -split "-")[-1] }) -replace ".zip","" | Sort-Object)[-1]
+ $DownloadLink = $DownloadLinks | Where-Object { $_ -like "*$LatestVersionNumber*" }
+ Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
+ New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
+ Expand-Archive -Path "$ProductName.zip" -DestinationPath $InstallDestination -Force
+ Remove-Item "$ProductName.zip"
+ Move-Item $InstallDestination\$ProductName-*\* $InstallDestination\ -Force
+ Remove-Item $InstallDestination\$ProductName-*\
+ Add-ToPath "$InstallDestination\x64\bin"
 }
 
 # Install APP (Admin)
@@ -8940,6 +8960,21 @@ Function Get-UnapprovedProtocolAndCipher { # Remotely checks unsecure Ciphers [R
   $Port=443
  )
  nmap --script ssl-enum-ciphers --unprivileged -p $Port $Computer | Select-String -NotMatch " - A","Starting Nmap","Host is up","NULL","compressors"
+}
+Function Add-PasswordToPFX { # Add a password to a PFX File [Requires OpenSSL]
+ Param (
+  [Parameter(Mandatory=$true)]$InputFile
+ )
+ if ( ! (Assert-IsCommandAvailable OpenSSL) ) {return}
+ $TempFile = New-TemporaryFile
+ $OutputFile = $InputFile -replace ".pfx","_withPassword.pfx"
+ # Export PFX to PEM without a password
+ openssl pkcs12 -in $InputFile -out $TempFile -nodes -password "pass:"
+ # Recreted new PFX with randomly generated password
+ $Password = new-password
+ openssl pkcs12 -export -in $TempFile -out $OutputFile -password "pass:$Password"
+ Remove-Item $TempFile
+ [pscustomobject]@{Location=$OutputFile;Password=$Password}
 }
 
 # Video / Audio Encoding
@@ -11724,7 +11759,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
  #Default Values for Login & Graph
  $LoginURL = "https://login.microsoftonline.com/$tenantId/oauth2/token"
  
- Write-Host "Requesting API Token from Graph using $ApplicationID"
+ Write-Host "Requesting API Token from $Resource using $ApplicationID" -ForegroundColor Cyan
 
  $Body = @{
   grant_type    = 'client_credentials'
@@ -11732,10 +11767,24 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
   client_secret = $ClientKey
   resource      = $Resource
  }
- # Return Token
- $token = Invoke-RestMethod -Method POST -Uri $LoginURL -Body $Body
- return $token
+ $tokenRequest = Invoke-WebRequest -Method Post -Uri $LoginURL -ContentType "application/x-www-form-urlencoded" -Body $body -UseBasicParsing
+ # Unpack Access Token
+ $token = ($tokenRequest.Content | ConvertFrom-Json)
+ $ExpirationDate = Format-date (Get-Date -UnixTimeSeconds $token.expires_on)
+ write-host "API Token will expire at : $ExpirationDate"  -ForegroundColor Cyan
+ if ($token) {
+  return $token
+ } else {
+  return $false
+ }
 }
+Function Assert-IsTokenLifetimeValid {
+ Param (
+  [parameter(Mandatory = $True)]$Token
+ )
+ return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
+}
+
 Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
   [parameter(Mandatory = $True)]$Token,
