@@ -9413,18 +9413,56 @@ Function Get-AzureStorageAccounts { # Get all Azure Storage Accounts for all Sub
   $CurrentSubscriptionResources = az storage account list -o json | ConvertFrom-Json
   $CurrentSubscriptionResources | ForEach-Object {
    Progress -Message "Checking Storage Account of subscription : $subscriptionName : " -Value $_.Name -PrintTime
-   $PublicMode = if (($_.publicNetworkAccess -eq "Enabled") -or ($_.networkRuleSet.defaultAction -eq "Allow")) {
-    "Public"
-   } elseif ($_.publicNetworkAccess -eq "Disabled") {
-    "Private"
+   # $PublicMode = if (($_.publicNetworkAccess -eq "Enabled") -or ($_.networkRuleSet.defaultAction -eq "Allow")) {
+   #  "Public"
+   # } elseif ($_.publicNetworkAccess -eq "Disabled") {
+   #  "Private"
+   # } else {
+   #  "Public Filtered"
+   # }
+
+   $Bypass = $_.networkRuleSet.bypass
+   $PublicAccess = $_.publicNetworkAccess
+   $NetworkACLsDefaultAction = $_.networkRuleSet.defaultAction
+   if ($_.networkRuleSet.ipRules.count -eq 0) { $OpenIPs = $False } else { $OpenIPs = $True }
+   if ($_.networkRuleSet.virtualNetworkRules.count -eq 0) { $PublicVNET = $False } else { $PublicVNET = $True }
+   if ($_.privateEndpointConnections.count -eq 0) { $PrivateEndpoint = $False } else { $PrivateEndpoint = $True }
+   if ($Bypass) {$BypassText = " with Bypass ($Bypass)"} else {$BypassText = ""}
+   # Public Access is usually empty, when empty it seems the default value is Enabled
+   if (($PublicAccess -ne "Disabled") -and ($NetworkACLsDefaultAction -eq "Deny")) {$PublicFiltered = $True} else { $PublicFiltered = $False }
+   if (($NetworkACLsDefaultAction -eq "Allow") -or (($PublicAccess -ne "Disabled") -and (! $NetworkACLsDefaultAction))) {$Public = $True} else { $Public = $False }
+   if (($PublicAccess -eq "Disabled")) {$Private = $True} else { $Private = $True }
+
+   $PublicMode = `
+   if ($Public) {
+    "Allow public access from all networks"
+   } elseif ($PublicFiltered -and $OpenIPs -and $PublicVNET -and $PrivateEndpoint ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs, VNETs and Private Endpoint$BypassText"
+   } elseif ($PublicFiltered -and $OpenIPs -and $PublicVNET ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs and VNETs$BypassText"
+   } elseif ($PublicFiltered -and $PublicVNET -and $PrivateEndpoint ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public VNETs and Private Endpoint$BypassText"
+   } elseif ($PublicFiltered -and $PublicVNET ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public VNETs$BypassText"
+   } elseif ($PublicFiltered -and $OpenIPs -and $PrivateEndpoint ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs and Private Endpoint$BypassText"
+   } elseif ($PublicFiltered -and $OpenIPs ) {
+    "Allow public access from specific virtual networks and IP addresses : Open public IPs$BypassText"
+   } elseif ($PublicFiltered) {
+    "Allow public access from specific virtual networks and IP addresses$BypassText"
+   } elseif ($Private -and $Bypass -and (!$PrivateEndpoint)) {
+    "$Bypass only"
+   } elseif ($Private -and $PrivateEndpoint) {
+    "Private$BypassText"
    } else {
-    "Public Filtered"
+    "Unmanaged"
    }
+
    $_ | Add-Member -NotePropertyName AD_Authentication -NotePropertyValue $_.azureFilesIdentityBasedAuthentication.directoryServiceOptions
    $_ | Add-Member -NotePropertyName requireInfrastructureEncryption -NotePropertyValue $_.encryption.requireInfrastructureEncryption
    # $_ | Add-Member -NotePropertyName Network_Public_Mode -NotePropertyValue $_.publicNetworkAccess
    $_ | Add-Member -NotePropertyName Network_Mode -NotePropertyValue $PublicMode # Check if it's enough
-   $_ | Add-Member -NotePropertyName Network_Public_Blob_Mode -NotePropertyValue $_.allowBlobPublicAccess
+   $_ | Add-Member -NotePropertyName Network_Public_Blob_Mode -NotePropertyValue $_.allowBlobPublicAccess # For Alert : Storage account public access should be disallowed
    $_ | Add-Member -NotePropertyName Network_Bypass -NotePropertyValue $_.networkRuleSet.bypass
    $_ | Add-Member -NotePropertyName Network_Open_IP -NotePropertyValue $_.networkRuleSet.ipRules.count
    $_ | Add-Member -NotePropertyName Network_Open_VNET -NotePropertyValue $_.networkRuleSet.virtualNetworkRules.count
