@@ -7556,11 +7556,9 @@ Function Install-OpenSSL { # Download and install lastest OpenSSL (from firedaem
  $RootURL = "https://kb.firedaemon.com/support/solutions/articles/4000121705"
  $ProductName = "OpenSSL"
 
- $Binary = "openssl"
-
  # Check current version
- if (Assert-IsCommandAvailable $Binary -NoError) {
-  $CurrentVersion = Invoke-Expression -Command "$Binary version" -ErrorAction SilentlyContinue
+ if (Assert-IsCommandAvailable $ProductName -NoError) {
+  $CurrentVersion = Invoke-Expression -Command "$ProductName version" -ErrorAction SilentlyContinue
   if ($CurrentVersion) {
    Write-Colored -NonColoredText "Current installed version : " -ColoredText $CurrentVersion -PrintDate
   }
@@ -7584,8 +7582,8 @@ Function Install-OpenSSL { # Download and install lastest OpenSSL (from firedaem
  Get-FileFromURL $DownloadLink -OutputFile "$ProductName.zip"
  New-Item -type directory $InstallDestination -force -ErrorAction Stop | Out-Null
  Expand-Archive -Path "$ProductName.zip" -DestinationPath $InstallDestination -Force
+ Copy-Item $InstallDestination\$ProductName-*\* $InstallDestination\ -Recurse -Force
  Remove-Item "$ProductName.zip"
- Copy-Item $InstallDestination\$ProductName-*\* $InstallDestination\ -Force
  Remove-Item "$InstallDestination\$ProductName-*\" -Recurse
  Add-ToPath "$InstallDestination\x64\bin"
 }
@@ -11249,7 +11247,6 @@ Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles a
 
   $Result = $Result | Select-Object -ExcludeProperty *ID
 }
-
 Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligible role (Using PIM API v3) - Not Working from Powershell in Az Cli for some reason : SP Right ?
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
