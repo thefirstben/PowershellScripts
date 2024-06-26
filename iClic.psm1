@@ -11245,7 +11245,10 @@ Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles a
   @{name="principalName";expression={$_.PrincipalInfo.DisplayName}},
   @{name="principalType";expression={$_.PrincipalInfo.Type}}
 
-  $Result = $Result | Select-Object -ExcludeProperty *ID
+  if ($HideGUID) {
+   $Result = $Result | Select-Object -ExcludeProperty *ID
+  }
+  $Result
 }
 Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligible role (Using PIM API v3) - Not Working from Powershell in Az Cli for some reason : SP Right ?
  $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
@@ -11288,6 +11291,105 @@ Function Get-AzureADUserAssignedRoleFromUPN { # Slow - Only for Single User usag
  )
  Convert-AzureADRoleAssignements (Get-AzureADUserAssignedRole -UserObjectID (Get-AzureADUserInfo $UserUPN).ID)
 }
+
+# NEW
+Function Get-AzureRoleDefinitions { # Get all data but requires Service Principal with proper rights to get the values
+ Param (
+  [parameter(Mandatory = $true)]$Token
+ )
+
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+  write-host -foregroundcolord "Red" "Token is invalid, provide a valid token"
+  return
+ }
+  
+ $BearerToken = $AzureGraphAPIToken.access_token
+
+ $Headers = @{
+  'Content-Type'  = "application\json"
+  'Authorization' = "Bearer $BearerToken"
+ }
+
+ $CMDParams = @{
+   "URI"         = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions"
+   "Headers"     = $Headers
+   "Method"      = "GET"
+   "ContentType" = 'application/json'
+   "Body" = (@{
+   }) | ConvertTo-JSON -Depth 6
+  }
+  $Result = Invoke-RestMethod @CMDParams 
+  $Result.Value | select-object id, displayName,description,templateId,isBuiltIn,isEnabled
+}
+Function Add-AzureRole {
+ Param (
+  [parameter(Mandatory = $true)]$Token,
+  [Parameter(Mandatory=$true,ParameterSetName="ID")]$GroupID,
+  [Parameter(Mandatory=$true,ParameterSetName="ID")]$RoleTemplateID,
+  [Parameter(Mandatory=$true,ParameterSetName="ID")]$DirectoryScope,
+  [Parameter(Mandatory=$true,ParameterSetName="Name")]$GroupName,
+  [Parameter(Mandatory=$true,ParameterSetName="Name")]$RoleName,
+  [Parameter(Mandatory=$true,ParameterSetName="Name")]$AdminUnitName
+  
+ )
+
+ try {
+
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+  
+ $BearerToken = $Token.access_token
+
+ $Headers = @{
+  'Content-Type'  = "application\json"
+  'Authorization' = "Bearer $BearerToken"
+ }
+
+ if ($GroupName) {
+  # Get Group ID
+  $GroupIDRequest = Invoke-RestMethod -Method GET -headers $Headers -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'"
+  $GroupID = $GroupIDRequest.Value.ID
+
+  # Get Role ID
+  $RoleTemplateIDRequest = (Invoke-RestMethod -Method GET -headers $Headers -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?`$filter=displayName eq '$RoleName'")
+  $RoleTemplateID = $RoleTemplateIDRequest.Value.templateId
+ }
+ 
+ if (($AdminUnitName -eq "/") -or ($DirectoryScope -eq "/") ) {
+  $DirectoryScope = '/'
+ } else {
+  if ($AdminUnitName) {
+   # Get Scope
+   $DirectoryScopeRequest = Invoke-RestMethod -Method GET -headers $Headers -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=displayName eq '$AdminUnitName'"
+   $DirectoryScope = '/administrativeUnits/' +  $DirectoryScopeRequest.value.id
+  }
+ }
+ 
+ if (! $GroupID) { throw "Group ID not found"}
+ if (! $DirectoryScope) { throw "Incorrect DirectoryScope"}
+ if (! $RoleTemplateID) { throw "Role not found"} 
+ 
+ $CMDParams = @{
+   "URI"         = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
+   "Headers"     = $Headers
+   "Method"      = "POST"
+   "ContentType" = 'application/json'
+   "Body" = (@{
+    'odata.type' = "#microsoft.graph.unifiedRoleAssignment"
+    "principalId" = "$GroupID"
+    "roleDefinitionId" =  "$RoleTemplateID"
+    "directoryScopeId" = "$DirectoryScope"
+   }) | ConvertTo-JSON -Depth 6
+  }
+  # $CMDParams ;  return
+  $Result = Invoke-RestMethod @CMDParams 
+  $Result.Value | select-object id, displayName,description,templateId,isBuiltIn,isEnabled
+ } catch {
+  Write-host -ForegroundColor Red "Error Adding Role ($($Error[0]))"
+ }
+}
+
+
+
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
  Param (
@@ -11926,6 +12028,13 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri $url
 
  return $RestResult.value
+}
+Function Convert-AccessToken {
+ Param (
+  $Access_Token
+ )
+ $Access_Token.access_token | Get-JwtPayload | ConvertFrom-Json
+
 }
 Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
  (az account get-access-token --scope https://graph.microsoft.com/.default | ConvertFrom-Json).accessToken | Get-JwtPayload | ConvertFrom-Json
