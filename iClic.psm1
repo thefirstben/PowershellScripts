@@ -8446,7 +8446,7 @@ Function Optimize-Teams { # Reset Teams entirely
  # $TeamsBinaryPath="$env:LOCALAPPDATA\Microsoft\Teams"
  Write-Host "Stopping Teams Process" -ForegroundColor Cyan
  try {
-  $TeamsProcess=Get-Process -ProcessName Teams -ErrorAction SilentlyContinue
+  $TeamsProcess=Get-Process -ProcessName ms-teams -ErrorAction SilentlyContinue
   if ($TeamsProcess) {
    Stop-Process -Force -ErrorAction Stop $TeamsProcess
    Start-Sleep 3
@@ -10036,8 +10036,10 @@ Function Remove-AzureADRBACRights { # Remove rights to a resource using UserName
   [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$UserName,
   [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Role,
   [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Scope,
-  [parameter(Mandatory = $true, ParameterSetName="ID")]$AssignmentID
+  [parameter(Mandatory = $true, ParameterSetName="ID")]$AssignmentID,
+  [switch]$ShowProgress
  )
+  if ($ShowProgress) {Progress -Message "Removing permission from " -Value $AssignmentID}
   if (! $AssignmentID) {
    az role assignment delete --assignee $UserName --role $Role --scope $Scope
   } else {
@@ -10241,20 +10243,56 @@ Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
-  [parameter(Mandatory=$true,ParameterSetName="ObjectID")]$AppRegistrationObjectID,
-  [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationObjectID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+  [switch]$SearchAppInfo,
+  $AccessToken
  )
- if ($AppRegistrationID) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).ID }
- if ($AppRegistrationName) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).ID }
+ if ($AppRegistrationID -and (! $AppRegistrationObjectID)) { 
+  $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID
+ }
+ if ($AppRegistrationName -and (! $AppRegistrationObjectID)) {
+  $AppInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName
+ }
 
- (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value | Select-Object id,userPrincipalName,displayName
- # az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
+ if ((! $AppInfo.ID) -and (! $AppRegistrationObjectID)) {
+  Write-host -ForegroundColor Red -Object "Application not found with AppID : $AppRegistrationID, Object ID : $AppRegistrationObjectID and AppName : $AppRegistrationName"
+  return
+ }
+
+ if (! $AppRegistrationObjectID) {
+  $AppRegistrationObjectID = $AppInfo.ID
+ }
+
+ if (($SearchAppInfo -and (! $AppInfo)) -and ((! $AppRegistrationID) -or (! $AppRegistrationName)) ) {
+  $AppInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID
+ }
+
+ if (! $AppRegistrationID) { $AppRegistrationID = $AppInfo.appId}
+ if (! $AppRegistrationName) { $AppRegistrationName = $AppInfo.displayName}
+
+ if ($AccessToken) {
+  $Result = Get-AzureGraph -Token $AccessToken -GraphRequest /applications/$AppRegistrationObjectID/owners
+ } else {
+  $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value 
+  # az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
+ }
+ $Result | Select-Object @{Name="AppObjectID";Expression={$AppRegistrationObjectID}},
+ @{Name="AppID";Expression={$AppRegistrationID}},
+ @{Name="AppName";Expression={$AppRegistrationName}},id,userPrincipalName,displayName
 }
 Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Registration
+ Param (
+  $AccessToken
+ )
  Get-AzureAppRegistration -Fast | ForEach-Object {
   Progress -Message "Checking current App : " -Value $_.DisplayName
-  Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID
+  if ($AccessToken) {
+   Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName -AccessToken $AccessToken
+  } else {
+   Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName
+  }
  } | Export-Csv "C:\Temp\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  ProgressClear
 }
@@ -10294,10 +10332,17 @@ Function Remove-AzureAppRegistrationOwner { # remove an owner to an App Registra
 }
 Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Registration
  Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationID
+  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
+  [parameter(Mandatory=$true,ParameterSetName="ObjectID")]$AppRegistrationObjectID,
+  [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName
  )
- Get-AzureAppRegistrationOwner -AppRegistrationID $AppRegistrationID | ForEach-Object {
-  az ad app owner remove --id $AppRegistrationID --owner-object-id $_.id
+
+ if ($AppRegistrationID) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).ID }
+ if ($AppRegistrationName) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).ID }
+
+ Get-AzureAppRegistrationOwner -AppRegistrationObjectID $AppRegistrationObjectID | ForEach-Object {
+  # az ad app owner remove --id $AppRegistrationID --owner-object-id $_.id
+  az ad app owner remove --id $AppRegistrationObjectID --owner-object-id $_.id
  }
 }
 Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Rights of ONE or Multiple Subscriptions
@@ -10605,7 +10650,7 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
  }
 
 }
-Function Get-AzureAppRegistrationSecretCount {
+Function Get-AzureAppRegistrationSecretCount { # Get Azure App Registration Key count for app registration (Secret ; Certificate ; Federated Credential)
  Param (
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
@@ -10616,6 +10661,15 @@ Function Get-AzureAppRegistrationSecretCount {
  $FederatedCredential = ($FederatedCredentialJSON | ConvertFrom-Json).value
  $KeyCount = $AppInfo.keyCredentials.Count + $AppInfo.passwordCredentials.Count + $FederatedCredential.Count
  Return $KeyCount
+}
+Function Get-AzureAppRegistrationPassword { # Get Azure App Registration Secret
+ Param (
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
+ )
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+ $AppInfo = (az ad app show --id $AppRegistrationID --query '{passwordCredentials:passwordCredentials}'  | ConvertFrom-Json)
+ Return $AppInfo.passwordCredentials
 }
 Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
  Param (
@@ -10655,6 +10709,26 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
  } else {
   $Result | Select-Object ApplicationDisplayName,ApplicationID,displayName,secretText,startDateTime,endDateTime
  }
+}
+Function Remove-AzureAppRegistrationPassword { # Remove Secret to App (uses AZ CLI)
+ Param (
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+  [parameter(Mandatory=$true)]$KeyID
+ )
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+
+ # Parameters
+ $AppInfo = (az ad app show --id $AppRegistrationID -o json | convertfrom-json)
+ $AppObjectId = $AppInfo.ID
+
+ $body = '"{\"keyId\": \"'+$KeyID+'\"}"'
+
+ $ResultJson = az rest --method POST --uri "https://graph.microsoft.com/v1.0/applications/$AppObjectId/removePassword" `
+ --headers "Content-Type=application/json" `
+ --body $body
+
+ $ResultJson | ConvertFrom-Json
 }
 Function Set-AzureAppRegistrationConsent { # Consent on permission (Warning : It consents all permissions on an App, you cannot select what permission to consent, so check before)
  Param (
@@ -10785,7 +10859,8 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
  Param (
   [parameter(Mandatory=$true,ParameterSetName="UPN")][String]$OwnerUPN,
   [parameter(Mandatory=$true,ParameterSetName="ObjectID")][String]$OwnerObjectID,
-  [Parameter(Mandatory = $true,ParameterSetName = 'UPN')][Parameter(Mandatory = $true,ParameterSetName = 'ObjectID')]$ServicePrincipalID  #Owner or Object ID is required, both param cannot be set, UPN will be slower
+  [Parameter(Mandatory = $true,ParameterSetName = 'UPN')]
+  [Parameter(Mandatory = $true,ParameterSetName = 'ObjectID')]$ServicePrincipalID  #Owner or Object ID is required, both param cannot be set, UPN will be slower
  )
 
  if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).ID } else { $UserObjectID = $OwnerObjectID }
@@ -11122,6 +11197,25 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  } else {
   $Result
  }
+}
+Function Add-AzureServicePrincipalRBACPermission {
+ Param (
+  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]
+  [parameter(Mandatory = $false,ParameterSetName = "ServicePrincipalName")]$ServicePrincipalName,
+  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]
+  [Parameter(Mandatory = $false,ParameterSetName = 'ServicePrincipalID')]$ServicePrincipalID,
+  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]$SubscriptionName,
+  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]$SubscriptionID,
+  [Parameter(Mandatory = $true)]$ResourceGroupName,
+  [Parameter(Mandatory = $true)]$Permission
+ )
+ if (! $SubscriptionID ) { $SubscriptionID = $((Get-AzureSubscriptions -Name $SubscriptionName).id) } 
+ if (! $SubscriptionID ) { write-host -ForegroundColor Red "Subscription $SubscriptionName not found" ; Return}
+
+ if (! $ServicePrincipalID) { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName }
+ if (! $ServicePrincipalID ) { write-host -ForegroundColor Red "Service Principal $ServicePrincipalName not found" ; Return}
+
+ Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID/resourceGroups/$ResourceGroupName"
 }
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph - Does not work with custom roles
@@ -11676,7 +11770,8 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   }
   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-  $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$Group}},userPrincipalName, displayName, mail, accountEnabled, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
+  $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$Group}},userPrincipalName, displayName, mail,
+   accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
  }
 }
 Function Get-AzureADGroupIDFromName {
@@ -11787,7 +11882,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   While ($ContinueRunning) {
    Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
    if ($FirstRun) {
-    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses"' -o json  | ConvertFrom-Json
+    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime"' -o json  | ConvertFrom-Json
     $FirstRun=$False
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
@@ -12015,6 +12110,9 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   
  )
 
+ try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+
  # Set Header
  $header = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
@@ -12028,6 +12126,9 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri $url
 
  return $RestResult.value
+ } catch {
+  Write-host -ForegroundColor Red "Error during Azure Graph Request $GraphRequest ($($Error[0]))"
+ }
 }
 Function Convert-AccessToken {
  Param (
