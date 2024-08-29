@@ -10192,7 +10192,8 @@ Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA
   [Switch]$ShowOwners,
   [Switch]$Fast,
   $NameFilter,
-  $URLFilter
+  $URLFilter,
+  [switch]$Verbose
  )
 
  $CmdLine = '"https://graph.microsoft.com/beta/applications?$top=999'
@@ -10212,7 +10213,7 @@ Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA
  $ContinueRunning = $True
  $FirstRun=$True
  While ($ContinueRunning -eq $True) {
-  Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
+  if ($Verbose) { Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime }
   if ($FirstRun) {
    $CurrentResult = az rest --method get --uri $CmdLine --header Content-Type="application/json" -o json | convertfrom-json
    $FirstRun=$False
@@ -10232,13 +10233,23 @@ Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA
   $GlobalResult += $CurrentResult.Value
  }
 
- $Result = $GlobalResult | Select-Object *,@{Name="URLs";Expression={($_.publicClient.redirectUris -join ",") + ($_.sap.redirectUris -join ",") + ($_.web.redirectUris -join ",")}}
+ $Result = $GlobalResult | Sort-Object displayName | Select-Object *,@{Name="URLs";Expression={($_.publicClient.redirectUris -join ",") + ($_.sap.redirectUris -join ",") + ($_.web.redirectUris -join ",")}}
+
+ # Convert Tag to proper format :
+ $Result = $Result | Select-Object -ExcludeProperty Tags *,@{Name="Tags";Expression={
+  $TagList = [PSCustomObject]@{}
+  $_.Tags | ForEach-Object {
+    $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1]
+   }
+   $TagList
+ }}
+
  if ($URLFilter -and (! $Fast)) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
  if ($NameFilter) { $Result = $Result | Where-Object displayName -like "*$NameFilter*" }
  if ($ShowOwners) { $Result = $Result | Select-Object *,@{Name="Owner";Expression={ 
   Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ; Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID }} 
  }
- ProgressClear
+ if ($Verbose) { ProgressClear }
  $Result
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
@@ -11741,32 +11752,43 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
  }
 }
-Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - Before beta it did not list Service principals | When using GUID, it uses Graph : More info and faster, without graph the GUID is not available
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - Before beta it did not list Service principals
  Param (
-  [Parameter(Mandatory)]$Group
+  [Parameter(Mandatory)]$Group,
+  [Switch]$Recurse,
+  [Switch]$RecurseHideGroups # Using recursive still shows groups by default, but using this switch they will be hidden
  )
  if (Assert-IsGUID $Group) {
   $GroupGUID = $Group
  } else {
   $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
  }
+
+ if ($Recurse) {
+  $SearchType = "transitiveMembers"
+ } else {
+  $SearchType = "members"
+ }
+
  $FirstRun = $True
  $ContinueRunning = $True
- While ($ContinueRunning) {
+ While ($ContinueRunning) { # Run until there are results
   if ($FirstRun) {
-   # $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/members?$top=999&$select=userPrincipalName,displayName,mail,accountEnabled,id,onPremisesSyncEnabled,onPremisesExtensionAttributes"'
-   $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/members?$top=999"'
+   $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
    $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
    $FirstRun=$False
   } else {
    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } # Add error management for API limitation of Azure
    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
     Start-Sleep 10
     Continue
    }
    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+  }
+  if ($RecurseHideGroups) {
+   $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group'
   }
   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
@@ -11882,7 +11904,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   While ($ContinueRunning) {
    Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
    if ($FirstRun) {
-    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime"' -o json  | ConvertFrom-Json
+    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"' -o json  | ConvertFrom-Json
     $FirstRun=$False
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
