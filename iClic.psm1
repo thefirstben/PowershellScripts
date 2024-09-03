@@ -11655,6 +11655,31 @@ Function Get-ADOPermissions_Groups { # Project Level Permission Only
    @{Name="AADGroupCount";Expression={($GroupList | Where-Object origin -eq "aad").Count}}
  }
 }
+Function Get-ADOProjectMembers {
+ Param (
+  [Parameter(Mandatory)]$ProjectName,
+  [Switch]$ShowAll
+ )
+ $Result = (az devops security group list --project $ProjectName | convertfrom-json).graphGroups  | Sort-Object displayName
+ if ($ShowAll) {
+  $Result
+ } else {
+  $Result | Select-Object displayName,principalName,origin,subjectKind,descriptor
+ }
+}
+Function Get-ADOGroupMembers {
+ Param (
+  [Parameter(Mandatory)]$GroupDescriptor,
+  [Switch]$ShowAll
+ )
+ # az devops security group membership list --id $GroupDescriptor --relationship members
+ $Result = (az devops security group membership list --id $GroupDescriptor --relationship members | ConvertFrom-Json -AsHashtable).values | ConvertTo-Json | convertfrom-json | Sort-Object displayName
+ if ($ShowAll) {
+  $Result
+ } else {
+  $Result | Select-Object displayName,principalName,origin,subjectKind,descriptor
+ }
+}
 Function Get-ADO_AuthenticationHeader { # Convert Azure DevOps PAT Token to usable Header Object
  Param (
   [Parameter(Mandatory)]$PersonalAccessToken
@@ -11961,13 +11986,13 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
   $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
  } else {
-  $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity"
+  $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
   $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
   $Result = $RestResult | Select-Object `
   id,onPremisesImmutableId,displayName,userPrincipalName,accountEnabled,createdDateTime,
   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
   @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
-  @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}}
+  @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},lastPasswordChangeDateTime
  }
  if ($ShowManager) {
   $Manager = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json `
