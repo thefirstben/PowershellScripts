@@ -11658,13 +11658,17 @@ Function Get-ADOPermissions_Groups { # Project Level Permission Only
 Function Get-ADOProjectMembers {
  Param (
   [Parameter(Mandatory)]$ProjectName,
+  $Filter,
   [Switch]$ShowAll
  )
  $Result = (az devops security group list --project $ProjectName | convertfrom-json).graphGroups  | Sort-Object displayName
+ if ($Filter) {
+  $Result = $Result | Where-Object displayname -like "$Filter"
+ }
  if ($ShowAll) {
   $Result
  } else {
-  $Result | Select-Object displayName,principalName,origin,subjectKind,descriptor
+  $Result | Select-Object displayName,principalName,origin,subjectKind,originId,descriptor
  }
 }
 Function Get-ADOGroupMembers {
@@ -11677,7 +11681,7 @@ Function Get-ADOGroupMembers {
  if ($ShowAll) {
   $Result
  } else {
-  $Result | Select-Object displayName,principalName,origin,subjectKind,descriptor
+  $Result | Select-Object displayName,principalName,origin,subjectKind,originId,descriptor
  }
 }
 Function Get-ADO_AuthenticationHeader { # Convert Azure DevOps PAT Token to usable Header Object
