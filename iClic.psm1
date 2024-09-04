@@ -11722,7 +11722,7 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
  $FullResult
 }
 Function Get-ADOProjectList {
- ((az devops project list -o json | convertfrom-json).value).Name
+ ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
 }
 # MFA
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
