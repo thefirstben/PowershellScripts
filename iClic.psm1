@@ -11655,7 +11655,7 @@ Function Get-ADOPermissions_Groups { # Project Level Permission Only
    @{Name="AADGroupCount";Expression={($GroupList | Where-Object origin -eq "aad").Count}}
  }
 }
-Function Get-ADOProjectMembers {
+Function Get-ADOProjectMembers { # Get all members of a Project (it lists only Groups AAD & ADO)
  Param (
   [Parameter(Mandatory)]$ProjectName,
   $Filter,
@@ -11720,6 +11720,9 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
   $ContinuationToken = $Result.headers.'x-ms-continuationtoken'
  }
  $FullResult
+}
+Function Get-ADOProjectList {
+ ((az devops project list -o json | convertfrom-json).value).Name
 }
 # MFA
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
