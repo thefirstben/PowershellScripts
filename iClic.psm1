@@ -11209,7 +11209,7 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
   $Result
  }
 }
-Function Add-AzureServicePrincipalRBACPermission {
+Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Service Principals
  Param (
   [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]
   [parameter(Mandatory = $false,ParameterSetName = "ServicePrincipalName")]$ServicePrincipalName,
