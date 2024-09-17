@@ -664,6 +664,19 @@ Function Convert-ImmutableIDToGUID {
  )
  ([Guid]([Convert]::FromBase64String("$ImmutableID"))).GUID
 }
+function Convert-SIDToAzureObjectId { # Get Azure ObjectID From SID (based on : https://github.com/okieselbach/Intune/blob/master/Convert-AzureAdSidToObjectId.ps1)
+ param(
+  [String] $Sid
+ )
+ $text = $sid.Replace('S-1-12-1-', '')
+ $array = [UInt32[]]$text.Split('-')
+
+ $bytes = New-Object 'Byte[]' 16
+ [Buffer]::BlockCopy($array, 0, $bytes, 0, 16)
+ [Guid]$guid = $bytes
+
+ return $guid
+}
 
 # Linux equivalent
 Function Watch { # 'watch' equivalent
@@ -9099,8 +9112,30 @@ Function Get-InstalledAppsFromEvents { # Check all installed apps using event lo
  @{Label='LanguageCode';Expression={$_.Properties[2].value}}
 }
 Function Get-LocalAdmin { # Prints local Admins
- (Get-LocalGroupMember ([wmi]"Win32_SID.SID='S-1-5-32-544'").AccountName).Name
+
+ $AdminGroupName = ([wmi]"Win32_SID.SID='S-1-5-32-544'").AccountName
+
+ # List Administrator based on CIM
+ $Administrators = @(
+ ([ADSI]"WinNT://./$AdminGroupName").psbase.Invoke('Members') | ForEach-Object {
+  $_.GetType().InvokeMember('AdsPath','GetProperty',$null,$($_),$null)
+ }
+ ) -match '^WinNT' -replace "WinNT://",""
+
+ $Administrators | ForEach-Object {
+  if ($_ -like "S-*") {
+   $Result = Convert-SIDToAzureObjectId -Sid $_
+   if (Get-Command "Az" -ErrorAction SilentlyContinue) {
+    (Get-AzureADObjectInfo -ObjectID $Result).DisplayName
+   } else {
+    $Result
+   }
+  } else {
+   $_
+  }
+ }
 }
+
 Function Get-LocalSecurityPolicy { # Show local security policies and which users have which local policies applied
  Param (
   $RightName
@@ -10284,7 +10319,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  if (! $AppRegistrationName) { $AppRegistrationName = $AppInfo.displayName}
 
  if ($AccessToken) {
-  $Result = Get-AzureGraph -Token $AccessToken -GraphRequest /applications/$AppRegistrationObjectID/owners
+  $Result = (Get-AzureGraph -Token $AccessToken -GraphRequest /applications/$AppRegistrationObjectID/owners).value
  } else {
   $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value 
   # az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
@@ -11229,110 +11264,42 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
  Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID/resourceGroups/$ResourceGroupName"
 }
 # User Role Assignement (Not RBAC)
-Function Get-AzureADRoleAssignmentDefinitions { # Non RBAC Roles - Retrieves name and ID of Roles using Graph - Does not work with custom roles
- # (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directoryRoles" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,roleTemplateId,description | Sort-Object DisplayName
- (az rest --method GET --uri "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,templateId,isBuiltIn,description | Sort-Object DisplayName
-}
-Function Convert-AzureADRoleAssignements { # Convert list of Role Assignement with ObjectID and RoleID to Readable list
- Param (
-  $ObjectList, #Format of object must be an object list formated with DirectoryScopedID,PrincipalID,roleDefinitionID
-  [Switch]$Verbose
- )
-# If object is empty return nothing (does not work if the param is set to mandatory)
-if (! $ObjectList) {return}
-$RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
-$RoleAssignementConverted=@()
- $ObjectList | ForEach-Object {
-  $RoleID = $_.roleDefinitionId
-  $ObjectInfo = Get-AzureADObjectInfo -ObjectID $_.principalId
-  $RoleInfo = $RoleDefinitionList | Where-Object roleTemplateId -eq $RoleID
-  # $RoleInfo = $RoleDefinitionList | Where-Object templateId -eq $RoleID
-  if ($Verbose) {
-   Progress -Message "Checking Role $($RoleInfo.displayName) and UPN : " -Value $($ObjectInfo.userPrincipalName) -PrintTime
-  }
-
-  $RoleAssignementConverted+=[pscustomobject]@{
-   ObjectID = $ObjectInfo.ID;
-   ObjectType = $ObjectInfo.Type;
-   UPN = $ObjectInfo.userPrincipalName;
-   DisplayName = $ObjectInfo.displayName;
-   Mail = $ObjectInfo.Mail;
-   RoleName = $RoleInfo.displayName;
-   RoleDescription = $RoleInfo.description;
-   RoleDescriptionID = $RoleInfo.id
-   ScopeId = $_.directoryScopeId
-  }
- }
- Return $RoleAssignementConverted
-}
-Function Get-AzureADRoleAssignements { # Retrieve all Azure AD Role on Directory Level and users assigned to them | Checked also Scoped members when available (will miss all Custom Roles and many other roles)
- Param (
-  $ExportFile = "C:\Temp\AzureADRoleAssignements_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $NameFilter
- )
- # graph information from here is better https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AZ Cli with User Authentication. Missing Consent
-
- $Global_DirectMembers = @()
- $Global_ScopedMembers = @()
- $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
- if ($NameFilter) {
-  $RoleDefinitionList = $RoleDefinitionList | Where-Object displayName -Like "*$NameFilter*"
- }
- $AdminUnitList = Get-AzureADAdministrativeUnit
- $RoleDefinitionList | ForEach-Object {
-  $CurrentRole = $($_.displayName)
-  $RoleDescription = $($_.Description)
-  Progress -Message "Checking Role (Members) : " -Value $CurrentRole -PrintTime
-  #Non Scoped Members
-  $DirectMembers = (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/members --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object `
-   @{name="AdministrativeRole";expression={$CurrentRole}},
-   @{name="Type";expression={($_.'@odata.type'.split("."))[-1]}},
-   displayName,id,userPrincipalName,mail,
-   @{name="RoleDescription";expression={$RoleDescription}},
-   @{name="PermissionType";expression={'Permanent'}},
-   @{name="Scope";expression={"Directory"}}
-  
-  Progress -Message "Checking Role (Scoped Members) : " -Value $CurrentRole -PrintTime
-  #Scoped Members
-  $ScopedMembers = (az rest --method GET --uri https://graph.microsoft.com/beta/directoryRoles/$($_.ID)/scopedMembers --header Content-Type=application/json | ConvertFrom-Json).Value | select-object `
-  @{name="UserInfo";expression={
-   Progress -Message "Checking Role (Scoped Members) : " -Value "$CurrentRole - $($_.roleMemberInfo.ID)" -PrintTime
-   Get-AzureADUserInfo -UPNorID $_.roleMemberInfo.ID
-   }},* | Select-Object `
-   @{name="AdministrativeRole";expression={$CurrentRole}},
-   @{name="Type";expression={($_.'@odata.type'.split("."))[-1]}},
-   @{name="displayName";expression={$_.roleMemberInfo.DisplayName}},
-   @{name="id";expression={$_.roleMemberInfo.ID}},
-   @{name="userPrincipalName";expression={$_.UserInfo.userPrincipalName}},
-   @{name="mail";expression={$_.UserInfo.mail}},
-   @{name="RoleDescription";expression={$RoleDescription}},
-   @{name="PermissionType";expression={'Permanent (Scoped)'}},
-   @{name="Scope";expression={$AdminUnitID = $_.administrativeUnitId ; ($AdminUnitList | Where-Object { $_.ID -eq $AdminUnitID } ).displayName} }
-
-   $Global_DirectMembers += $DirectMembers
-   $Global_ScopedMembers += $ScopedMembers
- }
- $Global_DirectMembers + $Global_ScopedMembers
-}
 Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
+  [parameter(Mandatory = $true)]$Token,
+  [switch]$Convert,
   [Switch]$HideGUID
  )
+
  # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AZ Cli with User Authentication. Missing Consent
  # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
 
- Progress -Message "Current step" -Value "RoleDefinitionList" -PrintTime
- $RoleDefinitionList = Get-AzureADRoleAssignmentDefinitions
- Progress -Message "Current step" -Value "AdminUnitList" -PrintTime
- $AdminUnitList = Get-AzureADAdministrativeUnit
- Progress -Message "Current step" -Value "Get full roles information" -PrintTime
- $DirectMembersGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?`$top=999" --header Content-Type=application/json | ConvertFrom-Json).value
- Progress -Message "Current step" -Value "Get All unique user informations (May take a while depending on the amount of unique objects to check)" -PrintTime
- $PrincipalInfo = $DirectMembersGUID.principalId | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_ }
 
- Progress -Message "Current step" -Value "Converting GUID to readable values" -PrintTime
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+  write-host -foregroundcolor "Red" "Token is invalid, provide a valid token"
+  return
+ }
+
+ # Get all role definitions
+ $RoleDefinitionList = Get-AzureRoleDefinitions -Token $token
+
+ # Get all Administrative Unit
+ $AdminUnitList = Get-AzureAdministrativeUnit -Token $token
+
+ # Get all Permanent Assignemnt
+ $DirectMembersGUID = Get-AzureRoleAssignements -Token $Token
+
+ # Convert all user ID
+ $PrincipalInfo = $DirectMembersGUID.principalId | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfoREST -ObjectID $_ -Token $Token }
+
  $Result = $DirectMembersGUID | Select-Object *,
-  @{name="roleDefinitionName";expression={($RoleDefinitionList[$RoleDefinitionList.id.indexof($_.roleDefinitionId)]).displayName}},
+  @{name="roleDefinitionName";expression={
+   if ($RoleDefinitionList.id.contains($_.roleDefinitionId)) {
+    ($RoleDefinitionList[$RoleDefinitionList.id.indexof($_.roleDefinitionId)]).displayName
+   } else {
+    (Get-AzureADObjectInfoREST -ObjectID $_.roleDefinitionId -Token $token).displayName
+   }
+  }},
   @{name="directoryScopeInfo";expression={
    if ($_.directoryScopeID -like "/administrativeUnits/*" ) {
     $DirectoryScopeID = (($_.directoryScopeID).split('/'))[-1]
@@ -11340,8 +11307,12 @@ Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles a
    } elseif ($_.directoryScopeID -eq "/") {
     [pscustomobject]@{Name="Directory";Type="Directory"}
    } else {
-    $ObjectInfo = (Get-AzureADObjectInfo -ObjectID (($_.directoryScopeID).split('/'))[-1])
-    [pscustomobject]@{Name=$($ObjectInfo.DisplayName);Type=$($ObjectInfo.Type)}
+    $ObjectInfo = Get-AzureADObjectInfoREST -ObjectID (($_.directoryScopeID).split('/'))[-1] -Token $Token
+    if (! $ObjectInfo) {
+     [pscustomobject]@{Name="NOT FOUND Role $($_.roleDefinitionId) | Scope $($_.directoryScopeID) | principalId $($_.principalId) ";Type="NOT FOUND"}
+    } else {
+     [pscustomobject]@{Name=$($ObjectInfo.DisplayName);Type=$($ObjectInfo.Type)}
+    }
    }
   }},
   @{name="PrincipalInfo";expression={($PrincipalInfo[$PrincipalInfo.id.indexof($_.principalId)])} } | Select-Object -ExcludeProperty directoryScopeInfo,PrincipalInfo *,
@@ -11354,15 +11325,6 @@ Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles a
    $Result = $Result | Select-Object -ExcludeProperty *ID
   }
   $Result
-}
-Function Get-AzureADRoleAssignementsEligibleAzCli { # Extract all assigned Eligible role (Using PIM API v3) - Not Working from Powershell in Az Cli for some reason : SP Right ?
- $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances" --header Content-Type="application/json" -o json | convertfrom-json
- $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
- While ($CurrentResult.'@odata.nextLink') {
-  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
-  $CurrentResult = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json | convertfrom-json
-  $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
- }
 }
 Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role - Requires module : Microsoft.Graph.DeviceManagement.Enrolment
 
@@ -11382,7 +11344,7 @@ Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible r
 
  Disconnect-MgGraph | Out-Null
 }
-Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID
+Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID - Missing Eligible
  Param (
   $UserObjectID
  )
@@ -11390,41 +11352,26 @@ Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID
  if (! $UserObjectID) {return}
  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/rolemanagement/directory/roleAssignments?`$filter=principalId eq '$UserObjectID'" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object directoryScopeId,principalId,roleDefinitionId
 }
-Function Get-AzureADUserAssignedRoleFromUPN { # Slow - Only for Single User usage
- Param (
-  [Parameter(Mandatory)]$UserUPN
- )
- Convert-AzureADRoleAssignements (Get-AzureADUserAssignedRole -UserObjectID (Get-AzureADUserInfo $UserUPN).ID)
-}
-
-# NEW
 Function Get-AzureRoleDefinitions { # Get all data but requires Service Principal with proper rights to get the values
  Param (
   [parameter(Mandatory = $true)]$Token
  )
-
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-  write-host -foregroundcolord "Red" "Token is invalid, provide a valid token"
-  return
- }
-  
- $BearerToken = $AzureGraphAPIToken.access_token
-
- $Headers = @{
-  'Content-Type'  = "application\json"
-  'Authorization' = "Bearer $BearerToken"
- }
-
- $CMDParams = @{
-   "URI"         = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions"
-   "Headers"     = $Headers
-   "Method"      = "GET"
-   "ContentType" = 'application/json'
-   "Body" = (@{
-   }) | ConvertTo-JSON -Depth 6
-  }
-  $Result = Invoke-RestMethod @CMDParams 
-  $Result.Value | select-object id, displayName,description,templateId,isBuiltIn,isEnabled
+ $Result = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleDefinitions"
+ $Result.value | select-object id, displayName,description,templateId,isBuiltIn,isEnabled
+}
+Function Get-AzureRoleAssignements {
+ Param (
+  [parameter(Mandatory = $true)]$Token
+ )
+ $Result = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleAssignments?`$top=999"
+ $Result.value
+}
+Function Get-AzureAdministrativeUnit {
+ Param (
+  [parameter(Mandatory = $true)]$Token
+ )
+ $Result = Get-AzureGraph -Token $Token -GraphRequest "/directory/administrativeUnits?`$top=999"
+ $Result.value | select-object * -ExcludeProperty deletedDateTime,isMemberManagementRestricted,visibility
 }
 Function Add-AzureRole {
  Param (
@@ -11492,8 +11439,6 @@ Function Add-AzureRole {
   Write-host -ForegroundColor Red "Error Adding Role ($($Error[0]))"
  }
 }
-
-
 
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
@@ -11723,6 +11668,12 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
 }
 Function Get-ADOProjectList {
  ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
+}
+Function Get-ADORepositoryList {
+ Param (
+  [Parameter(Mandatory)]$ProjectName
+ )
+ az repos list --project "Cloud Team" -o json | convertfrom-json | Sort-Object Name | Select-Object name,@{N="Size";E={Format-Filesize $_.Size}},remoteUrl
 }
 # MFA
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
@@ -12155,7 +12106,6 @@ Function Assert-IsTokenLifetimeValid {
  )
  return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
 }
-
 Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
   [parameter(Mandatory = $True)]$Token,
@@ -12179,7 +12129,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  # Call the REST-API
  $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri $url
 
- return $RestResult.value
+ return $RestResult
  } catch {
   Write-host -ForegroundColor Red "Error during Azure Graph Request $GraphRequest ($($Error[0]))"
  }
@@ -12234,6 +12184,22 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
     @{name="Type";expression={$_.'@odata.type'}},
     @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
   }
+ }
+}
+Function Get-AzureADObjectInfoREST {
+ Param (
+  [Parameter(Mandatory)][GUID]$ObjectID,
+  [parameter(Mandatory = $True)]$Token,
+  [Switch]$ShowAll
+ )
+ $Result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID/"
+ if ($ShowAll) {
+  $Result
+ } else {
+  $Result | Select-Object `
+   @{name="ID";expression={$_.id}},
+   @{name="Type";expression={$_.'@odata.type' -replace "#microsoft.graph.",""}},
+   @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName,description
  }
 }
 Function Send-Mail {  # To make automated Email, it requires an account with a mailbox | Should add a From Option
