@@ -10424,7 +10424,7 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
   [switch]$HideGUID
  )
 
- if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationID).displayName}
+ if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).displayName}
  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
  $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
  $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
