@@ -11739,12 +11739,19 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
  Param (
   [Parameter(Mandatory)]$Group,
   [Switch]$Recurse,
+  [Switch]$ForceName,
   [Switch]$RecurseHideGroups # Using recursive still shows groups by default, but using this switch they will be hidden
  )
  if (Assert-IsGUID $Group) {
   $GroupGUID = $Group
+  if ($ForceName) {
+   $GroupName = (az ad group show -g $Group | convertfrom-json).displayname
+  } else {
+   $GroupName = $Group
+  }
  } else {
   $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
+  $GroupName = $Group
  }
 
  if ($Recurse) {
@@ -11775,7 +11782,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   }
   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-  $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$Group}},userPrincipalName, displayName, mail,
+  $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
    accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
  }
 }
@@ -11795,11 +11802,16 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
  if ($ExcludeDynamicGroups) {
   $GroupList = $GroupList | Where-Object {! $_.membershipRule}
  }
- $GroupList |`
+ $Result = $GroupList |`
   Select-Object displayName,description,@{Name="GroupID";Expression={$_.Id}},
-  @{Name="Members";Expression={if ($ShowMembers) {Get-AzureADGroupMembers $_.id} else {"Use Switch to get value"}}},
   @{Name="Type";Expression={if ($_.membershipRule) {"Dynamic"} else {"Fixed"} }},
    membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
+
+ if ($ShowMembers) {
+  $Result | Select-Object *,@{Name="Members";Expression={Get-AzureADGroupMembers $_.GroupID -Recurse -RecurseHideGroups -ForceName}}
+ } else {
+  $Result
+ }
 }
 Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI)
  Param (
@@ -11902,7 +11914,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
    if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
    $Count++
-   $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes *,
+   $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses *,
    @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
