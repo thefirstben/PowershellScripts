@@ -2668,7 +2668,8 @@ Function Get-DNSResponseTime {
   $DNSServer=(Get-DnsClientServerAddress | Where-Object {($_.AddressFamily -eq "2") -and ($_.ServerAddresses)})[0].ServerAddresses[0],
   $DurationInMinutes="0.5",
   $SleepDurationInMs='150',
-  $Request
+  $Request,
+  [Switch]$DNSServerCheck
  )
 
  $startTime = get-date
@@ -2679,12 +2680,14 @@ Function Get-DNSResponseTime {
 
  $count = 0 ; $TotalResult = 0 ; $AverageResult = 0 ; $MinResult = 10000 ; $MaxResult = 0
 
- try {
-  $DNSServerFQDN=(Resolve-DnsName $DNSServer -ErrorAction Stop -QuickTimeout).NameHost
- Write-Colored -Color $defaultblue -ColoredText "Testing response time using DNS Server $DNSServer ($DNSServerFQDN) during $DurationInMinutes minutes (destination : $Request) (Pause time : $SleepDurationInMs`ms)"
- } catch {
-  write-host -foregroundcolor "Red" $Error[0]
-  Return
+ if ($DNSServerCheck) {
+  try {
+   $DNSServerFQDN=(Resolve-DnsName $DNSServer -ErrorAction Stop -QuickTimeout -DnsOnly).NameHost
+  Write-Colored -Color $defaultblue -ColoredText "Testing response time using DNS Server $DNSServer ($DNSServerFQDN) during $DurationInMinutes minutes (destination : $Request) (Pause time : $SleepDurationInMs`ms)"
+  } catch {
+   write-host -foregroundcolor "Red" $Error[0]
+   Return
+  }
  }
 
  while ($timeSpan -gt 0) {
