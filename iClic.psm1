@@ -12038,7 +12038,7 @@ Function Set-AzureADManager { # Set Manager on User in Azure
  }
  Set-MgUserManagerByRef -UserId $UserID -BodyParameter $ManagerOdataObject
 }
-Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud Only Users
+Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud Only Users ; For Exchange use the Exchange Module and the cmdline : Set-Mailbox -Identity $_.id -CustomAttribute10 "Value"
  Param (
   [Parameter(Mandatory)]$UPNorID,
   [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
