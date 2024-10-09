@@ -11921,7 +11921,10 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
-    @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
+    @{name="lastSuccessfulSignInDateTime";expression={
+     $SuccessFullSignIn = $_.signInActivity.lastSuccessfulSignInDateTime
+     if ($SuccessFullSignIn) { $SuccessFullSignIn } else { "Never"}
+    }},
     @{name="DaysSinceLastUse";expression={(NEW-TIMESPAN -Start $_.signInActivity.lastSuccessfulSignInDateTime -End $Date_Today).Days}},
     @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
     @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
