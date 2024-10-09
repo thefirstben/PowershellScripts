@@ -11917,7 +11917,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
    if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
    $Count++
-   $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses *,
+   $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses,onPremisesSyncEnabled *,
    @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
@@ -11926,6 +11926,13 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
      if ($SuccessFullSignIn) { $SuccessFullSignIn } else { "Never"}
     }},
     @{name="DaysSinceLastUse";expression={(NEW-TIMESPAN -Start $_.signInActivity.lastSuccessfulSignInDateTime -End $Date_Today).Days}},
+    @{name="onPremisesSyncEnabled";expression={
+     if ($_.onPremisesSyncEnabled -eq "True") { # To avoid empty values of OnPremSync
+      "True"
+     } else {
+      "False"
+     }
+    }},
     @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
     @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
     @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
