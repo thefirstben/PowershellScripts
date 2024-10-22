@@ -11141,38 +11141,36 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
   [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleID")]
   [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleID")]$appRoleId, # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
   [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleName")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]$appRoleName, # ID of the Role to use : Example : User.Read.All
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]$appRoleName, # Name of the Role to use : Example : User.Read.All
   [Parameter(Mandatory=$true)]$resourceDisplayName, # DisplayName of the API to use : example : Microsoft Graph
   $resourceId, # (Application) ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
   [ValidateSet("Application","Delegated")]$PermissionType
  )
 
+ # If Principal Name is given, get the Service Principal ID for the App
  if ($principalName) {
   $principalId = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $principalName
  }
 
+ # If the resource ID is not given or the permission is not given specifically retrieve app Info of resource containing the permission
  if ((! $resourceId) -or ($appRoleName)) {
   $AppInfo = (Get-AzureServicePrincipalInfo -DisplayName $resourceDisplayName)
  }
+
+ # If resource ID is still empty set it as the Appinfo ID
  If (! $resourceId) {
   $resourceId = $AppInfo.Id
  }
 
- # Does not work for delegated will replace with other value below
- # if ($appRoleName) { 
- #  if ($PermissionType -eq "Delegated") {
- #   $appRoleId = ($AppInfo.oauth2PermissionScopes | Where-Object value -eq $appRoleName).id    
- #  } else {
- #   $appRoleId = ($AppInfo.AppRoles | Where-Object value -eq $appRoleName).id 
- #  }
- # }
-
+ # Find full information about permission to Add
  if ($PermissionType) {
   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object {($_.Value -eq $appRoleName) -and ($_.PermissionType -eq $PermissionType) } 
  } else {
   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object "Value" -eq $appRoleName
  }
- if (! $RightsToAdd) {
+
+ # Final Check
+ if ((! $RightsToAdd) -and (! $appRoleId)) {
   Write-Host -Foregroundcolor "Red" "$appRoleName ($PermissionType) was not found in API $resourceId, please check"
   return
  } elseif ($RightsToAdd.Count -gt 1) {
@@ -11181,12 +11179,49 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
  } else {
   $appRoleId = $RightsToAdd.RuleID
  }
- #End New Block
 
+ # appRoleAssignments = Application Permission
+ # oauth2PermissionGrants = Delegated Permission
+
+ if ($PermissionType -ne "Delegated") {
+
+  # APPLICATION
+
+ $EndPointURL = "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments"
  $Body = '{\"appRoleId\": \"'+$appRoleId+'\",\"principalId\": \"'+$principalId+'\",\"resourceDisplayName\": \"'+$resourceDisplayName+'\",\"resourceId\": \"'+$resourceId+'\"}'
- az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" `
-  --headers 'Content-Type=application/json' `
-  --body $Body
+ 
+ # Launch request
+ az rest --method POST --uri $EndPointURL --headers 'Content-Type=application/json' --body $Body
+ } else {
+  
+  # DELEGATED
+
+  # Get oAuth2PermissionGrantinfo if the Principal already has an entry
+  $oAuth2PermissionGrantInfo = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants" | convertfrom-json).value `
+   | Where-Object { ($_.consentType -eq "AllPrincipals") -and ($_.resourceId -eq "$resourceId") }
+
+  # if principal never had an entry then it must be created
+  if (! $oAuth2PermissionGrantInfo) {
+   # clientId is the Service Principal that we need to update
+   # resourceId is the Service Principal containing the permission we need to add
+   $EndPointURL = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/"
+   $Body = '{\"clientId\": \"'+$principalId+'\",\"consentType\": \"AllPrincipals\",\"scope\": \"'+$appRoleName+'\",\"resourceId\": \"'+$resourceId+'\"}'
+
+   az rest --method POST --uri $EndPointURL --headers 'Content-Type=application/json' --body $Body
+
+  } else { # If an entry already exists it MUST be updated and not overwrote
+  # Get Grant ID to be used in the Endpoint URL
+  $oAuth2PermissionGrantId = $oAuth2PermissionGrantInfo.id
+  $EndPointURL = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$oAuth2PermissionGrantId"
+
+  # Update Scope (if you do not do this, then the scope will be overwrote - DO NOT FORGET THE SPACE)
+  $NewScope = $oAuth2PermissionGrantInfo.scope + " " + $appRoleName
+  $Body = '{\"Scope\": \"'+$NewScope+'\"}'
+
+  az rest --method PATCH --uri $EndPointURL --headers 'Content-Type=application/json' --body $Body
+  }
+ }
+
 }
 Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignement Status
  Param (
@@ -11725,6 +11760,47 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
  $GlobalResult | Export-CSV $ExportFileName
  Return $ExportFileName
 }
+Function Add-AzureADUserMFAPhone {
+ Param (
+  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$PhoneNumber,
+  [parameter(Mandatory = $true)]$User # can be UPN or GUID
+ )
+
+ Try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+  $params = @{
+   phoneNumber = $PhoneNumber
+   phoneType = "mobile"
+  }
+
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/phoneMethods/"
+
+  # Add check if user is found and / exists
+  # Add check if value already exists
+
+  $ParamJson = $params | convertto-json
+
+  $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
+
+  if (! $Result) {
+   Throw "Error during apply of update"
+  }
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+  $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+  Write-host -ForegroundColor Red "Error adding MFA Method $PhoneNumber of user $User ($StatusCode | $StatusMessage))"
+ }
+}
 # AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
  Param (
@@ -11921,10 +11997,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
-    @{name="lastSuccessfulSignInDateTime";expression={
-     $SuccessFullSignIn = $_.signInActivity.lastSuccessfulSignInDateTime
-     if ($SuccessFullSignIn) { $SuccessFullSignIn } else { "Never"}
-    }},
+    @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
     @{name="DaysSinceLastUse";expression={(NEW-TIMESPAN -Start $_.signInActivity.lastSuccessfulSignInDateTime -End $Date_Today).Days}},
     @{name="onPremisesSyncEnabled";expression={
      if ($_.onPremisesSyncEnabled -eq "True") { # To avoid empty values of OnPremSync
