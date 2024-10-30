@@ -10214,15 +10214,15 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
   [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
+  [Switch]$ShowOwner,
   $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient"
  )
- if ($AppID) {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'" --headers Content-Type=application/json | ConvertFrom-Json).value
- } elseif ($ID) {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
- } elseif ($DisplayName) {
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
+ } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
+ } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
  }
+
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'" --headers Content-Type=application/json | ConvertFrom-Json).value
 }
 Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
  Param (
@@ -11800,6 +11800,32 @@ Function Add-AzureADUserMFAPhone {
   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
   Write-host -ForegroundColor Red "Error adding MFA Method $PhoneNumber of user $User ($StatusCode | $StatusMessage))"
  }
+}
+Function Get-AzureADUserMFADeviceBoundAAGUID {
+ Param (
+  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$InputFile # Must contain be an output of Get-AzureADUserMFA
+ )
+ Try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+ $aaGuidList = ($usermfa | Where-Object { $_.MFA_Method_passKeyDeviceBound -eq "True" }) | ForEach-Object {
+  (Invoke-RestMethod -Method GET -headers $header -Uri https://graph.microsoft.com/beta/users/$($_.id)/authentication/fido2Methods).value | Select-Object -ExcludeProperty id
+ }
+ $aaGuidList | Group-Object aaGuid
+} catch {
+ $Exception = $($Error[0])
+ $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+ $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+ Write-host -ForegroundColor Red "Error $StatusCode | $StatusMessage"
+}
 }
 # AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
