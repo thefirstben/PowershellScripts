@@ -11901,9 +11901,24 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
  Param (
   [Parameter(Mandatory)]$GroupName,
   [Switch]$ShowMembers,
-  [Switch]$ExcludeDynamicGroups
+  [Switch]$ExcludeDynamicGroups,
+  $Token
  )
- $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
+
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Write-Error "Token is invalid, provide a valid token"
+   return
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  $GroupList = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$GroupName')").value
+ } else {
+  $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
+ }
+
  if ($ExcludeDynamicGroups) {
   $GroupList = $GroupList | Where-Object {! $_.membershipRule}
  }
