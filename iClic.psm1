@@ -11948,14 +11948,48 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI)
 Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI)
  Param (
   [Parameter(Mandatory)]$GroupName,
-  [Parameter(Mandatory)]$UPNorID
+  [Parameter(Mandatory)]$UPNorID,
+  $Token
  )
  if (Assert-IsGUID $UPNorID) {
   $UserGUID = $UPNorID
  } else { 
   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
  }
- az ad group member add --group $GroupName --member-id $UserGUID
+
+ if (Assert-IsGUID $GroupName) {
+  $GroupGUID = $GroupName
+ } else { 
+  $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+ }
+ if ($Token) {
+  Try {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   $params = @{
+    "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserGUID"
+   }
+   $ParamJson = $params | convertto-json
+   Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/`$ref"  -Body $ParamJson
+  } catch {
+   $Exception = $($Error[0])
+   $StatusCodeJson = $Exception.ErrorDetails.message
+   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+   $StatusMessageJson = $Exception.ErrorDetails.message
+   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+   Write-host -ForegroundColor Red "Error adding user $UPNorID in group $GroupName ($StatusCode | $StatusMessage))"
+  }
+ } else {
+  # Confirm that this works with GUID
+  # az ad group member add --group $GroupName --member-id $UserGUID
+  az ad group member add --group $GroupGUID --member-id $UserGUID
+ }
 }
 Function Copy-AzureADGroupMembers {
  Param (
