@@ -11760,7 +11760,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
  $GlobalResult | Export-CSV $ExportFileName
  Return $ExportFileName
 }
-Function Add-AzureADUserMFAPhone {
+Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
  Param (
   [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$PhoneNumber,
@@ -11817,7 +11817,7 @@ Function Get-AzureADUserMFADeviceBoundAAGUID {
   }
 
  $aaGuidList = ($usermfa | Where-Object { $_.MFA_Method_passKeyDeviceBound -eq "True" }) | ForEach-Object {
-  (Invoke-RestMethod -Method GET -headers $header -Uri https://graph.microsoft.com/beta/users/$($_.id)/authentication/fido2Methods).value | Select-Object -ExcludeProperty id
+  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$($_.id)/authentication/fido2Methods").value | Select-Object -ExcludeProperty id
  }
  $aaGuidList | Group-Object aaGuid
 } catch {
@@ -11826,6 +11826,37 @@ Function Get-AzureADUserMFADeviceBoundAAGUID {
  $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
  Write-host -ForegroundColor Red "Error $StatusCode | $StatusMessage"
 }
+}
+Function Get-AzureADUserMFAPhone {
+ Param (
+  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$User # can be UPN or GUID
+ )
+ Try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/phoneMethods/"
+
+  $Result = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
+
+  if (! $Result) {
+   Throw "Error checking phone information for user $User"
+  } else {
+   $Result.Value
+  }
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+  $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+  Write-host -ForegroundColor Red "Error check MFA Phone Method of user $User ($StatusCode | $StatusMessage))"
+ }
 }
 # AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
