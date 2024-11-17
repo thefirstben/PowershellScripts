@@ -1680,10 +1680,10 @@ Function Get-OSInfo {
 
   $LSA_Info = Try { Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" } catch { "" }
   $RunAsPPLColor="Red"
-  if ($LSA_Info.RunAsPPL -eq 0) { 
-    $RunAsPPL = 'Disabled' ; $RunAsPPLColor = "Red" 
-  } elseif ( $LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled with UEFI Lock' ; $RunAsPPLColor = "Green" 
-  } elseif ( $LSA_Info.RunAsPPL -eq 2 ) { $RunAsPPL = 'Enabled without UEFI Lock' ; $RunAsPPLColor = "DarkYellow" 
+  if ($LSA_Info.RunAsPPL -eq 0) {
+    $RunAsPPL = 'Disabled' ; $RunAsPPLColor = "Red"
+  } elseif ( $LSA_Info.RunAsPPL -eq 1 ) { $RunAsPPL = 'Enabled with UEFI Lock' ; $RunAsPPLColor = "Green"
+  } elseif ( $LSA_Info.RunAsPPL -eq 2 ) { $RunAsPPL = 'Enabled without UEFI Lock' ; $RunAsPPLColor = "DarkYellow"
   } else { $RunAsPPL = "Unknown" ; $RunAsPPLColor = "Red" }
   if ($LSA_Info.RunAsPPLBoot -gt 0 ) { $RunAsPPLOnBoot = 'Enabled' ; $RunAsPPLOnBootColor = "Green" } else { $RunAsPPLOnBoot = 'Disabled' ; $RunAsPPLOnBootColor = "Red" }
 
@@ -7582,7 +7582,7 @@ Function Install-OpenSSL { # Download and install lastest OpenSSL (from firedaem
 
  #Must add intermediate link to follow link
  $DownloadLinks = ((Invoke-WebRequest $RootURL).links  | Where-Object { ($_ -like  "*$ProductName-*.zip*")}).href
- # Get latest version : 
+ # Get latest version :
  $LatestVersionNumber = (($DownloadLinks | ForEach-Object { ($_ -split "-")[-1] }) -replace ".zip","" | Sort-Object)[-1]
 
  Write-Colored -NonColoredText "Newest version : " -ColoredText $LatestVersionNumber -PrintDate
@@ -8413,7 +8413,7 @@ Function New-Password { # Generate random password.  Will not start with : @ | a
   AlphaNum {[string[]]$sourcedata=For ($a=65;$a -le 90;$a++) {$sourcedata+=,[char][byte]$a} ; For ($a=97;$a -le 122;$a++) {$sourcedata+=,[char][byte]$a} ;For ($a=48;$a -le 57;$a++) {$sourcedata+=,[char][byte]$a}} #AlphaNum
  }
 
- #[char][byte]32 =  
+ #[char][byte]32 =
  #[char][byte]34 = "
  #[char][byte]37 = %
  #[char][byte]39 = '
@@ -8433,7 +8433,7 @@ Function New-Password { # Generate random password.  Will not start with : @ | a
  if ($ScriptCompatible) {
   $Hashlist = $Hashlist + $([char][byte]64) + $([char][byte]61) + $([char][byte]58) + $([char][byte]59)
  }
- 
+
  $HashlistFirstCharacter = $HashlistFirst + $([char][byte]64)
 
  For ($loop=1; $loop -le $length; $loop++) {
@@ -9642,7 +9642,7 @@ Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the ten
   $RG_WithCertificates = ($(az resource list --output json).tolower() | convertfrom-json | Where-Object type -like "*certificate*" | Select-Object resourcegroup -Unique).resourcegroup
   if ($RG_WithCertificates.count -gt 0) { # Skip if no Certificate found in Subscription
    $RG_WithCertificates | ForEach-Object {
-    $CurrentSubscriptionResources = az webapp config ssl list -g $_ | convertfrom-json 
+    $CurrentSubscriptionResources = az webapp config ssl list -g $_ | convertfrom-json
     $CurrentSubscriptionResources | ForEach-Object {
      $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
      $_ | Add-Member -NotePropertyName subscriptionId -NotePropertyValue $subscriptionId
@@ -9694,9 +9694,9 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
  } else {
   $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
  }
- if ($result) { 
+ if ($result) {
   return $Result
- } else { 
+ } else {
   if (! $HideError ) {write-host -ForegroundColor Red "No user found starting with $UPN" }
  }
 }
@@ -9926,7 +9926,7 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   $ArgumentsOfCurrentSubscription = $Arguments
   $ArgumentsOfCurrentSubscription += '--subscription' , $CurrentSubscriptionID
 
-  if (! $HideProgress ) { 
+  if (! $HideProgress ) {
    Progress -Message "Checking subscription : " -Value $CurrentSubscriptionName -PrintTime
   }
 
@@ -10284,8 +10284,8 @@ Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA
 
  if ($URLFilter -and (! $Fast)) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
  if ($NameFilter) { $Result = $Result | Where-Object displayName -like "*$NameFilter*" }
- if ($ShowOwners) { $Result = $Result | Select-Object *,@{Name="Owner";Expression={ 
-  Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ; Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID }} 
+ if ($ShowOwners) { $Result = $Result | Select-Object *,@{Name="Owner";Expression={
+  Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ; Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID }}
  }
  if ($Verbose) { ProgressClear }
  $Result
@@ -10298,7 +10298,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   [switch]$SearchAppInfo,
   $AccessToken
  )
- if ($AppRegistrationID -and (! $AppRegistrationObjectID)) { 
+ if ($AppRegistrationID -and (! $AppRegistrationObjectID)) {
   $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID
  }
  if ($AppRegistrationName -and (! $AppRegistrationObjectID)) {
@@ -10324,7 +10324,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  if ($AccessToken) {
   $Result = (Get-AzureGraph -Token $AccessToken -GraphRequest /applications/$AppRegistrationObjectID/owners).value
  } else {
-  $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value 
+  $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value
   # az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
  }
  $Result | Select-Object @{Name="AppObjectID";Expression={$AppRegistrationObjectID}},
@@ -10511,17 +10511,17 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
 }
 Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to be fully working) - Remove Automated Consent, need to manually consent when all permissions are added
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="SP_Name_App_ID")] 
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_ID")] 
+  [parameter(Mandatory=$true,ParameterSetName="SP_Name_App_ID")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_ID")]
   [parameter(Mandatory=$true,ParameterSetName="App_ID")]$AppID,
-  [parameter(Mandatory=$true,ParameterSetName="SP_Name_App_Name")] 
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_Name")] 
+  [parameter(Mandatory=$true,ParameterSetName="SP_Name_App_Name")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_Name")]
   [parameter(Mandatory=$true,ParameterSetName="App_Name")]$AppName,
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_ID")] 
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_Name")] 
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_ID")]
+  [parameter(Mandatory=$true,ParameterSetName="SP_ID_App_Name")]
   [parameter(Mandatory=$true,ParameterSetName="SP_ID")]$ServicePrincipalID, # Service Principal Object ID that holds the Permission
   [parameter(Mandatory=$true,ParameterSetName="SP_Name_App_ID")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_Name_App_Name")] 
+  [parameter(Mandatory=$true,ParameterSetName="SP_Name_App_Name")]
   [parameter(Mandatory=$true,ParameterSetName="SP_Name")]$ServicePrincipalName, # App Name that holds the Permission - Example : 'Microsoft Graph'
   [Parameter(Mandatory=$true)]$RightName,
   [ValidateSet("Application","Delegated")]$PermissionType
@@ -10534,7 +10534,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   return
  }
  if ($PermissionType) {
-  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) } 
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) }
  } else {
   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object "Value" -eq $RightName
  }
@@ -10754,7 +10754,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
  $Result | Add-Member -Name ApplicationDisplayName -Value $AppName -MemberType NoteProperty
 
  if ($ShowObjectID) {
-  $Result | Select-Object ApplicationDisplayName,ApplicationID,ApplicationObjectID,displayName,secretText,startDateTime,endDateTime  
+  $Result | Select-Object ApplicationDisplayName,ApplicationID,ApplicationObjectID,displayName,secretText,startDateTime,endDateTime
  } else {
   $Result | Select-Object ApplicationDisplayName,ApplicationID,displayName,secretText,startDateTime,endDateTime
  }
@@ -11164,7 +11164,7 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
 
  # Find full information about permission to Add
  if ($PermissionType) {
-  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object {($_.Value -eq $appRoleName) -and ($_.PermissionType -eq $PermissionType) } 
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object {($_.Value -eq $appRoleName) -and ($_.PermissionType -eq $PermissionType) }
  } else {
   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object "Value" -eq $appRoleName
  }
@@ -11189,11 +11189,11 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
 
  $EndPointURL = "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments"
  $Body = '{\"appRoleId\": \"'+$appRoleId+'\",\"principalId\": \"'+$principalId+'\",\"resourceDisplayName\": \"'+$resourceDisplayName+'\",\"resourceId\": \"'+$resourceId+'\"}'
- 
+
  # Launch request
  az rest --method POST --uri $EndPointURL --headers 'Content-Type=application/json' --body $Body
  } else {
-  
+
   # DELEGATED
 
   # Get oAuth2PermissionGrantinfo if the Principal already has an entry
@@ -11275,7 +11275,7 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
  if ($PrintOnly) {
   if (! $ShowAll) {
-   $Result = $Result | Where-Object ExpiresIn -lt $Expiration 
+   $Result = $Result | Where-Object ExpiresIn -lt $Expiration
   }
   $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs
  } else {
@@ -11293,7 +11293,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
   [Parameter(Mandatory = $true)]$ResourceGroupName,
   [Parameter(Mandatory = $true)]$Permission
  )
- if (! $SubscriptionID ) { $SubscriptionID = $((Get-AzureSubscriptions -Name $SubscriptionName).id) } 
+ if (! $SubscriptionID ) { $SubscriptionID = $((Get-AzureSubscriptions -Name $SubscriptionName).id) }
  if (! $SubscriptionID ) { write-host -ForegroundColor Red "Subscription $SubscriptionName not found" ; Return}
 
  if (! $ServicePrincipalID) { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName }
@@ -11420,13 +11420,13 @@ Function Add-AzureRole {
   [Parameter(Mandatory=$true,ParameterSetName="Name")]$GroupName,
   [Parameter(Mandatory=$true,ParameterSetName="Name")]$RoleName,
   [Parameter(Mandatory=$true,ParameterSetName="Name")]$AdminUnitName
-  
+
  )
 
  try {
 
  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
-  
+
  $BearerToken = $Token.access_token
 
  $Headers = @{
@@ -11443,7 +11443,7 @@ Function Add-AzureRole {
   $RoleTemplateIDRequest = (Invoke-RestMethod -Method GET -headers $Headers -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?`$filter=displayName eq '$RoleName'")
   $RoleTemplateID = $RoleTemplateIDRequest.Value.templateId
  }
- 
+
  if (($AdminUnitName -eq "/") -or ($DirectoryScope -eq "/") ) {
   $DirectoryScope = '/'
  } else {
@@ -11453,11 +11453,11 @@ Function Add-AzureRole {
    $DirectoryScope = '/administrativeUnits/' +  $DirectoryScopeRequest.value.id
   }
  }
- 
+
  if (! $GroupID) { throw "Group ID not found"}
  if (! $DirectoryScope) { throw "Incorrect DirectoryScope"}
- if (! $RoleTemplateID) { throw "Role not found"} 
- 
+ if (! $RoleTemplateID) { throw "Role not found"}
+
  $CMDParams = @{
    "URI"         = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
    "Headers"     = $Headers
@@ -11471,7 +11471,7 @@ Function Add-AzureRole {
    }) | ConvertTo-JSON -Depth 6
   }
   # $CMDParams ;  return
-  $Result = Invoke-RestMethod @CMDParams 
+  $Result = Invoke-RestMethod @CMDParams
   $Result.Value | select-object id, displayName,description,templateId,isBuiltIn,isEnabled
  } catch {
   Write-host -ForegroundColor Red "Error Adding Role ($($Error[0]))"
@@ -11483,7 +11483,7 @@ Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with ass
  Param (
   $Filter
  )
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits$Filter" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName  
+ (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits$Filter" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
 }
 # Schema Extensions
 Function Get-AzureADExtension { # Extract all schema extension of Azure AD
@@ -11971,7 +11971,7 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI)
  )
  if (Assert-IsGUID $UPNorID) {
   $UserGUID = $UPNorID
- } else { 
+ } else {
   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
  }
  az ad group member remove --group $GroupName --member-id $UserGUID
@@ -11984,13 +11984,13 @@ Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI)
  )
  if (Assert-IsGUID $UPNorID) {
   $UserGUID = $UPNorID
- } else { 
+ } else {
   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
  }
 
  if (Assert-IsGUID $GroupName) {
   $GroupGUID = $GroupName
- } else { 
+ } else {
   $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
  }
  if ($Token) {
@@ -12037,12 +12037,12 @@ Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Gr
   [switch]$PrintOnly
  )
  $GroupList = Get-AzureADGroups -Group $GroupPrefix -ShowMembers -ExcludeDynamicGroups
- $Result = $GroupList | 
-  `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} -ErrorAction SilentlyContinue | 
-  `Where-Object {! $_.accountEnabled} | 
-  `Where-Object userPrincipalName | 
+ $Result = $GroupList |
+  `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} -ErrorAction SilentlyContinue |
+  `Where-Object {! $_.accountEnabled} |
+  `Where-Object userPrincipalName |
   `Select-Object userPrincipalName,displayName,accountEnabled,GroupName,id -ErrorAction SilentlyContinue
- 
+
  if ($($Result.Count) -eq 0) {
   Write-Host -Foregroundcolor Green "No disabled user found in groups starting with $GroupPrefix, nothing to do in $($GroupList.Count) groups"
  } else {
@@ -12052,9 +12052,9 @@ Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Gr
   } else {
    $QuestionResult = Question "Are you sure you want to remove the users from their respective Groups"
    if ($QuestionResult) {
-    $Result | ForEach-Object { 
+    $Result | ForEach-Object {
      Write-Host "Removing user $($_.displayName) ($($_.userPrincipalName)) from group $($_.GroupName)"
-     az ad group member remove --group $_.GroupName --member-id $_.id 
+     az ad group member remove --group $_.GroupName --member-id $_.id
     }
    }
   }
@@ -12141,7 +12141,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  )
  if (Assert-IsGUID $UPNorID) {
   $UserGUID = $UPNorID
- } else { 
+ } else {
   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
  }
  if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
@@ -12235,8 +12235,8 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
   [Switch]$ShowResult
  )
  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
- if ($UserGUID) { Write-Verbose "Working with GUID" } else { 
-  Write-Verbose "Working with UPN, will be slower" 
+ if ($UserGUID) { Write-Verbose "Working with GUID" } else {
+  Write-Verbose "Working with UPN, will be slower"
   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
  }
 
@@ -12257,8 +12257,8 @@ Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
   [Switch]$ShowResult
  )
  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
- if ($UserGUID) { Write-Verbose "Working with GUID" } else { 
-  Write-Verbose "Working with UPN, will be slower" 
+ if ($UserGUID) { Write-Verbose "Working with GUID" } else {
+  Write-Verbose "Working with UPN, will be slower"
   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
  }
 
@@ -12284,12 +12284,12 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
 
  #Default Values for Login & Graph
  $LoginURL = "https://login.microsoftonline.com/$tenantId/oauth2/token"
- 
+
  Write-Host "Requesting API Token from $Resource using $ApplicationID" -ForegroundColor Cyan
 
  $Body = @{
   grant_type    = 'client_credentials'
-  client_id     = $ApplicationID 
+  client_id     = $ApplicationID
   client_secret = $ClientKey
   resource      = $Resource
  }
@@ -12315,7 +12315,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   [parameter(Mandatory = $True)]$Token,
   [parameter(Mandatory = $True)]$GraphRequest,
   $BaseURL = 'https://graph.microsoft.com/beta'
-  
+
  )
 
  try {
