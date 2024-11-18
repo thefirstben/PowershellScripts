@@ -12232,7 +12232,8 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
   [Parameter(Mandatory)]$UPNorID,
   [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
   [Parameter(Mandatory)]$Value,
-  [Switch]$ShowResult
+  [Switch]$ShowResult,
+  $Token
  )
  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
  if ($UserGUID) { Write-Verbose "Working with GUID" } else { 
@@ -12245,10 +12246,42 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
   Return
  }
 
- $Body = '{\"onPremisesExtensionAttributes\": {\"extensionAttribute'+$ExtensionAttributeNumber+'\": \"'+$Value+'\"}}'
- az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json --body $body
- if ($ShowResult) {
-  (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
+ if ($Token) {
+  Try {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+
+   $params = @{
+    "onPremisesExtensionAttributes" = @{
+     $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
+    }
+   }
+
+   $ParamJson = $params | convertto-json
+   Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID"  -Body $ParamJson | Out-Null
+   if ($ShowResult) {
+    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID" | Select-Object displayName,userPrincipalName,@{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$("extensionAttribute"+$ExtensionAttributeNumber)}}
+   }
+  } catch {
+   $Exception = $($Error[0])
+   $StatusCodeJson = $Exception.ErrorDetails.message
+   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+   $StatusMessageJson = $Exception.ErrorDetails.message
+   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+   Write-host -ForegroundColor Red "Error setting extension attribute $ExtensionAttributeNumber for user $UPNorID ($StatusCode | $StatusMessage))"
+  }
+ } else {
+  $Body = '{\"onPremisesExtensionAttributes\": {\"extensionAttribute'+$ExtensionAttributeNumber+'\": \"'+$Value+'\"}}'
+  az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json --body $body
+  if ($ShowResult) {
+   (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
+  }
  }
 }
 Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
