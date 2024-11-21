@@ -8300,8 +8300,8 @@ if ($([System.Net.ServicePointManager]::CertificatePolicy).ToString() -ne "Syste
 Function Get-Certificate { # built from here : https://gist.github.com/jstangroome/5945820 - Works on PS Core
  Param (
   [Parameter(Mandatory=$true)][string]$Domain,
-  [Parameter(Mandatory=$true)][Int16]$Port,
-  [Int]$Timeout = 1000
+  [Int16]$Port=443,
+  [Int]$Timeout = 500
 
  )
  $certificate = $null
@@ -8317,12 +8317,12 @@ Function Get-Certificate { # built from here : https://gist.github.com/jstangroo
   try {
    $SslStream.AuthenticateAsClient($domain)
    $certificate = $SslStream.RemoteCertificate
-  }
-  finally {
+  } finally {
    $SslStream.Dispose()
   }
- }
- finally {
+ } catch {
+ Write-Host -ForegroundColor Red "Error checking URL `"$Domain`" on port $Port with a timeout of $Timeout`ms ($($Error[0]))"
+ } finally {
   $TcpClient.Dispose()
  }
  if ($certificate) {
@@ -8331,6 +8331,15 @@ Function Get-Certificate { # built from here : https://gist.github.com/jstangroo
   }
  }
  return $certificate
+}
+Function Get-CertificatStatusFromList { # Check Certificat status from a list
+ Param (
+  [Parameter(Mandatory=$true)][string]$FileName # Must be a CSV containing the list of site with the important column being 'SiteName'
+ )
+ import-csv $FileName | ForEach-Object {
+   $URL_Called = $_.SiteName
+   get-certificate -Domain $URL_Called -Timeout .1 | Select-Object  -ExcludeProperty Thumbprint @{Label='URL_Called';Expression={$URL_Called}},NotBefore,NotAfter,Issuer,Subject
+ } | Export-Csv "$FileName`_Result.csv"
 }
 Function Get-Weather { # Shows weather
  Param (
@@ -11964,17 +11973,47 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   $Result
  }
 }
-Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI)
+Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI) or Rest if token is provided
  Param (
   [Parameter(Mandatory)]$GroupName,
-  [Parameter(Mandatory)]$UPNorID
+  [Parameter(Mandatory)]$UPNorID,
+  $Token
  )
  if (Assert-IsGUID $UPNorID) {
   $UserGUID = $UPNorID
  } else {
   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
  }
- az ad group member remove --group $GroupName --member-id $UserGUID
+
+ if (Assert-IsGUID $GroupName) {
+  $GroupGUID = $GroupName
+ } else {
+  $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+ }
+
+ if ($Token) {
+  Try {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/$UserGUID/`$ref"
+
+  } catch {
+   $Exception = $($Error[0])
+   $StatusCodeJson = $Exception.ErrorDetails.message
+   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+   $StatusMessageJson = $Exception.ErrorDetails.message
+   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+   Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
+  }
+ } else {
+  az ad group member remove --group $GroupGUID --member-id $UserGUID
+ }
 }
 Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI)
  Param (
