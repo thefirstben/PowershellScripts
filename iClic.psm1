@@ -9692,16 +9692,42 @@ Function Get-AzureApplicationGateway {
  }
 }
 # Convert Methods
-Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN
+Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN ; Added Token possibility which will be a lot faster
  Param (
   [Parameter(Mandatory=$true)]$UPN,
   [switch]$HideError,
-  [switch]$Fast
+  [switch]$Fast,
+  $Token
  )
- if ($Fast) {
-  $Result = az ad user list --output json --filter "userprincipalname  eq '$UPN'" --query '[].{displayName:displayName}' -o tsv
+
+ if ($Token) {
+  Try {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+
+   $GraphURL = "https://graph.microsoft.com/v1.0/users?`$filter=startswith(userprincipalname,'$UPN')"
+
+   $ResultJSON = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
+   $Result = $ResultJSON.Value
+
+  } catch {
+   $Exception = $($Error[0])
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   if (! $HideError ) { Write-host -ForegroundColor Red "Error searching for user $UPN ($StatusCode | $StatusMessage))" }
+  }
  } else {
-  $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
+  if ($Fast) {
+   $Result = az ad user list --output json --filter "userprincipalname  eq '$UPN'" --query '[].{displayName:displayName}' -o tsv
+  } else {
+   $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
+  }
  }
  if ($result) {
   return $Result
@@ -12176,19 +12202,41 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   [Parameter(Mandatory)]$UPNorID,
   [Switch]$Detailed,
   [Switch]$ShowManager,
-  [Switch]$ShowMemberOf
+  [Switch]$ShowMemberOf,
+  $Token
  )
+
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+ }
+
  if (Assert-IsGUID $UPNorID) {
   $UserGUID = $UPNorID
  } else {
-  $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+  if ($Token) {
+   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").value.id
+  } else {
+   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+  }
  }
  if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
-  $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
+  if ($Token) {
+   $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID"
+  } else {
+   $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
+  }
  } else {
   $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
-  $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
+  if ($Token) {
+   $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter"
+  } else {
+   $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
+  }
   $Result = $RestResult | Select-Object `
   id,onPremisesImmutableId,displayName,userPrincipalName,accountEnabled,createdDateTime,
   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
@@ -12196,8 +12244,12 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},lastPasswordChangeDateTime
  }
  if ($ShowManager) {
-  $Manager = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json `
-  | Select-Object `
+  if ($Token) {
+   $ManagerJson = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/manager"
+  } else {
+   $ManagerJson = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json 
+  }
+  $Manager = $ManagerJson | Select-Object `
     @{name="ManagerdisplayName";expression={$_.displayName}},
     @{name="ManagerUPN";expression={$_.userPrincipalName}},
     @{name="ManagerMail";expression={$_.mail}}
