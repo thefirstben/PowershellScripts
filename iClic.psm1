@@ -7298,7 +7298,7 @@ Function Install-GIT { # Download and install latest GIT [User version] (Non Adm
  }
 
  try {
-  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/download/win).links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href
+  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/downloads/win).links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href
   #Check Newest Version :
   $NewestVersion = ($DownloadLink -split "/" | Select-Object -Last 1) -replace '-64-bit.exe','' -replace 'Git-',''
   Write-Colored -NonColoredText "Newest version : " -ColoredText $NewestVersion -PrintDate
@@ -10755,6 +10755,15 @@ Function Get-AzureAppRegistrationPassword { # Get Azure App Registration Secret
  $AppInfo = (az ad app show --id $AppRegistrationID --query '{passwordCredentials:passwordCredentials}'  | ConvertFrom-Json)
  Return $AppInfo.passwordCredentials
 }
+Function Get-AzureAppRegistrationCertificate { # Get Azure App Registration Secret
+ Param (
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
+ )
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+ $AppInfo = (az ad app show --id $AppRegistrationID --query '{keyCredentials:keyCredentials}'  | ConvertFrom-Json)
+ Return $AppInfo.keyCredentials
+}
 Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
  Param (
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
@@ -11769,8 +11778,8 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
-    Start-Sleep 10
+    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a $SleepDurationInS`s sleep"
+    Start-Sleep $SleepDurationInS
     Continue
    }
    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
@@ -11968,6 +11977,7 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   [Parameter(Mandatory)]$GroupName,
   [Switch]$ShowMembers,
   [Switch]$ExcludeDynamicGroups,
+  $DoNotExpandGroups, # Used to avoid checking members of some groups, this must be an object like @("Group1","Group2")
   $Token
  )
 
@@ -12189,6 +12199,9 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
     @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
     @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}},
+    @{name="extensionAttribute13";expression={$_.onPremisesExtensionAttributes.extensionAttribute13}},
+    @{name="extensionAttribute14";expression={$_.onPremisesExtensionAttributes.extensionAttribute14}},
+    @{name="extensionAttribute15";expression={$_.onPremisesExtensionAttributes.extensionAttribute15}},
     @{name="License";expression={(($_.assignedLicenses | ForEach-Object { ($SKUList[$SKUList.skuId.indexof($_.skuid)]).skuPartNumber}) | Sort-Object ) -join "," }}
   }
   $GlobalResult | Export-CSV $ExportFileName
@@ -12430,8 +12443,13 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
 }
 Function Assert-IsTokenLifetimeValid {
  Param (
-  [parameter(Mandatory = $True)]$Token
+  [parameter(Mandatory = $True)]$Token,
+  [switch]$ShowExpiration
  )
+ if ($ShowExpiration) {
+  $ExpirationDate = $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))
+  Write-Host "Token will expire at $ExpirationDate"
+ }
  return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
 }
 Function Get-AzureGraph { # Send base graph request without any requirements
