@@ -4203,6 +4203,16 @@ Function Get-O365MemberOf {
  $UserDN=Get-User $mail | Select-Object -ExpandProperty DistinguishedName
 (Get-Recipient -Filter "Members -eq '$UserDN'" ) | Select-Object Alias,DisplayName,PrimarySmtpAddress,RecipientType | Sort-Object DisplayName
 }
+Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements at the time (and loop is about every 2 to 5 seconds)
+ Param (
+  $ExportFileName = "C:\Temp\Global_ExchangeUserDetails_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $PropertyList = @("Name","WindowsLiveID","ExternalDirectoryObjectId","IsDirSynced","CustomAttribute10","RecipientType","RecipientTypeDetails"),
+  $RecipientTypeToCheck = @("MailUser","UserMailbox"),
+  $RecipientTypeDetailsToCheck = @("MailUser","DiscoveryMailbox","EquipmentMailbox","RoomMailbox","SchedulingMailbox","SharedMailbox","TeamMailbox","UserMailbox")
+ )
+ if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
+ Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList | Export-Csv $ExportFileName
+}
 # Checks
 Function Assert-O365DistributionList {
  Param (
@@ -12004,7 +12014,11 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
    membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
 
  if ($ShowMembers) {
-  $Result | Select-Object *,@{Name="Members";Expression={Get-AzureADGroupMembers $_.GroupID -Recurse -RecurseHideGroups -ForceName}}
+  $Result | Select-Object *,@{Name="Members";Expression={
+   if ($_.displayName -NotIn $DoNotExpandGroups) {
+    Get-AzureADGroupMembers $_.GroupID -Recurse -RecurseHideGroups -ForceName
+   }
+  }}
  } else {
   $Result
  }
@@ -12057,29 +12071,39 @@ Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI)
   [Parameter(Mandatory)]$UPNorID,
   $Token
  )
+
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+  Write-Error "Token is invalid, provide a valid token"
+  return
+ } else {
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+ }
+
  if (Assert-IsGUID $UPNorID) {
   $UserGUID = $UPNorID
  } else {
-  $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+  if ($Token) {
+   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").Value.Id
+  } else {
+   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+  }
  }
 
  if (Assert-IsGUID $GroupName) {
   $GroupGUID = $GroupName
  } else {
-  $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+  if ($Token) {
+   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.Id
+  } else {
+   $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+  }
  }
  if ($Token) {
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
-   $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
-   $params = @{
-    "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserGUID"
-   }
+   $params = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserGUID" }
    $ParamJson = $params | convertto-json
    Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/`$ref"  -Body $ParamJson
   } catch {
@@ -12142,7 +12166,8 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
   [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
   $ExportFileName = "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $SleepDurationInS = 2
+  $SleepDurationInS = 2,
+  $Token
  )
  # Get list of all AAD users (takes some minutes with 50k+ users)
  if ($Fast) {
@@ -12150,6 +12175,15 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
  } elseif ($Advanced) {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
  } elseif ($Graph) {
+
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+  }
+
   $SKUList = Get-AzureSKUs # To Add License check
   $Count=0
   $GlobalResult = @()
@@ -12159,7 +12193,11 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   While ($ContinueRunning) {
    Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
    if ($FirstRun) {
-    $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"' -o json  | ConvertFrom-Json
+    if ($Token) {
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$top=999&`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"
+    } else {
+     $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"' -o json  | ConvertFrom-Json
+    }
     $FirstRun=$False
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
@@ -12171,7 +12209,11 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     }
     $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
    }
-   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+   if ($Token) {
+    $NextRequest = $CurrentResult.'@odata.nextLink'
+   } else { # For Az Cli, we need to add characters
+    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+   }
    if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
    $Count++
    $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses,onPremisesSyncEnabled *,
@@ -12388,6 +12430,36 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
   }
  }
 }
+Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expiration on Azure AD Account
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)]$Token
+ )
+ Try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+  $params = @{
+   "passwordPolicies" = "DisablePasswordExpiration"
+  }
+
+  $ParamJson = $params | convertto-json
+  Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID"  -Body $ParamJson | Out-Null
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error setting Password Never Expires for user $UPNorID ($StatusCode | $StatusMessage))"
+ }
+}
 Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
  Param (
   [Parameter(Mandatory)]$UPNorID,
@@ -12572,6 +12644,43 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
   $params.Message.Add("From",@( @{ From = @{ Address = $From } } ))
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
+}
+Function Send-MailRest {
+ Param (
+  [Parameter(Mandatory)]$UserMail,
+  [Parameter(Mandatory)]$SenderUPN,
+  [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
+  [Parameter(Mandatory)]$Subject,
+  $From,
+  $Token
+ )
+
+ $AccessToken = $Token.access_token
+ $Headers = @{
+  'Content-Type'  = "application\json"
+  'Authorization' = "Bearer $AccessToken"
+ }
+ $MessageParams = @{
+  "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
+  "Headers"     = $Headers
+  "Method"      = "POST"
+  "ContentType" = 'application/json'
+  "Body" = (@{
+   "message" = @{
+    "subject" = $Subject
+    "body"    = @{
+     "contentType" = 'HTML'
+     "content"     = $MessageContent
+    }
+   "toRecipients" = @(
+    @{
+     "emailAddress" = @{"address" = $UserMail }
+    })
+   "from" = @{ "emailAddress" = @{"address" = $SenderUPN } }
+   }
+  }) | ConvertTo-JSON -Depth 6
+ }
+ Invoke-RestMethod @Messageparams
 }
 Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
  ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
