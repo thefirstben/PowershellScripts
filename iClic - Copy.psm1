@@ -12483,39 +12483,6 @@ Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
   (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
  }
 }
-Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a user in Azure
- Param (
-  [Parameter(Mandatory)]$UPNorID,
-  $Token
- )
-
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
- }
-
- if (Assert-IsGUID $UPNorID) {
-  $UserGUID = $UPNorID
- } else {
-  if ($Token) {
-   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").value.id
-  } else {
-   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
-  }
- }
-
- if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
-
- if ($Token) {
-  $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments"
- } else {
-  $RestResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments" --headers Content-Type=application/json | ConvertFrom-Json
- }
- $RestResult
-}
 # Graph Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for App Reg with Secret
  Param (
