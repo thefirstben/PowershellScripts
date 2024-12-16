@@ -53,9 +53,9 @@
 # ToDo : add measure-command function to time functions whenever possible
 
 # Set future console in QuickEdit mode
-set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1
-# Set Path to C:\
+if ( ($host.Name -match 'consolehost') ) { set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1 }
 
+# Set Path to C:\
 if (Test-Path "C:\Temp\") {
  Set-Location -Path "C:\Temp\"
 }
@@ -12185,7 +12185,12 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    }
   }
 
-  $SKUList = Get-AzureSKUs # To Add License check
+  # To Add License check
+  if ($Token) {
+   $SKUList = Get-AzureSKUs -Token $Token
+  } else {
+   $SKUList = Get-AzureSKUs
+  }
   $Count=0
   $GlobalResult = @()
   $Date_Today = Get-Date
@@ -12201,14 +12206,19 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     }
     $FirstRun=$False
    } else {
-    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+    if ($Token) {
+     $ResultJson = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
+    } else {
+     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+    }
     $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
     If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
      Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
      Start-Sleep 10
      Continue
     }
-    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+    if (! $Token ) {$CurrentResult =  $CurrentResult | convertfrom-json}
    }
    if ($Token) {
     $NextRequest = $CurrentResult.'@odata.nextLink'
@@ -12717,7 +12727,19 @@ Function Send-MailRest {
  Invoke-RestMethod @Messageparams
 }
 Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
- ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
+ Param (
+  $Token
+ )
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/subscribedSkus").value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber
+ } else {
+  ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
+ }
 }
 
 #Alias
