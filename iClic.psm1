@@ -10611,9 +10611,37 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
 Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret - Does not see Federated Credential, as the data is not seen in the JSON
  Param (
   $Expiration = 30,
-  $MaxExpiration = 730
+  $MaxExpiration = 730,
+  $Token
  )
- $AppList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json
+
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Write-Error "Token is invalid, provide a valid token"
+   return
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  $ContinueRunning = $True
+  $FirstRun=$True
+  While ($ContinueRunning -eq $True) {
+   if ($Verbose) { Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($AppList.Count)) : " -Value $Count -PrintTime }
+   if ($FirstRun) {
+    $CurrentResult = (Invoke-RestMethod -Method GET -headers $Header -Uri "https://graph.microsoft.com/v1.0/applications?`$select=DisplayName,Notes,Tags,AppID,createdDateTime,signInAudience,passwordCredentials,keyCredentials")
+    $FirstRun=$False
+   } else {
+    $CurrentResult = (Invoke-RestMethod -Method GET -headers $Header -Uri $NextRequest )
+   }
+   $Count++
+   $NextRequest = $CurrentResult.'@odata.nextLink'
+   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
+   $AppList += $CurrentResult.Value
+  }
+ } else {
+  $AppList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json
+ }
  $Date_Today = Get-Date
  $KeyList = $AppList | Where-Object passwordCredentials | Select-Object `
  @{Name="AppName";Expression={$_.DisplayName}},AppID,
@@ -11484,18 +11512,18 @@ Function Add-AzureRole {
 
  $BearerToken = $Token.access_token
 
- $Headers = @{
+ $Header = @{
   'Content-Type'  = "application\json"
   'Authorization' = "Bearer $BearerToken"
  }
 
  if ($GroupName) {
   # Get Group ID
-  $GroupIDRequest = Invoke-RestMethod -Method GET -headers $Headers -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'"
+  $GroupIDRequest = Invoke-RestMethod -Method GET -headers $Header -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'"
   $GroupID = $GroupIDRequest.Value.ID
 
   # Get Role ID
-  $RoleTemplateIDRequest = (Invoke-RestMethod -Method GET -headers $Headers -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?`$filter=displayName eq '$RoleName'")
+  $RoleTemplateIDRequest = (Invoke-RestMethod -Method GET -headers $Header -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions?`$filter=displayName eq '$RoleName'")
   $RoleTemplateID = $RoleTemplateIDRequest.Value.templateId
  }
 
@@ -11504,7 +11532,7 @@ Function Add-AzureRole {
  } else {
   if ($AdminUnitName) {
    # Get Scope
-   $DirectoryScopeRequest = Invoke-RestMethod -Method GET -headers $Headers -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=displayName eq '$AdminUnitName'"
+   $DirectoryScopeRequest = Invoke-RestMethod -Method GET -headers $Header -Uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits?`$filter=displayName eq '$AdminUnitName'"
    $DirectoryScope = '/administrativeUnits/' +  $DirectoryScopeRequest.value.id
   }
  }
@@ -11515,7 +11543,7 @@ Function Add-AzureRole {
 
  $CMDParams = @{
    "URI"         = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
-   "Headers"     = $Headers
+   "Headers"     = $Header
    "Method"      = "POST"
    "ContentType" = 'application/json'
    "Body" = (@{
@@ -11931,17 +11959,39 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   [Parameter(Mandatory)]$Group,
   [Switch]$Recurse,
   [Switch]$ForceName,
-  [Switch]$RecurseHideGroups # Using recursive still shows groups by default, but using this switch they will be hidden
+  [Switch]$RecurseHideGroups, # Using recursive still shows groups by default, but using this switch they will be hidden
+  $Token
  )
+
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Write-Error "Token is invalid, provide a valid token"
+   return
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+ }
+
  if (Assert-IsGUID $Group) {
   $GroupGUID = $Group
   if ($ForceName) {
-   $GroupName = (az ad group show -g $Group | convertfrom-json).displayname
+   if ($Token) {
+    $GroupName = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$Group").displayName
+   } else {
+    $GroupName = (az ad group show -g $Group | convertfrom-json).displayname
+   }
   } else {
    $GroupName = $Group
   }
  } else {
-  $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
+
+  if ($Token) {
+   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$Group')").value.id
+  } else {
+   $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
+  }
   $GroupName = $Group
  }
 
@@ -11955,23 +12005,37 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
  $ContinueRunning = $True
  While ($ContinueRunning) { # Run until there are results
   if ($FirstRun) {
-   $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
-   $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
+   if ($Token) {
+    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
+   } else {
+    $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
+    $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
+   }
    $FirstRun=$False
   } else {
-   $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } # Add error management for API limitation of Azure
-   If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
-    Start-Sleep 10
-    Continue
+   if ($Token) {
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
+   } else {
+    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+    # Add error management for API limitation of Azure
+    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
+     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
+     Start-Sleep 10
+     Continue
+    }
    }
-   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
   }
   if ($RecurseHideGroups) {
-   $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group'
+    $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group'
   }
-  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+  if ($Token) {
+   $NextRequest = $CurrentResult.'@odata.nextLink'
+  } else {
+   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+  }
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
   $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
    accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
@@ -12168,7 +12232,8 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
   $ExportFileName = "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $SleepDurationInS = 2,
-  $Token
+  $Token,
+  [Switch]$NoFileExport
  )
  # Get list of all AAD users (takes some minutes with 50k+ users)
  if ($Fast) {
@@ -12257,8 +12322,12 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     @{name="extensionAttribute15";expression={$_.onPremisesExtensionAttributes.extensionAttribute15}},
     @{name="License";expression={(($_.assignedLicenses | ForEach-Object { ($SKUList[$SKUList.skuId.indexof($_.skuid)]).skuPartNumber}) | Sort-Object ) -join "," }}
   }
-  $GlobalResult | Export-CSV $ExportFileName
-  return $ExportFileName
+  if ($NoFileExport) {
+   return $GlobalResult
+  } else {
+   $GlobalResult | Export-CSV $ExportFileName
+   return $ExportFileName
+  }
  } else { # When launched without param
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
  }
@@ -12700,13 +12769,13 @@ Function Send-MailRest {
  )
 
  $AccessToken = $Token.access_token
- $Headers = @{
+ $Header = @{
   'Content-Type'  = "application\json"
   'Authorization' = "Bearer $AccessToken"
  }
  $MessageParams = @{
   "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
-  "Headers"     = $Headers
+  "Headers"     = $Header
   "Method"      = "POST"
   "ContentType" = 'application/json'
   "Body" = (@{
