@@ -11385,7 +11385,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
  Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID/resourceGroups/$ResourceGroupName"
 }
 # User Role Assignement (Not RBAC)
-Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
+Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
   [parameter(Mandatory = $true)]$Token,
   [switch]$Convert,
@@ -11410,10 +11410,13 @@ Function Get-AzureADRoleAssignementsREST { # With GRAPH [Shows ALL Azure Roles a
  # Get all Permanent Assignemnt
  $DirectMembersGUID = Get-AzureRoleAssignements -Token $Token
 
- # Convert all user ID
- $PrincipalInfo = $DirectMembersGUID.principalId | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfoREST -ObjectID $_ -Token $Token }
+ # Get all Eligible Assignemnt
+ $DirectMembersEligibleGUID = Get-AzureRoleAssignementsEligible -Token $Token
 
- $Result = $DirectMembersGUID | Select-Object *,
+ # Convert all user ID
+ $PrincipalInfo = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfoREST -ObjectID $_ -Token $Token }
+
+ $Result = $DirectMembersGUID + $DirectMembersEligibleGUID | Select-Object *,
   @{name="roleDefinitionName";expression={
    if ($RoleDefinitionList.id.contains($_.roleDefinitionId)) {
     ($RoleDefinitionList[$RoleDefinitionList.id.indexof($_.roleDefinitionId)]).displayName
@@ -11480,12 +11483,33 @@ Function Get-AzureRoleDefinitions { # Get all data but requires Service Principa
  $Result = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleDefinitions"
  $Result.value | select-object id, displayName,description,templateId,isBuiltIn,isEnabled
 }
-Function Get-AzureRoleAssignements {
+Function Get-AzureRoleAssignements { # Get all Azure Roles Assignements
  Param (
   [parameter(Mandatory = $true)]$Token
  )
- $Result = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleAssignments?`$top=999"
- $Result.value
+
+ $FullResult = @()
+ $CurrentResult = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleAssignmentScheduleInstances?`$top=999"
+ $FullResult += $CurrentResult.value
+ While ($CurrentResult.'@odata.nextLink') {
+  $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink'
+  $FullResult += $CurrentResult.value
+ }
+ $FullResult | Select-Object *,@{name="Source";expression={"roleAssignmentScheduleInstances"}}
+}
+Function Get-AzureRoleAssignementsEligible { # Get all Azure Eligible Roles
+ Param (
+  [parameter(Mandatory = $true)]$Token
+ )
+
+ $FullResult = @()
+ $CurrentResult = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleEligibilityScheduleInstances?`$top=999"
+ $FullResult += $CurrentResult.value
+ While ($CurrentResult.'@odata.nextLink') {
+  $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink'
+  $FullResult += $CurrentResult.value
+ }
+ $FullResult | Select-Object *,@{name="Source";expression={"roleEligibilityScheduleInstances"}}
 }
 Function Get-AzureAdministrativeUnit {
  Param (
@@ -11800,7 +11824,8 @@ Function Get-ADORepositoryList {
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
   $SleepDurationInS = 5,
-  $ExportFileName = "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+  $ExportFileName = "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $Token
  )
  $Count=0
  $GlobalResult = @()
@@ -11808,22 +11833,43 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
  $FirstRun=$True
  # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
 
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+ }
+
  While ($ContinueRunning -eq $True) {
-  Progress -Message "Getting all MFA Status of Users Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
+  Progress -Message "Getting all MFA Status of Users Loop (Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
   if ($FirstRun) {
-   $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
+   if ($Token) {
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails"
+   } else {
+    $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
+   }
    $FirstRun=$False
   } else {
-   $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-   If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a $SleepDurationInS`s sleep"
-    Start-Sleep $SleepDurationInS
-    Continue
+   if ($Token) {
+    $ResultJson = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
+   } else {
+    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
+     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a $SleepDurationInS`s sleep"
+     Start-Sleep $SleepDurationInS
+     Continue
+    }
    }
-   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+   if (! $Token ) {$CurrentResult =  $CurrentResult | convertfrom-json}
   }
-  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+  if ($Token) {
+   $NextRequest = $CurrentResult.'@odata.nextLink'
+  } else { # For Az Cli, we need to add characters
+   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+  }
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
   $Count++
   $GlobalResult += $CurrentResult.Value | Select-Object *,
