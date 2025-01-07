@@ -11452,12 +11452,23 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
   @{name="directoryScopeType";expression={$_.directoryScopeInfo.Type}},
   @{name="principalName";expression={$_.PrincipalInfo.DisplayName}},
   @{name="principalType";expression={$_.PrincipalInfo.Type}},
-  @{name="Type";expression={if (($_.SourceID -eq "roleEligibilityScheduleInstances") -or ($_.assignmentType -eq 'Activated')) {'Eligible'} else {'Permanent'}   }}
-
-  if ($HideGUID) {
-   $Result = $Result | Select-Object -ExcludeProperty *ID
+  @{name="Type";expression={
+   if ($_.SourceID -eq "roleEligibilityScheduleInstances") {
+    'Eligible'
+   } elseif ($_.assignmentType -eq 'Activated') {
+    'Permanent Activated'
+   } elseif (($_.SourceID -eq "roleAssignmentScheduleInstances") -and $_.endDateTime) {
+    'Time Limited Permanent'
+   } else {
+    'Permanent'
+   }
   }
-  $Result
+ }
+
+ if ($HideGUID) {
+  $Result = $Result | Select-Object -ExcludeProperty *ID
+ }
+ $Result
 }
 Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role - Requires module : Microsoft.Graph.DeviceManagement.Enrolment
 
