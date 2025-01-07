@@ -44,11 +44,14 @@
 #  Measure-Command {$AppRegistrationExpiration.apptags | Where-Object {$_.Contact -eq "$ValueToSearch"}}
 #  Measure-Command {$AppRegistrationExpiration.apptags.Where{$_.Contact -eq "$ValueToSearch"}}
 #  Measure-Command {$AppRegistrationExpiration[$AppRegistrationExpiration.apptags.indexof($ValueToSearch)]}
+# Az CLI Token Management
+#  To use Current user token for Az : $UserToken = az account get-access-token
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
 # AzureAD for : Set-AzureADUser, Get-AzureADUser etc.
 # For Azure : Azure CLI
+# To store secure data in Credential Manager : TUN.CredentialManager
 
 # ToDo : add measure-command function to time functions whenever possible
 
@@ -11395,27 +11398,32 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
  # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AZ Cli with User Authentication. Missing Consent
  # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
 
-
  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
   write-host -foregroundcolor "Red" "Token is invalid, provide a valid token"
   return
  }
 
  # Get all role definitions
+ Progress -Message "Current Step : " -Value "Get all role definitions" -PrintTime
  $RoleDefinitionList = Get-AzureRoleDefinitions -Token $token
 
  # Get all Administrative Unit
+ Progress -Message "Current Step : " -Value "Get all Administrative Unit" -PrintTime
  $AdminUnitList = Get-AzureAdministrativeUnit -Token $token
 
- # Get all Permanent Assignemnt
+ # Get all Permanent Assignement
+ Progress -Message "Current Step : " -Value "Get all Permanent Assignement" -PrintTime
  $DirectMembersGUID = Get-AzureRoleAssignements -Token $Token
 
- # Get all Eligible Assignemnt
+ # Get all Eligible Assignement
+ Progress -Message "Current Step : " -Value "Get all Permanent Assignement" -PrintTime
  $DirectMembersEligibleGUID = Get-AzureRoleAssignementsEligible -Token $Token
 
  # Convert all user ID
+ Progress -Message "Current Step : " -Value "Convert all user ID" -PrintTime
  $PrincipalInfo = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfoREST -ObjectID $_ -Token $Token }
 
+ Progress -Message "Current Step : " -Value "Check Roles" -PrintTime
  $Result = $DirectMembersGUID + $DirectMembersEligibleGUID | Select-Object *,
   @{name="roleDefinitionName";expression={
    if ($RoleDefinitionList.id.contains($_.roleDefinitionId)) {
@@ -11443,7 +11451,8 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
   @{name="directoryScopeName";expression={$_.directoryScopeInfo.Name}},
   @{name="directoryScopeType";expression={$_.directoryScopeInfo.Type}},
   @{name="principalName";expression={$_.PrincipalInfo.DisplayName}},
-  @{name="principalType";expression={$_.PrincipalInfo.Type}}
+  @{name="principalType";expression={$_.PrincipalInfo.Type}},
+  @{name="Type";expression={if (($_.SourceID -eq "roleEligibilityScheduleInstances") -or ($_.assignmentType -eq 'Activated')) {'Eligible'} else {'Permanent'}   }}
 
   if ($HideGUID) {
    $Result = $Result | Select-Object -ExcludeProperty *ID
@@ -11488,28 +11497,38 @@ Function Get-AzureRoleAssignements { # Get all Azure Roles Assignements
   [parameter(Mandatory = $true)]$Token
  )
 
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+
  $FullResult = @()
- $CurrentResult = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleAssignmentScheduleInstances?`$top=999"
+ $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignmentScheduleInstances?`$top=999"
  $FullResult += $CurrentResult.value
  While ($CurrentResult.'@odata.nextLink') {
-  $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink'
+  $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink'
   $FullResult += $CurrentResult.value
  }
- $FullResult | Select-Object *,@{name="Source";expression={"roleAssignmentScheduleInstances"}}
+ $FullResult | Select-Object *,@{name="SourceID";expression={"roleAssignmentScheduleInstances"}}
 }
 Function Get-AzureRoleAssignementsEligible { # Get all Azure Eligible Roles
  Param (
   [parameter(Mandatory = $true)]$Token
  )
 
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+
  $FullResult = @()
- $CurrentResult = Get-AzureGraph -Token $Token -GraphRequest "/roleManagement/directory/roleEligibilityScheduleInstances?`$top=999"
+ $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilityScheduleInstances?`$top=999"
  $FullResult += $CurrentResult.value
  While ($CurrentResult.'@odata.nextLink') {
-  $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink'
+  $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink'
   $FullResult += $CurrentResult.value
  }
- $FullResult | Select-Object *,@{name="Source";expression={"roleEligibilityScheduleInstances"}}
+ $FullResult | Select-Object *,@{name="SourceID";expression={"roleEligibilityScheduleInstances"}}
 }
 Function Get-AzureAdministrativeUnit {
  Param (
@@ -11823,70 +11842,60 @@ Function Get-ADORepositoryList {
 # MFA
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
-  $SleepDurationInS = 5,
+  $Throttle = 10, # Time in Seconds to wait in case of throttle
   $ExportFileName = "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $Token
+  [Parameter(Mandatory)]$Token
  )
  $Count=0
  $GlobalResult = @()
  $ContinueRunning = $True
  $FirstRun=$True
  # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
+ 
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+ $header = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
  }
 
  While ($ContinueRunning -eq $True) {
-  Progress -Message "Getting all MFA Status of Users Loop (Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
-  if ($FirstRun) {
-   if ($Token) {
+  Progress -Message "Getting all MFA Status of Users Loop $Count : " -Value $GlobalResult.Count -PrintTime
+  Try {
+   if ($FirstRun) {
     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails"
+    $FirstRun=$False
    } else {
-    $CurrentResult = az rest --method get --uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" --header Content-Type="application/json" -o json | convertfrom-json
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
    }
-   $FirstRun=$False
-  } else {
-   if ($Token) {
-    $ResultJson = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
-   } else {
-    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a $SleepDurationInS`s sleep"
-     Start-Sleep $SleepDurationInS
-     Continue
-    }
-   }
-   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-   if (! $Token ) {$CurrentResult =  $CurrentResult | convertfrom-json}
-  }
-  if ($Token) {
    $NextRequest = $CurrentResult.'@odata.nextLink'
-  } else { # For Az Cli, we need to add characters
-   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+   if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
+   $Count++
+   $GlobalResult += $CurrentResult.Value | Select-Object *,
+    @{Name="MFA_Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
+    @{Name="MFA_Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
+    @{Name="MFA_Method_email";Expression={$_.methodsRegistered -contains 'email'}},
+    @{Name="MFA_Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
+    @{Name="MFA_Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
+    @{Name="MFA_Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
+    @{Name="MFA_Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
+    @{Name="MFA_Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
+    @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
+    @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
+    @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
+   # Adding a base sleep to avoid being throttled too many times
+   Start-Sleep -Seconds 2
+  } catch {
+   $ErrorInfo = $Error[0]
+   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") { 
+    Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
+   } else {
+    Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
+   }
   }
-  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-  $Count++
-  $GlobalResult += $CurrentResult.Value | Select-Object *,
-  @{Name="MFA_Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
-  @{Name="MFA_Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
-  @{Name="MFA_Method_email";Expression={$_.methodsRegistered -contains 'email'}},
-  @{Name="MFA_Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
-  @{Name="MFA_Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
-  @{Name="MFA_Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
-  @{Name="MFA_Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
-  @{Name="MFA_Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
-  @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
-  @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
-  @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
-  Start-Sleep -Seconds $SleepDurationInS # Added to not be throttled
  }
  $GlobalResult | Export-CSV $ExportFileName
+ Write-Blank
  Return $ExportFileName
 }
 Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
@@ -12273,7 +12282,6 @@ Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Gr
 # AAD User Management
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
-  [parameter(Mandatory = $false, ParameterSetName="Fast")][Switch]$Fast,
   [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
   [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
   $ExportFileName = "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
@@ -12282,9 +12290,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   [Switch]$NoFileExport
  )
  # Get list of all AAD users (takes some minutes with 50k+ users)
- if ($Fast) {
-  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName}' --output json --only-show-errors | ConvertFrom-Json
- } elseif ($Advanced) {
+ if ($Advanced) {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
  } elseif ($Graph) {
 
@@ -12779,7 +12785,7 @@ Function Get-AzureADObjectInfoREST {
    @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName,description
  }
 }
-Function Send-Mail {  # To make automated Email, it requires an account with a mailbox | Should add a From Option
+Function Send-MailMGGraph {  # To make automated Email, it requires an account with a mailbox | Should add a "From" Option | Requires MG Graph
  Param (
   [Parameter(Mandatory)]$UserMail,
   [Parameter(Mandatory)]$SenderUPN,
@@ -12804,9 +12810,9 @@ Function Send-Mail {  # To make automated Email, it requires an account with a m
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
 }
-Function Send-MailRest {
+Function Send-Mail {
  Param (
-  [Parameter(Mandatory)]$UserMail,
+  [Parameter(Mandatory)]$Recipient,
   [Parameter(Mandatory)]$SenderUPN,
   [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
   [Parameter(Mandatory)]$Subject,
@@ -12814,14 +12820,20 @@ Function Send-MailRest {
   $Token
  )
 
+ if (! $From) {
+  $From = $SenderUPN
+ }
+
  $AccessToken = $Token.access_token
- $Header = @{
+
+ $Headers = @{
   'Content-Type'  = "application\json"
   'Authorization' = "Bearer $AccessToken"
  }
+
  $MessageParams = @{
   "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
-  "Headers"     = $Header
+  "Headers"     = $Headers
   "Method"      = "POST"
   "ContentType" = 'application/json'
   "Body" = (@{
@@ -12833,9 +12845,9 @@ Function Send-MailRest {
     }
    "toRecipients" = @(
     @{
-     "emailAddress" = @{"address" = $UserMail }
+     "emailAddress" = @{"address" = $Recipient }
     })
-   "from" = @{ "emailAddress" = @{"address" = $SenderUPN } }
+   "from" = @{ "emailAddress" = @{"address" = $From } }
    }
   }) | ConvertTo-JSON -Depth 6
  }
