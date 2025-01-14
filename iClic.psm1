@@ -4215,6 +4215,7 @@ Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements a
  )
  if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
  Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList | Export-Csv $ExportFileName
+ return $ExportFileName
 }
 # Checks
 Function Assert-O365DistributionList {
@@ -9880,7 +9881,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret
 }
 # User Rights Management
-Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
+Function Get-AzureADRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
  [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
   [parameter(Mandatory = $true, ParameterSetName="UserAndSubID")]
@@ -9903,6 +9904,8 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
   [Switch]$Advanced, # Will add about 2 seconds per rights
   [Switch]$IncludeInherited,
   [Switch]$HideProgress,
+  [Switch]$HideID,
+  [Switch]$ShowCondition,
   [parameter(Mandatory = $false, ParameterSetName="ShowAll")][Switch]$ShowAll
  )
 
@@ -9957,6 +9960,10 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
 
  if ( $IncludeInherited ) {
   $Arguments += '--include-inherited'
+ }
+
+ if ($ShowCondition) {
+  $Arguments = $Arguments -replace ", id:id",", id:id, condition:condition"
  }
 
  if ( $SubscriptionID ) { # If Subscription ID is found filter on only found subscription, otherwise check all subscriptions
@@ -10042,19 +10049,21 @@ Function Get-AzureADUserRBACRights { # Get all RBAC Rights (Works with Users, Se
    @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }},
    @{Name="principalId";Expression={ $_.principalId }},
    @{Name="SubscriptionID";Expression={$CurrentSubscriptionID}}, scope,
-   @{Name="AssignmentID";Expression={$_.ID}} # Can be used to remove permissions with az role assignment delete --ids
+   @{Name="AssignmentID";Expression={$_.ID}}, condition # Can be used to remove permissions with az role assignment delete --ids
   $GlobalStatus += $CurrentSubscription
  }
  #Print result
  if (! $HideProgress ) { ProgressClear }
  # $GlobalStatus | Sort-Object -Unique id
+ if ($HideID) { $GlobalStatus = $GlobalStatus | Select-Object -ExcludeProperty "*ID" }
+ if (! $Advanced) { $GlobalStatus = $GlobalStatus | Select-Object -ExcludeProperty "UserMail" }
  $GlobalStatus
 }
 Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
  Param (
   [Parameter(Mandatory=$true)]$UserPrincipalName
  )
- $CurrentRights = Get-AzureADUserRBACRights -UserPrincipalName $UserPrincipalName
+ $CurrentRights = Get-AzureADRBACRights -UserPrincipalName $UserPrincipalName
  $CurrentRights | Where-Object Type -eq User | ForEach-Object {
   Progress -Message "Removing permission " -Value "$($_.roleDefinitionName) from user $($UserPrincipalName) from scope $($_.scope)"
   Remove-AzureADRBACRights -AssignmentID $_.AssignmentID
@@ -10452,7 +10461,7 @@ Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Ri
   $CurrentSubscriptionName = $_.name
   $AppRegistration | ForEach-Object {
    Progress -Message "Currently checking App Registration " -Value "`'$($_.appDisplayName)`' on subscription `'$CurrentSubscriptionName`'" -PrintTime
-   Get-AzureADUserRBACRights -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserPrincipalName $_.appId -UserDisplayName $_.appDisplayName
+   Get-AzureADRBACRights -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserPrincipalName $_.appId -UserDisplayName $_.appDisplayName
   }
  }
 }
@@ -10464,7 +10473,7 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  )
  if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID }
 
- Get-AzureADUserRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
+ Get-AzureADRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
   @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
@@ -11470,24 +11479,6 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
  }
  $Result
 }
-Function Get-AzureADRoleAssignementsEligible { # Extract all assigned Eligible role - Requires module : Microsoft.Graph.DeviceManagement.Enrolment
-
- $CurrentConnection = Get-MgContext | where-object { ($_.ContextScope -eq "Process") -and ($_.Scopes -contains "RoleManagement.Read.All") }
- if (!$CurrentConnection) { Open-MgGraphConnection -Scopes 'RoleManagement.Read.All' -ContextScope 'Process' }
-
- $EligibleRoles = Get-MgRoleManagementDirectoryRoleEligibilityScheduleInstance
- Convert-AzureADRoleAssignements $($EligibleRoles | Select-Object DirectoryScopeId,PrincipalId,RoleDefinitionId) -Verbose | Select-Object `
- @{name="AdministrativeRole";expression={$_.RoleName}},
- @{name="Type";expression={($_.ObjectType.split("."))[-1]}},displayName,
- @{name="Id";expression={$_.ObjectID}},
- @{name="userPrincipalName";expression={$_.UPN}},
- @{name="mail";expression={$_.Mail}},
- @{name="RoleDescription";expression={$_.RoleDescription}},
- @{name="PermissionType";expression={'Eligible'}},
- @{name="Scope";expression={$_.ScopeId}}
-
- Disconnect-MgGraph | Out-Null
-}
 Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID - Missing Eligible
  Param (
   $UserObjectID
@@ -11857,12 +11848,15 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   $ExportFileName = "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   [Parameter(Mandatory)]$Token
  )
+
+ # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
+
+ # Init Variables
  $Count=0
  $GlobalResult = @()
  $ContinueRunning = $True
  $FirstRun=$True
- # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
- 
+  
  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
 
  $header = @{
@@ -11870,7 +11864,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   'Content-type'  = "application/json"
  }
 
- While ($ContinueRunning -eq $True) {
+ While ($ContinueRunning) {
   Progress -Message "Getting all MFA Status of Users Loop $Count : " -Value $GlobalResult.Count -PrintTime
   Try {
    if ($FirstRun) {
@@ -12026,6 +12020,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   [Switch]$Recurse,
   [Switch]$ForceName,
   [Switch]$RecurseHideGroups, # Using recursive still shows groups by default, but using this switch they will be hidden
+  [Switch]$Fast,
   $Token
  )
 
@@ -12072,7 +12067,11 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
  While ($ContinueRunning) { # Run until there are results
   if ($FirstRun) {
    if ($Token) {
-    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
+    if ($Fast) {
+    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=GroupName,userPrincipalName,GroupID,id"
+    } else {
+     $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
+    }
     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
    } else {
     $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
@@ -12081,7 +12080,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
    $FirstRun=$False
   } else {
    if ($Token) {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
     # Add error management for API limitation of Azure
@@ -12296,7 +12295,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
   [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
   $ExportFileName = "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $SleepDurationInS = 2,
+  $Throttle = 2,
   $Token,
   [Switch]$NoFileExport
  )
@@ -12304,91 +12303,76 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
  if ($Advanced) {
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
  } elseif ($Graph) {
-
-  if ($Token) {
+  Try {
    if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
    }
-  }
-
-  # To Add License check
-  if ($Token) {
+   # To Add License check
    $SKUList = Get-AzureSKUs -Token $Token
-  } else {
-   $SKUList = Get-AzureSKUs
-  }
-  $Count=0
-  $GlobalResult = @()
-  $Date_Today = Get-Date
-  $FirstRun = $True
-  $ContinueRunning = $True
-  While ($ContinueRunning) {
-   Progress -Message "Getting all users info Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime
-   if ($FirstRun) {
-    if ($Token) {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$top=999&`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"
+
+   # Init Variables
+   $Count=0
+   $GlobalResult = @()
+   $FirstRun = $True
+   $ContinueRunning = $True
+ 
+   While ($ContinueRunning) {
+    Progress -Message "Getting all User Status Loop $Count : " -Value $GlobalResult.Count -PrintTime
+    if ($FirstRun) {
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$top=999&`$select=id,userPrincipalName,
+     displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,
+     creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"
+     $FirstRun=$False
     } else {
-     $CurrentResult = az rest --method GET --uri '"https://graph.microsoft.com/beta/users?$top=999&$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"' -o json  | ConvertFrom-Json
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
     }
-    $FirstRun=$False
-   } else {
-    if ($Token) {
-     $ResultJson = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
-    } else {
-     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-    }
-    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
-     Start-Sleep 10
-     Continue
-    }
-    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-    if (! $Token ) {$CurrentResult =  $CurrentResult | convertfrom-json}
-   }
-   if ($Token) {
     $NextRequest = $CurrentResult.'@odata.nextLink'
-   } else { # For Az Cli, we need to add characters
-    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
+    $Count++
+    $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses,onPremisesSyncEnabled *,
+    @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
+     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
+     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
+     @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
+     @{name="onPremisesSyncEnabled";expression={
+      if ($_.onPremisesSyncEnabled -eq "True") { # To avoid empty values of OnPremSync
+       "True"
+      } else {
+       "False"
+      }
+     }},
+     @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
+     @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
+     @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
+     @{name="extensionAttribute4";expression={$_.onPremisesExtensionAttributes.extensionAttribute4}},
+     @{name="extensionAttribute5";expression={$_.onPremisesExtensionAttributes.extensionAttribute5}},
+     @{name="extensionAttribute6";expression={$_.onPremisesExtensionAttributes.extensionAttribute6}},
+     @{name="extensionAttribute7";expression={$_.onPremisesExtensionAttributes.extensionAttribute7}},
+     @{name="extensionAttribute8";expression={$_.onPremisesExtensionAttributes.extensionAttribute8}},
+     @{name="extensionAttribute9";expression={$_.onPremisesExtensionAttributes.extensionAttribute9}},
+     @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
+     @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
+     @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}},
+     @{name="extensionAttribute13";expression={$_.onPremisesExtensionAttributes.extensionAttribute13}},
+     @{name="extensionAttribute14";expression={$_.onPremisesExtensionAttributes.extensionAttribute14}},
+     @{name="extensionAttribute15";expression={$_.onPremisesExtensionAttributes.extensionAttribute15}},
+     @{name="License";expression={(($_.assignedLicenses | ForEach-Object { ($SKUList[$SKUList.skuId.indexof($_.skuid)]).skuPartNumber}) | Sort-Object ) -join "," }}
    }
-   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-   $Count++
-   $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses,onPremisesSyncEnabled *,
-   @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
-    @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
-    @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
-    @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
-    @{name="DaysSinceLastUse";expression={(NEW-TIMESPAN -Start $_.signInActivity.lastSuccessfulSignInDateTime -End $Date_Today).Days}},
-    @{name="onPremisesSyncEnabled";expression={
-     if ($_.onPremisesSyncEnabled -eq "True") { # To avoid empty values of OnPremSync
-      "True"
-     } else {
-      "False"
-     }
-    }},
-    @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
-    @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
-    @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
-    @{name="extensionAttribute4";expression={$_.onPremisesExtensionAttributes.extensionAttribute4}},
-    @{name="extensionAttribute5";expression={$_.onPremisesExtensionAttributes.extensionAttribute5}},
-    @{name="extensionAttribute6";expression={$_.onPremisesExtensionAttributes.extensionAttribute6}},
-    @{name="extensionAttribute7";expression={$_.onPremisesExtensionAttributes.extensionAttribute7}},
-    @{name="extensionAttribute8";expression={$_.onPremisesExtensionAttributes.extensionAttribute8}},
-    @{name="extensionAttribute9";expression={$_.onPremisesExtensionAttributes.extensionAttribute9}},
-    @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
-    @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
-    @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}},
-    @{name="extensionAttribute13";expression={$_.onPremisesExtensionAttributes.extensionAttribute13}},
-    @{name="extensionAttribute14";expression={$_.onPremisesExtensionAttributes.extensionAttribute14}},
-    @{name="extensionAttribute15";expression={$_.onPremisesExtensionAttributes.extensionAttribute15}},
-    @{name="License";expression={(($_.assignedLicenses | ForEach-Object { ($SKUList[$SKUList.skuId.indexof($_.skuid)]).skuPartNumber}) | Sort-Object ) -join "," }}
+  } catch {
+   $ErrorInfo = $Error[0]
+   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") { 
+    Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
+   } else {
+    Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
+   }
   }
   if ($NoFileExport) {
    return $GlobalResult
   } else {
    $GlobalResult | Export-CSV $ExportFileName
+   Write-Blank
    return $ExportFileName
   }
  } else { # When launched without param
