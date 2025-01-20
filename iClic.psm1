@@ -4211,10 +4211,13 @@ Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements a
   $ExportFileName = "C:\Temp\Global_ExchangeUserDetails_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $PropertyList = @("Name","DisplayName","WindowsLiveID","ExternalDirectoryObjectId","IsDirSynced","CustomAttribute10","RecipientType","RecipientTypeDetails"),
   $RecipientTypeToCheck = @("MailUser","UserMailbox"),
-  $RecipientTypeDetailsToCheck = @("MailUser","DiscoveryMailbox","EquipmentMailbox","RoomMailbox","SchedulingMailbox","SharedMailbox","TeamMailbox","UserMailbox")
+  $RecipientTypeDetailsToCheck = @("MailUser","DiscoveryMailbox","EquipmentMailbox","RoomMailbox","SchedulingMailbox","SharedMailbox","TeamMailbox","UserMailbox"),
+  [Switch]$UsingToken
  )
- if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
- Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList | Export-Csv $ExportFileName
+ if (! $UsingToken) {
+  if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
+ } 
+  Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList | Export-Csv $ExportFileName
  return $ExportFileName
 }
 # Checks
@@ -10272,20 +10275,30 @@ Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST 
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
   [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
   [Switch]$ShowOwner,
-  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient"
+  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient",
+  $Token
  )
  if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
  } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
  } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
  }
-
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'" --headers Content-Type=application/json | ConvertFrom-Json).value
+ $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  (Invoke-RestMethod -Method GET -headers $headers -Uri $GraphURI).value
+ } else {
+  (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
+ }
 }
 Function Get-AzureAppRegistrationFromAppID {
  Param (
   [Parameter(Mandatory)]$AppID,
   $Value = "displayName", # or UserPrincipalName
-  $Token
+  [Parameter(Mandatory)]$Token
  )
  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
  $headers = @{
@@ -12232,7 +12245,7 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI) o
   az ad group member remove --group $GroupGUID --member-id $UserGUID
  }
 }
-Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI)
+Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI or token)
  Param (
   [Parameter(Mandatory)]$GroupName,
   [Parameter(Mandatory)]$UPNorID,
