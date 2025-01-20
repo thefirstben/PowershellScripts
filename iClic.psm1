@@ -11893,7 +11893,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
  $GlobalResult = @()
  $ContinueRunning = $True
  $FirstRun=$True
-  
+
  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
 
  $header = @{
@@ -11929,7 +11929,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
    Start-Sleep -Seconds 2
   } catch {
    $ErrorInfo = $Error[0]
-   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") { 
+   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
     Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
    } else {
     Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
@@ -12354,7 +12354,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    $GlobalResult = @()
    $FirstRun = $True
    $ContinueRunning = $True
- 
+
    While ($ContinueRunning) {
     Progress -Message "Getting all User Status Loop $Count : " -Value $GlobalResult.Count -PrintTime
     if ($FirstRun) {
@@ -12399,7 +12399,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    }
   } catch {
    $ErrorInfo = $Error[0]
-   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") { 
+   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
     Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
    } else {
     Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
@@ -12466,7 +12466,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   if ($Token) {
    $ManagerJson = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/manager"
   } else {
-   $ManagerJson = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json 
+   $ManagerJson = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json
   }
   $Manager = $ManagerJson | Select-Object `
     @{name="ManagerdisplayName";expression={$_.displayName}},
@@ -12942,32 +12942,32 @@ Function Get-AzureConditionalAccessPolicies {
 
  $NamedLocations = Get-AzureConditionalAccessLocations -Token $Token
 
- if ($ShowOnlyEnabled) { $Result = $Result | Where-Object state -eq enabled } 
- 
+ if ($ShowOnlyEnabled) { $Result = $Result | Where-Object state -eq enabled }
+
  $Result | Select-Object `
  id,displayName,createdDateTime,modifiedDateTime,state,
  @{name="Access_Control";expression={$_.grantControls.builtInControls -join(" "+$_.grantControls.operator+" ")}},
  @{name="IncludedUsers";expression={
-  if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) { 
+  if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
    ($_.conditions.users.includeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
-  } else { 
-   $_.conditions.users.includeUsers 
+  } else {
+   $_.conditions.users.includeUsers
   }
  }},
  @{name="includeGroups";expression={
-  if ($_.conditions.users.includeGroups) { 
+  if ($_.conditions.users.includeGroups) {
    ($_.conditions.users.includeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
   } else {
-   $_.conditions.users.includeGroups 
+   $_.conditions.users.includeGroups
   }
  }},
  @{name="includeRoles";expression={$_.conditions.users.includeRoles}},
  @{name="includeGuestsOrExternalUsers";expression={($_.conditions.users.includeGuestsOrExternalUsers.guestOrExternalUserTypes) -join(";")}},
  @{name="excludeUsers";expression={
-  ($_.conditions.users.excludeUsers | ForEach-Object { Get-AzureADUserSingleValueFromID -Token $Token -ID $_ } ) -Join(";")
+  ($_.conditions.users.excludeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
  }},
  @{name="excludeGroups";expression={
-  ($_.conditions.users.excludeGroups | ForEach-Object { Get-AzureADGroupSingleValueFromID -Token $Token -ID $_ } ) -Join(";")
+  ($_.conditions.users.excludeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
  }},
  @{name="excludeRoles";expression={$_.conditions.users.excludeRoles}},
  @{name="excludeGuestsOrExternalUsers";expression={($_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes) -join(";")}},
@@ -12999,17 +12999,17 @@ Function Get-AzureConditionalAccessPolicies {
   if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "exclude"}).Rule }
  }},
  @{name="includeLocations";expression={
-  if (($_.conditions.locations.includeLocations ) -and ($_.conditions.locations.includeLocations -ne "All")) { 
+  if (($_.conditions.locations.includeLocations ) -and ($_.conditions.locations.includeLocations -ne "All")) {
    ($_.conditions.locations.includeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
-  } else { 
-   $_.conditions.locations.includeLocations 
+  } else {
+   $_.conditions.locations.includeLocations
   }
  }},
  @{name="excludeLocations";expression={
-  if (($_.conditions.locations.excludeLocations ) -and ($_.conditions.locations.excludeLocations  -ne "All")) { 
+  if (($_.conditions.locations.excludeLocations ) -and ($_.conditions.locations.excludeLocations  -ne "All")) {
    ($_.conditions.locations.excludeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
-  } else { 
-   $_.conditions.locations.excludeLocations 
+  } else {
+   $_.conditions.locations.excludeLocations
   } }}
 }
 
