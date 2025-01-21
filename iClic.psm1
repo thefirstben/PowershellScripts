@@ -4208,17 +4208,23 @@ Function Get-O365MemberOf {
 }
 Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements at the time (and loop is about every 2 to 5 seconds)
  Param (
-  $ExportFileName = "C:\Temp\Global_ExchangeUserDetails_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $PropertyList = @("Name","DisplayName","WindowsLiveID","ExternalDirectoryObjectId","IsDirSynced","CustomAttribute10","RecipientType","RecipientTypeDetails"),
   $RecipientTypeToCheck = @("MailUser","UserMailbox"),
   $RecipientTypeDetailsToCheck = @("MailUser","DiscoveryMailbox","EquipmentMailbox","RoomMailbox","SchedulingMailbox","SharedMailbox","TeamMailbox","UserMailbox"),
-  [Switch]$UsingToken
+  $ExportFileName = "C:\Temp\Global_ExchangeUserDetails_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  [Switch]$UsingToken,
+  [Switch]$Export
  )
  if (! $UsingToken) {
   if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
  } 
-  Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList | Export-Csv $ExportFileName
- return $ExportFileName
+  $Result = Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList
+ if ($Export) {
+  $Result | Export-Csv $ExportFileName
+  return $ExportFileName
+ } else {
+  $Result
+ }
 }
 # Checks
 Function Assert-O365DistributionList {
@@ -10305,7 +10311,12 @@ Function Get-AzureAppRegistrationFromAppID {
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
  }
- (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'").Value.$Value
+ $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'").Value.$Value
+ if ($Result) {
+  $Result
+ } else {
+  "$AppID ($Value not found)"
+ }
 }
 Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
  Param (
@@ -11013,9 +11024,34 @@ Function Get-AzureServicePrincipalIDFromAppName { # Get Azure Service Principal 
 }
 Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Name from Object ID
  Param (
-  [parameter(Mandatory=$true)][String]$ID
+  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
+  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
+  $Value = "displayName", # or UserPrincipalName
+  $Token
  )
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals/$ID`?`$select=displayName" --headers Content-Type=application/json | ConvertFrom-Json).displayName
+ 
+ if ($ID) {
+  $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals/$ID`?`$select=$Value"
+ } else {
+  $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'"
+ }
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
+ } else {
+  $Result = (az rest --method GET --uri $RequestURL --headers Content-Type=application/json | ConvertFrom-Json)
+ }
+
+ # Result format is different depending on the request
+ if ($ID) {
+  $Result.$Value
+ } else {
+  $Result.value.$Value
+ }
 }
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  Param (
@@ -12118,7 +12154,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   if ($FirstRun) {
    if ($Token) {
     if ($Fast) {
-    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=GroupName,userPrincipalName,GroupID,id"
+    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
     } else {
      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
     }
@@ -12158,9 +12194,22 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
 }
 Function Get-AzureADGroupIDFromName {
  Param (
-  [Parameter(Mandatory)]$GroupName
+  [Parameter(Mandatory)]$GroupName,
+  $Token
  )
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.id
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Write-Error "Token is invalid, provide a valid token"
+   return
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'").value.id
+ } else {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.id
+ }
 }
 Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
  Param (
@@ -12772,6 +12821,107 @@ Function Convert-AccessToken {
 Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
  (az account get-access-token --scope https://graph.microsoft.com/.default | ConvertFrom-Json).accessToken | Get-JwtPayload | ConvertFrom-Json
 }
+# Conditional Access
+Function Get-AzureConditionalAccessLocations {
+ Param (
+  [Parameter(Mandatory)]$Token
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations").value | Select-Object `
+ id,displayName,@{name="Location_Type";expression={($'@odata.type' -split('.'))[-1]}},isTrusted,@{name="Country";expression={$_.countriesAndRegions -join(";")}},
+ countryLookupMethod,@{name="IP_Range";expression={$_.iPRanges.cidrAddress -join(";")}}
+}
+Function Get-AzureConditionalAccessPolicies {
+ Param (
+  [Parameter(Mandatory)]$Token,
+  [Switch]$ShowOnlyEnabled,
+  $NameFilter
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies").value
+
+ $NamedLocations = Get-AzureConditionalAccessLocations -Token $Token
+
+ if ($NameFilter) { $Result = $Result | Where-Object displayName -like $NameFilter }
+
+ if ($ShowOnlyEnabled) { $Result = $Result | Where-Object state -eq enabled }
+
+ $Result | Select-Object `
+ id,displayName,createdDateTime,modifiedDateTime,state,
+ @{name="Access_Control";expression={$_.grantControls.builtInControls -join(" "+$_.grantControls.operator+" ")}},
+ @{name="IncludedUsers";expression={
+  if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
+   ($_.conditions.users.includeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
+  } else {
+   $_.conditions.users.includeUsers
+  }
+ }},
+ @{name="includeGroups";expression={
+  if ($_.conditions.users.includeGroups) {
+   ($_.conditions.users.includeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
+  } else {
+   $_.conditions.users.includeGroups
+  }
+ }},
+ @{name="includeRoles";expression={$_.conditions.users.includeRoles}},
+ @{name="includeGuestsOrExternalUsers";expression={($_.conditions.users.includeGuestsOrExternalUsers.guestOrExternalUserTypes) -join(";")}},
+ @{name="excludeUsers";expression={
+  ($_.conditions.users.excludeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
+ }},
+ @{name="excludeGroups";expression={
+  ($_.conditions.users.excludeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
+ }},
+ @{name="excludeRoles";expression={$_.conditions.users.excludeRoles}},
+ @{name="excludeGuestsOrExternalUsers";expression={($_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes) -join(";")}},
+ @{name="includeApplications";expression={
+  ($_.conditions.applications.includeApplications | ForEach-Object { Get-AzureServicePrincipalNameFromID -AppID  $_ -Token $Token }) -Join(";")
+ }},
+ @{name="excludeApplications";expression={
+  ($_.conditions.applications.excludeApplications | ForEach-Object { Get-AzureServicePrincipalNameFromID -AppID  $_ -Token $Token }) -Join(";")
+ }},
+ @{name="includePlatforms";expression={
+  $_.conditions.platforms.includePlatforms -Join(";")
+ }},
+ @{name="excludePlatforms";expression={
+  $_.conditions.platforms.excludePlatforms -Join(";")
+ }},
+ @{name="signInRiskLevels";expression={
+  $_.conditions.signInRiskLevels -Join(";")
+ }},
+ @{name="userRiskLevels";expression={
+  $_.conditions.userRiskLevels -Join(";")
+ }},
+ @{name="clientAppTypes";expression={
+  $_.conditions.clientAppTypes -Join(";")
+ }},
+ @{name="deviceFilterIncluded";expression={
+  if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "include"}).Rule }
+ }},
+ @{name="deviceFilterExluded";expression={
+  if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "exclude"}).Rule }
+ }},
+ @{name="includeLocations";expression={
+  if (($_.conditions.locations.includeLocations ) -and ($_.conditions.locations.includeLocations -ne "All")) {
+   ($_.conditions.locations.includeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
+  } else {
+   $_.conditions.locations.includeLocations
+  }
+ }},
+ @{name="excludeLocations";expression={
+  if (($_.conditions.locations.excludeLocations ) -and ($_.conditions.locations.excludeLocations  -ne "All")) {
+   ($_.conditions.locations.excludeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
+  } else {
+   $_.conditions.locations.excludeLocations
+  } }}
+}
 # Misc
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
  Param (
@@ -12926,104 +13076,6 @@ Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptio
  } else {
   ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
  }
-}
-Function Get-AzureConditionalAccessLocations {
- Param (
-  [Parameter(Mandatory)]$Token
- )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations").value | Select-Object `
- id,displayName,@{name="Location_Type";expression={($'@odata.type' -split('.'))[-1]}},isTrusted,@{name="Country";expression={$_.countriesAndRegions -join(";")}},
- countryLookupMethod,@{name="IP_Range";expression={$_.iPRanges.cidrAddress -join(";")}}
-}
-
-Function Get-AzureConditionalAccessPolicies {
- Param (
-  [Parameter(Mandatory)]$Token,
-  [Switch]$ShowOnlyEnabled
- )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies").value
-
- $NamedLocations = Get-AzureConditionalAccessLocations -Token $Token
-
- if ($ShowOnlyEnabled) { $Result = $Result | Where-Object state -eq enabled }
-
- $Result | Select-Object `
- id,displayName,createdDateTime,modifiedDateTime,state,
- @{name="Access_Control";expression={$_.grantControls.builtInControls -join(" "+$_.grantControls.operator+" ")}},
- @{name="IncludedUsers";expression={
-  if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
-   ($_.conditions.users.includeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
-  } else {
-   $_.conditions.users.includeUsers
-  }
- }},
- @{name="includeGroups";expression={
-  if ($_.conditions.users.includeGroups) {
-   ($_.conditions.users.includeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
-  } else {
-   $_.conditions.users.includeGroups
-  }
- }},
- @{name="includeRoles";expression={$_.conditions.users.includeRoles}},
- @{name="includeGuestsOrExternalUsers";expression={($_.conditions.users.includeGuestsOrExternalUsers.guestOrExternalUserTypes) -join(";")}},
- @{name="excludeUsers";expression={
-  ($_.conditions.users.excludeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
- }},
- @{name="excludeGroups";expression={
-  ($_.conditions.users.excludeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
- }},
- @{name="excludeRoles";expression={$_.conditions.users.excludeRoles}},
- @{name="excludeGuestsOrExternalUsers";expression={($_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes) -join(";")}},
- @{name="includeApplications";expression={
-  ($_.conditions.applications.includeApplications | ForEach-Object { Get-AzureAppRegistrationFromAppID -Token $Token -AppID $_ }) -Join(";")
- }},
- @{name="excludeApplications";expression={
-  ($_.conditions.applications.excludeApplications | ForEach-Object { Get-AzureAppRegistrationFromAppID -Token $Token -AppID $_ }) -Join(";")
- }},
- @{name="includePlatforms";expression={
-  $_.conditions.platforms.includePlatforms -Join(";")
- }},
- @{name="excludePlatforms";expression={
-  $_.conditions.platforms.excludePlatforms -Join(";")
- }},
- @{name="signInRiskLevels";expression={
-  $_.conditions.signInRiskLevels -Join(";")
- }},
- @{name="userRiskLevels";expression={
-  $_.conditions.userRiskLevels -Join(";")
- }},
- @{name="clientAppTypes";expression={
-  $_.conditions.clientAppTypes -Join(";")
- }},
- @{name="deviceFilterIncluded";expression={
-  if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "include"}).Rule }
- }},
- @{name="deviceFilterExluded";expression={
-  if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "exclude"}).Rule }
- }},
- @{name="includeLocations";expression={
-  if (($_.conditions.locations.includeLocations ) -and ($_.conditions.locations.includeLocations -ne "All")) {
-   ($_.conditions.locations.includeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
-  } else {
-   $_.conditions.locations.includeLocations
-  }
- }},
- @{name="excludeLocations";expression={
-  if (($_.conditions.locations.excludeLocations ) -and ($_.conditions.locations.excludeLocations  -ne "All")) {
-   ($_.conditions.locations.excludeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
-  } else {
-   $_.conditions.locations.excludeLocations
-  } }}
 }
 
 #Alias
