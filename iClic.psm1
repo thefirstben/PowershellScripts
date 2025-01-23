@@ -4217,7 +4217,7 @@ Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements a
  )
  if (! $UsingToken) {
   if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
- } 
+ }
   $Result = Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList
  if ($Export) {
   $Result | Export-Csv $ExportFileName
@@ -10822,35 +10822,61 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
  }
 
 }
-Function Get-AzureAppRegistrationSecretCount { # Get Azure App Registration Key count for app registration (Secret ; Certificate ; Federated Credential)
+Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
  Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationName")]$AppRegistrationName,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationObjectID")]$AppRegistrationObjectID,
+  [switch]$Count,
+  $Token
  )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
- $AppInfo = (az ad app show --id $AppRegistrationID --query '{passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}'  | ConvertFrom-Json)
- $FederatedCredentialJSON = az rest --method get --url "https://graph.microsoft.com/beta/applications/$AppRegistrationID/federatedIdentityCredentials" --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
- $FederatedCredential = ($FederatedCredentialJSON | ConvertFrom-Json).value
- $KeyCount = $AppInfo.keyCredentials.Count + $AppInfo.passwordCredentials.Count + $FederatedCredential.Count
- Return $KeyCount
-}
-Function Get-AzureAppRegistrationPassword { # Get Azure App Registration Secret
- Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
- )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
- $AppInfo = (az ad app show --id $AppRegistrationID --query '{passwordCredentials:passwordCredentials}'  | ConvertFrom-Json)
- Return $AppInfo.passwordCredentials
-}
-Function Get-AzureAppRegistrationCertificate { # Get Azure App Registration Secret
- Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
- )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
- $AppInfo = (az ad app show --id $AppRegistrationID --query '{keyCredentials:keyCredentials}'  | ConvertFrom-Json)
- Return $AppInfo.keyCredentials
+
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Write-Error "Token is invalid, provide a valid token"
+   return
+  }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $Token }
+  elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $Token }
+  else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $Token}
+ } else {
+  if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" }
+  elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" }
+  else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName"}
+ }
+
+ $SecretRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)"
+ $FederatedCredRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)/federatedIdentityCredentials"
+
+
+
+ if ($Token) {
+  $AppInfoFull = Invoke-RestMethod -Method GET -headers $headers -Uri $SecretRequest
+  $FederatedCredentialFull = Invoke-RestMethod -Method GET -headers $headers -Uri $FederatedCredRequest
+ } else {
+  # Get Secret and Certificate
+  $AppInfoJSON = az rest --method get --url $SecretRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+  $AppInfoFull = $AppInfoJSON | ConvertFrom-Json
+  # Get Federated Credential
+  $FederatedCredentialJSON = az rest --method get --url $FederatedCredRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+  $FederatedCredentialFull = $FederatedCredentialJSON | ConvertFrom-Json
+ }
+
+ $FederatedCredential = $FederatedCredentialFull.Value
+ $AppInfo = $AppInfoFull | Select-Object AppId,ID,displayName,passwordCredentials,keyCredentials
+ # Merge Data
+ $AppInfo | Add-Member -Name FederatedCredential -Value $FederatedCredential -MemberType NoteProperty
+
+ if ($Count) {
+  $KeyCount = $AppInfo.keyCredentials.Count + $AppInfo.passwordCredentials.Count + $AppInfo.FederatedCredential.Count
+  return $KeyCount
+ } else {
+  Return $AppInfo
+ }
 }
 Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
  Param (
@@ -10863,8 +10889,6 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
   $Token
  )
 
-
-
  if ($Token) {
   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
    Write-Error "Token is invalid, provide a valid token"
@@ -10874,17 +10898,28 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
   }
- }
-
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
-
- if ($(Get-AzureAppRegistrationSecretCount -AppRegistrationID $AppRegistrationID) -gt 1) {
-  write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
-  if (! $Force) { return }
+  if ($AppRegistrationName) {
+   $AppInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -Token $Token
+  } else {
+   $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -Token $Token
+  }
+  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count) -gt 1) {
+   write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
+   if (! $Force) { return }
+  }
+ } else { # If not using Token
+  if ($AppRegistrationName) {
+   $AppInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName
+  } else {
+   $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID
+  }
+  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count) -gt 1) {
+   write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
+   if (! $Force) { return }
+  }
  }
 
  # Parameters
- $AppInfo = (az ad app show --id $AppRegistrationID -o json | convertfrom-json)
  $AppObjectId = $AppInfo.ID
  $AppName = $AppInfo.displayName
 
@@ -10897,7 +10932,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
     "endDateTime" = Format-Date($((Get-Date).AddMonths($AppMonths)))
    }
   }
-  $ParamJson = $params | convertto-json
+  $ParamJson = $params | ConvertTo-Json
   $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
  } else {
   $body = '"{\"passwordCredential\": {\"displayName\": \"' + $SecretDescription + '\",\"endDateTime\": \"' + $((Get-Date).AddMonths($AppMonths)) + '\"}}"'
@@ -11029,7 +11064,7 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
   $Value = "displayName", # or UserPrincipalName
   $Token
  )
- 
+
  if ($ID) {
   $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals/$ID`?`$select=$Value"
  } else {
@@ -12637,7 +12672,8 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
    $ParamJson = $params | convertto-json
    Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID"  -Body $ParamJson | Out-Null
    if ($ShowResult) {
-    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID" | Select-Object displayName,userPrincipalName,@{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$("extensionAttribute"+$ExtensionAttributeNumber)}}
+    $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
+    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID" | Select-Object displayName,userPrincipalName,@{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
    }
   } catch {
    $Exception = $($Error[0])
