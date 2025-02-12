@@ -43,7 +43,7 @@
 # Methods to look into a hastable from slowest to fastest
 #  Measure-Command {$AppRegistrationExpiration.apptags | Where-Object {$_.Contact -eq "$ValueToSearch"}}
 #  Measure-Command {$AppRegistrationExpiration.apptags.Where{$_.Contact -eq "$ValueToSearch"}}
-#  Measure-Command {$AppRegistrationExpiration[$AppRegistrationExpiration.apptags.indexof($ValueToSearch)]}
+#  Measure-Command {$AppRegistrationExpiration[$AppRegistrationExpiration.apptags.indexof($ValueToSearch)]} # WARNING INDEXOF RETURN -1 IF NO VALUE FOUND
 # Az CLI Token Management
 #  To use Current user token for Az : $UserToken = az account get-access-token
 
@@ -10830,55 +10830,55 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
   [switch]$Count,
   $Token
  )
-
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Write-Error "Token is invalid, provide a valid token"
-   return
+ try {
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+   $headers = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $Token }
+   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $Token }
+   else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $Token}
+  } else {
+   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" }
+   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" }
+   else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName"}
   }
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
+
+  $SecretRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)"
+  $FederatedCredRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)/federatedIdentityCredentials"
+
+  if ($Token) {
+   $AppInfoFull = Invoke-RestMethod -Method GET -headers $headers -Uri $SecretRequest
+   $FederatedCredentialFull = Invoke-RestMethod -Method GET -headers $headers -Uri $FederatedCredRequest
+  } else {
+   # Get Secret and Certificate
+   $AppInfoJSON = az rest --method get --url $SecretRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+   $AppInfoFull = $AppInfoJSON | ConvertFrom-Json
+   # Get Federated Credential
+   $FederatedCredentialJSON = az rest --method get --url $FederatedCredRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+   $FederatedCredentialFull = $FederatedCredentialJSON | ConvertFrom-Json
   }
-  if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $Token }
-  elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $Token }
-  else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $Token}
- } else {
-  if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" }
-  elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" }
-  else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName"}
- }
 
- $SecretRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)"
- $FederatedCredRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)/federatedIdentityCredentials"
+  $FederatedCredential = $FederatedCredentialFull.Value
+  $AppInfo = $AppInfoFull | Select-Object AppId,ID,displayName,passwordCredentials,keyCredentials
+  # Merge Data
+  $AppInfo | Add-Member -Name FederatedCredential -Value $FederatedCredential -MemberType NoteProperty
 
-
-
- if ($Token) {
-  $AppInfoFull = Invoke-RestMethod -Method GET -headers $headers -Uri $SecretRequest
-  $FederatedCredentialFull = Invoke-RestMethod -Method GET -headers $headers -Uri $FederatedCredRequest
- } else {
-  # Get Secret and Certificate
-  $AppInfoJSON = az rest --method get --url $SecretRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-  $AppInfoFull = $AppInfoJSON | ConvertFrom-Json
-  # Get Federated Credential
-  $FederatedCredentialJSON = az rest --method get --url $FederatedCredRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-  $FederatedCredentialFull = $FederatedCredentialJSON | ConvertFrom-Json
- }
-
- $FederatedCredential = $FederatedCredentialFull.Value
- $AppInfo = $AppInfoFull | Select-Object AppId,ID,displayName,passwordCredentials,keyCredentials
- # Merge Data
- $AppInfo | Add-Member -Name FederatedCredential -Value $FederatedCredential -MemberType NoteProperty
-
- if ($Count) {
-  $KeyCount = $AppInfo.keyCredentials.Count + $AppInfo.passwordCredentials.Count + $AppInfo.FederatedCredential.Count
-  return $KeyCount
- } else {
-  Return $AppInfo
+  if ($Count) {
+   $KeyCount = $AppInfo.keyCredentials.Count + $AppInfo.passwordCredentials.Count + $AppInfo.FederatedCredential.Count
+   return $KeyCount
+  } else {
+   Return $AppInfo
+  }
+ } catch {
+  write-host -foregroundcolor "Red" -Object "Error getting secret from $AppRegistrationID$AppRegistrationName$AppRegistrationObjectID : $($Error[0])"
  }
 }
-Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
+Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI or Token)
  Param (
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
@@ -10903,7 +10903,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI)
   } else {
    $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -Token $Token
   }
-  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count) -gt 1) {
+  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $Token) -gt 1) {
    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
    if (! $Force) { return }
   }
@@ -10991,7 +10991,7 @@ Param (
  if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty ID }
  $Result
 }
-FunctioN Get-AzureAppRegistrationAPPRoles { # List App Roles defined on an App Registration
+Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration
  Param (
  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
@@ -11023,7 +11023,8 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   $Filter,
   [Switch]$ShowAllColumns,
   [Switch]$Fast,
-  $URLFilter
+  $URLFilter,
+  $Token
  )
  $Arguments = '--output', 'json', '--all', '--only-show-errors'
 
@@ -11516,6 +11517,56 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
  if (! $ServicePrincipalID ) { write-host -ForegroundColor Red "Service Principal $ServicePrincipalName not found" ; Return}
 
  Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID/resourceGroups/$ResourceGroupName"
+}
+Function Add-AzureServicePrincipalAssignments {
+ Param (
+  [parameter(Mandatory = $true)]$ServicePrincipalID, # Service Principal To Update
+  [parameter(Mandatory = $true)]$ObjectToAddID, # User or group or object to add
+  $AppRole, # AppRole to add (default : User)
+  [parameter(Mandatory = $true)]$Token
+ )
+ Try {
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+
+ if ($AppRole) {
+  if (Assert-IsGUID $AppRole) {
+   $AppRoleID = $AppRole
+  } else {
+  $AppID = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID`?`$select=AppID").appId
+  $AppRoleID = ((Get-AzureAppRegistrationInfo -AppID $AppID -Token $Token).appRoles | Where-Object displayName -eq "$AppRole").id
+  }
+ }
+
+ $Body = (@{
+  "principalId" = "$ObjectToAddID"
+  "resourceId" =  "$ServicePrincipalID"
+ })
+
+ # App role is not a mandatory value
+ if ($AppRole) {
+  $Body.add("appRoleId" , "$AppRoleID")
+ }
+
+ $BodyJSON = $Body | ConvertTo-JSON -Depth 6
+
+ $CMDParams = @{
+  "URI"         = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
+  "Headers"     = $Headers
+  "Method"      = "POST"
+  "ContentType" = 'application/json'
+  "Body" = $BodyJSON
+ }
+
+ # $CMDParams ;  return
+ Invoke-RestMethod @CMDParams
+ } catch {
+  # write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $(($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message)"
+  write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $($Error[0])"
+ }
 }
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
@@ -12010,7 +12061,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
     @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
     @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
    # Adding a base sleep to avoid being throttled too many times
-   Start-Sleep -Seconds 2
+   Start-Sleep -Seconds 5
   } catch {
    $ErrorInfo = $Error[0]
    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
@@ -12080,7 +12131,10 @@ Function Get-AzureADUserMFADeviceBoundAAGUID {
    'Content-type'  = "application/json"
   }
 
- $aaGuidList = ($usermfa | Where-Object { $_.MFA_Method_passKeyDeviceBound -eq "True" }) | ForEach-Object {
+  $usermfa = Import-csv $InputFile | Where-Object { $_.MFA_Method_passKeyDeviceBound -eq "True" }
+
+ $aaGuidList = $usermfa | ForEach-Object {
+  Progress -Message "Current Users " -PrintTime -Value $_.userDisplayName
   (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$($_.id)/authentication/fido2Methods").value | Select-Object -ExcludeProperty id
  }
  $aaGuidList | Group-Object aaGuid
@@ -12542,14 +12596,14 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
   if ($Token) {
-   $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID"
+   $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID" -MaximumRetryCount 2
   } else {
    $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
   }
  } else {
   $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
   if ($Token) {
-   $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter"
+   $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -MaximumRetryCount 2
   } else {
    $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
   }
@@ -12892,7 +12946,7 @@ Function Get-AzureConditionalAccessPolicies {
 
  $Result | Select-Object `
  id,displayName,createdDateTime,modifiedDateTime,state,
- @{name="Access_Control";expression={$_.grantControls.builtInControls -join(" "+$_.grantControls.operator+" ")}},
+ @{name="Access_Control";expression={($_.grantControls.builtInControls + ("$($_.grantcontrols.authenticationStrength.displayname) [$($_.grantcontrols.authenticationStrength.allowedCombinations -replace ",","+" -join ",")]")) -join(" "+$_.grantControls.operator+" ")}},
  @{name="IncludedUsers";expression={
   if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
    ($_.conditions.users.includeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
@@ -12959,6 +13013,22 @@ Function Get-AzureConditionalAccessPolicies {
   } }}
 }
 # Misc
+Function Get-AzureADUserOwnedDevice {
+ Param (
+  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$UserID,
+  $ValuesToShow = "displayName,deviceOwnership,isCompliant,enrollmentType,enrollmentProfileName,managementType,profileType,trustType,manufacturer,accountEnabled,approximateLastSignInDateTime,createdDateTime"
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+  write-host -ForegroundColor "Red" "Token is invalid, provide a valid token"
+  Return
+ }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/users/$UserID/ownedDevices?`$select=$ValuesToShow").Value
+}
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
  Param (
   [Parameter(Mandatory)]$Access_Policy_Name,
