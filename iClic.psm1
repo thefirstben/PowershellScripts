@@ -52,6 +52,7 @@
 # AzureAD for : Set-AzureADUser, Get-AzureADUser etc.
 # For Azure : Azure CLI
 # To store secure data in Credential Manager : TUN.CredentialManager
+# For Azue Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS
 
 # ToDo : add measure-command function to time functions whenever possible
 
@@ -12839,7 +12840,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
   [parameter(Mandatory = $False, ParameterSetName="ClientKey")]
   [parameter(Mandatory = $False, ParameterSetName="AppRegistration")]$ClientKey,
   [parameter(Mandatory = $False, ParameterSetName="CertificateThumbprint")]
-  [parameter(Mandatory = $False, ParameterSetName="AppRegistration")]$CertificateThumbprint,
+  [parameter(Mandatory = $False, ParameterSetName="AppRegistration")]$CertificateThumbprint, # Thumbprint must be in local user store
   $Resource = "https://graph.microsoft.com/"
  )
 
@@ -12870,25 +12871,27 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
    exp = [int][double]::Parse(((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
    iss = $ApplicationID
    sub = $ApplicationID
-   jti = [guid]::NewGuid().ToString()
   } | ConvertTo-Json -Compress
 
-  $JWTHeaderBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTHeader)).Replace("=", "").Replace("+", "-").Replace("/", "_")
-  $JWTClaimsBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTClaims)).Replace("=", "").Replace("+", "-").Replace("/", "_")
+  $JWTHeaderBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTHeader)).TrimEnd("=")
+  $JWTClaimsBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTClaims))
   $JWTToSign = "$JWTHeaderBase64.$JWTClaimsBase64"
 
   $RSA = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
-  $Signature = [Convert]::ToBase64String($RSA.SignData([System.Text.Encoding]::UTF8.GetBytes($JWTToSign), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1))
+  $Signature = [Convert]::ToBase64String($RSA.SignData(
+   [System.Text.Encoding]::UTF8.GetBytes($JWTToSign),
+   [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+   [System.Security.Cryptography.RSASignaturePadding]::Pkcs1))
   $Signature = $Signature.Replace("=", "").Replace("+", "-").Replace("/", "_")
 
   $ClientAssertion = "$JWTToSign.$Signature"
 
   $Body = @{
-   client_id            = $ApplicationID
-   scope                = $Resource
-   client_assertion     = $ClientAssertion
+   grant_type            = "client_credentials"
+   client_id             = $ApplicationID
+   client_assertion      = $ClientAssertion
    client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-   grant_type           = "client_credentials"
+   resource              = $Resource
   }
 }
 
@@ -12944,9 +12947,9 @@ Function Get-AzureGraph { # Send base graph request without any requirements
 }
 Function Convert-AccessToken {
  Param (
-  $Access_Token
+  $Token
  )
- $Access_Token.access_token | Get-JwtPayload | ConvertFrom-Json
+ $Token.access_token | Get-JwtPayload | ConvertFrom-Json
 
 }
 Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
