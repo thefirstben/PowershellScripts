@@ -12836,7 +12836,10 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
  Param (
   [parameter(Mandatory = $True)]$TenantID,
   [parameter(Mandatory = $True, ParameterSetName="AppRegistration")]$ApplicationID,
-  [parameter(Mandatory = $True, ParameterSetName="AppRegistration")]$ClientKey,
+  [parameter(Mandatory = $False, ParameterSetName="ClientKey")]
+  [parameter(Mandatory = $False, ParameterSetName="AppRegistration")]$ClientKey,
+  [parameter(Mandatory = $False, ParameterSetName="CertificateThumbprint")]
+  [parameter(Mandatory = $False, ParameterSetName="AppRegistration")]$CertificateThumbprint,
   $Resource = "https://graph.microsoft.com/"
  )
 
@@ -12845,12 +12848,50 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
 
  Write-Host "Requesting API Token from $Resource using $ApplicationID" -ForegroundColor Cyan
 
- $Body = @{
-  grant_type    = 'client_credentials'
-  client_id     = $ApplicationID
-  client_secret = $ClientKey
-  resource      = $Resource
- }
+ if ($ClientKey) {
+  $Body = @{
+   grant_type    = 'client_credentials'
+   client_id     = $ApplicationID
+   client_secret = $ClientKey
+   resource      = $Resource
+  }
+ } else {
+  # Authenticate using Certificate
+  $Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My\$CertificateThumbprint"
+  if (-not $Certificate) {
+   throw "Certificate with thumbprint '$CertificateThumbprint' not found."
+  }
+
+  # Generate JWT Assertion for Client Certificate Authentication
+  $JWTHeader = @{ alg = "RS256" ; typ = "JWT" ; x5t = [System.Convert]::ToBase64String($Certificate.GetCertHash()) } | ConvertTo-Json -Compress
+
+  $JWTClaims = @{
+   aud = $LoginURL
+   exp = [int][double]::Parse(((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
+   iss = $ApplicationID
+   sub = $ApplicationID
+   jti = [guid]::NewGuid().ToString()
+  } | ConvertTo-Json -Compress
+
+  $JWTHeaderBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTHeader)).Replace("=", "").Replace("+", "-").Replace("/", "_")
+  $JWTClaimsBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTClaims)).Replace("=", "").Replace("+", "-").Replace("/", "_")
+  $JWTToSign = "$JWTHeaderBase64.$JWTClaimsBase64"
+
+  $RSA = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+  $Signature = [Convert]::ToBase64String($RSA.SignData([System.Text.Encoding]::UTF8.GetBytes($JWTToSign), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1))
+  $Signature = $Signature.Replace("=", "").Replace("+", "-").Replace("/", "_")
+
+  $ClientAssertion = "$JWTToSign.$Signature"
+
+  $Body = @{
+   client_id            = $ApplicationID
+   scope                = $Resource
+   client_assertion     = $ClientAssertion
+   client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+   grant_type           = "client_credentials"
+  }
+}
+
  $tokenRequest = Invoke-WebRequest -Method Post -Uri $LoginURL -ContentType "application/x-www-form-urlencoded" -Body $body -UseBasicParsing
  # Unpack Access Token
  $token = ($tokenRequest.Content | ConvertFrom-Json)
