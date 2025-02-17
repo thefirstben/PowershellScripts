@@ -10187,7 +10187,7 @@ Function New-AzureAppRegistrationBlank { # Create a single App Registration comp
   [Switch]$CreateAssociatedServicePrincipal
  )
  Try {
-  $AppID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID
+  $AppID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID
   if ($AppID) {
    Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID : $AppID"
   } else {
@@ -10276,7 +10276,7 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
  }
 }
 # App Registration [Only]
-Function Get-AzureAppRegistrationInfo { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistrationInfo -AppID $AppID).appRoles | select id,value
+Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
@@ -10319,7 +10319,7 @@ Function Get-AzureAppRegistrationFromAppID {
   "$AppID ($Value not found)"
  }
 }
-Function Get-AzureAppRegistration { # Get all App Registration of a Tenant # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
+Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
  Param (
   [Switch]$ShowAllColumns,
   [Switch]$ShowOwners,
@@ -10394,10 +10394,10 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   $AccessToken
  )
  if ($AppRegistrationID -and (! $AppRegistrationObjectID)) {
-  $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID
+  $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID
  }
  if ($AppRegistrationName -and (! $AppRegistrationObjectID)) {
-  $AppInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName
+  $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName
  }
 
  if ((! $AppInfo.ID) -and (! $AppRegistrationObjectID)) {
@@ -10410,7 +10410,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  }
 
  if (($SearchAppInfo -and (! $AppInfo)) -and ((! $AppRegistrationID) -or (! $AppRegistrationName)) ) {
-  $AppInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID
+  $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID
  }
 
  if (! $AppRegistrationID) { $AppRegistrationID = $AppInfo.appId}
@@ -10430,7 +10430,7 @@ Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Reg
  Param (
   $AccessToken
  )
- Get-AzureAppRegistration -Fast | ForEach-Object {
+ Get-AzureAppRegistrations -Fast | ForEach-Object {
   Progress -Message "Checking current App : " -Value $_.DisplayName
   if ($AccessToken) {
    Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName -AccessToken $AccessToken
@@ -10481,8 +10481,8 @@ Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Regist
   [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName
  )
 
- if ($AppRegistrationID) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).ID }
- if ($AppRegistrationName) { $AppRegistrationObjectID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).ID }
+ if ($AppRegistrationID) { $AppRegistrationObjectID = (Get-AzureAppRegistration -AppID $AppRegistrationID).ID }
+ if ($AppRegistrationName) { $AppRegistrationObjectID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).ID }
 
  Get-AzureAppRegistrationOwner -AppRegistrationObjectID $AppRegistrationObjectID | ForEach-Object {
   Write-Host "Removing Owners from App Registration $AppRegistrationObjectID : $($_.displayName)"
@@ -10509,7 +10509,7 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
   [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName,
   [parameter(Mandatory=$true)]$SubscriptionName
  )
- if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID }
+ if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID }
 
  Get-AzureADRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
   @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
@@ -10522,8 +10522,8 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
   [switch]$HideGUID
  )
 
- if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistrationInfo -AppID $AppRegistrationID).displayName}
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+ if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).displayName}
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
  $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
  $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
    $Rules_List=@()
@@ -10622,7 +10622,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   [ValidateSet("Application","Delegated")]$PermissionType
  )
  # Find Rights ID depending on backend_API_ID
- if ($AppName) { $AppID = (get-azureappregistrationInfo -DisplayName $AppName).AppID }
+ if ($AppName) { $AppID = (Get-AzureAppRegistration -DisplayName $AppName).AppID }
  if ($ServicePrincipalName) { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName }
  if (! $ServicePrincipalID) {
   write-host -ForegroundColor Red "Service Principal `'$ServicePrincipalName`' was not found"
@@ -10773,7 +10773,7 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
   $FunctionParams.Remove('ShowResult') | Out-Null
 
   # Get Current Tags
-  $SP_Info = Get-AzureAppRegistrationInfo @FunctionParams
+  $SP_Info = Get-AzureAppRegistration @FunctionParams
 
   write-colored -Color Cyan -PrintDate -NonColoredText "Current Tags on App Registration `'$($SP_Info.displayName)`' : " $($SP_Info.Tags -join ",")
 
@@ -10840,13 +10840,13 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
    }
-   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $Token }
-   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $Token }
-   else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $Token}
+   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $Token }
+   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $Token }
+   else {$AppRegistrationInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $Token}
   } else {
-   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" }
-   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" }
-   else {$AppRegistrationInfo = Get-AzureAppRegistrationInfo -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName"}
+   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" }
+   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" }
+   else {$AppRegistrationInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName"}
   }
 
   $SecretRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)"
@@ -10900,9 +10900,9 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI or To
    'Content-type'  = "application/json"
   }
   if ($AppRegistrationName) {
-   $AppInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName -Token $Token
+   $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $Token
   } else {
-   $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID -Token $Token
+   $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $Token
   }
   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $Token) -gt 1) {
    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
@@ -10910,9 +10910,9 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI or To
   }
  } else { # If not using Token
   if ($AppRegistrationName) {
-   $AppInfo = Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName
+   $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName
   } else {
-   $AppInfo = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID
+   $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID
   }
   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count) -gt 1) {
    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
@@ -10957,7 +10957,7 @@ Function Remove-AzureAppRegistrationPassword { # Remove Secret to App (uses AZ C
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
   [parameter(Mandatory=$true)]$KeyID
  )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
 
  # Parameters
  $AppInfo = (az ad app show --id $AppRegistrationID -o json | convertfrom-json)
@@ -10976,7 +10976,7 @@ Function Set-AzureAppRegistrationConsent { # Consent on permission (Warning : It
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
  )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
  az ad app permission admin-consent --id $AppRegistrationID
 }
 Function Get-AzureAppRegistrationAPIExposed { # List Service Principal Exposed API (Equivalent of portal 'Expose an API' values)
@@ -10985,7 +10985,7 @@ Param (
  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
  [switch]$HideGUID
 )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
 
  # az ad sp show --id $AppRegistrationID --query "oauth2Permissions[]" --only-show-errors | ConvertFrom-Json
  $Result = (az ad app show --id $AppRegistrationID --query '{Exposed:api.oauth2PermissionScopes}'  | ConvertFrom-Json).Exposed
@@ -10998,8 +10998,8 @@ Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App R
  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
  [switch]$HideGUID
 )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistrationInfo -DisplayName $AppRegistrationName).AppID}
-$Result = Get-AzureAppRegistrationInfo -AppID $AppRegistrationID | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
+ if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
+$Result = Get-AzureAppRegistration -AppID $AppRegistrationID | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
 if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
 $Result
 }
@@ -11538,7 +11538,7 @@ Function Add-AzureServicePrincipalAssignments {
    $AppRoleID = $AppRole
   } else {
   $AppID = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID`?`$select=AppID").appId
-  $AppRoleID = ((Get-AzureAppRegistrationInfo -AppID $AppID -Token $Token).appRoles | Where-Object displayName -eq "$AppRole").id
+  $AppRoleID = ((Get-AzureAppRegistration -AppID $AppID -Token $Token).appRoles | Where-Object displayName -eq "$AppRole").id
   }
  }
 
@@ -12062,7 +12062,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
     @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
     @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
    # Adding a base sleep to avoid being throttled too many times
-   Start-Sleep -Seconds 5
+   Start-Sleep -Seconds $Throttle
   } catch {
    $ErrorInfo = $Error[0]
    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
