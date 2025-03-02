@@ -49,10 +49,9 @@
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
-# AzureAD for : Set-AzureADUser, Get-AzureADUser etc.
-# For Azure : Azure CLI
+# For Azure : Azure CLI or Microsoft.Graph
 # To store secure data in Credential Manager : TUN.CredentialManager
-# For Azue Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS
+# For Azure Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS
 
 # ToDo : add measure-command function to time functions whenever possible
 
@@ -8266,7 +8265,7 @@ Function Get-DuplicatePSModules { # Check duplicate Powershell modules as the ol
  $ModulePaths | ForEach-Object {
   Try {
    Get-ChildItem $_ -Directory -ErrorAction Stop | ForEach-Object {
-    $CurrentModule = $_
+    $CurrentModule = $_.FullName
     $ModuleVersions = Get-ChildItem $CurrentModule -Directory | Select-Object Name,FullName,@{Label='Version';Expression={[Version]$_.Name}} | Sort-Object Version
     if ($ModuleVersions.count -gt 1) {
      $LatestVersion = $($ModuleVersions | Select-Object -Last 1).Name
