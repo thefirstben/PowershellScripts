@@ -49,10 +49,9 @@
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
-# AzureAD for : Set-AzureADUser, Get-AzureADUser etc.
-# For Azure : Azure CLI
+# For Azure : Azure CLI or Microsoft.Graph
 # To store secure data in Credential Manager : TUN.CredentialManager
-# For Azue Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS
+# For Azure Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS
 
 # ToDo : add measure-command function to time functions whenever possible
 
@@ -179,7 +178,9 @@ Function Title { # Used to manage the title of the Powershell Window
  #Add this to be able to import profile in parallele PS commands (Noninteractive check do not work)
  try {
   $Host.UI.RawUI.WindowTitle = "$TitleUserInfo$TitleAdmin$TitlePsVersion$PostMsg$TitleArchitecture"
- } catch {}
+ } catch {
+  Write-Error "Nothing here"
+ }
 }
 Function prompt { # Used to have a "pretty" Powershell prompt showing important info
 
@@ -290,7 +291,9 @@ Function PSWindowResize { # Used to resize the Powershell Window
   [console]::windowwidth=$windowsize
   [console]::SetBufferSize($windowsize,"999")
  # [console]::windowheight=(get-host).UI.RawUI.MaxPhysicalWindowSize.Height
- } catch {}
+ } catch {
+  Write-Error "Nothing here"
+ }
 }
 Function PSWindowsColors { # Used to change default Powershell colors
  Param (
@@ -304,7 +307,9 @@ Function PSWindowsColors { # Used to change default Powershell colors
  if ( ! (Assert-MinPSVersion 5 -CurrentFunction $($MyInvocation.MyCommand)) ) {return}
  try {
   $host.PrivateData.ErrorBackgroundColor = $BG_Color
- } catch {}
+ } catch {
+  Write-Error "Nothing here"
+ }
 }
 Function Progress { # Default progress function, used to show a progress of something that may take time
  Param (
@@ -563,6 +568,7 @@ Function Format-Date {
   $ReturnValue=get-date -uformat $DateFormat $Date -ErrorAction SilentlyContinue
   if (! ($(get-date $ReturnValue) -eq 0)) { return $ReturnValue }
  } catch {
+  Write-Error "Nothing here"
  }
 }
 # Convert Function
@@ -867,6 +873,7 @@ Function Get-DiskUsage { # 'du' equivalent
             @{Name="Size"; Expression={$_.Sum ; $global:TotalSize+=$_.Sum}},
             @{Name="Count"; Expression={$_.Count; $global:TotalCount+=$_.Count}}
   } catch {
+   Write-Error "Nothing here"
   }
 
   ProgressClear
@@ -926,6 +933,7 @@ Function Get-SIDFromUser {
   $strSID = $objUser.Translate([System.Security.Principal.SecurityIdentifier])
   $strSID.Value
  } catch {
+  Write-Error "Nothing here"
  }
 }
 Function Get-UserFromSID {
@@ -1333,7 +1341,7 @@ Function Test-Account {
  )
  # Check if account is in AD and if account is enabled
  if ( ! (Assert-IsCommandAvailable Get-ADUser) ) {return}
- if ( $(try { get-aduser $AdUser } catch {}) ) {if ( (get-aduser $AdUser).Enabled ) {return $true} else {return $false}} else {return $false}
+ if ( $(try { get-aduser $AdUser } catch { Write-Error "Nothing here" }) ) {if ( (get-aduser $AdUser).Enabled ) {return $true} else {return $false}} else {return $false}
 }
 Function Test-Group {
  Param (
@@ -1876,7 +1884,7 @@ Function Get-LangForAllUser {
  New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS | Out-Null
  $ObjUserList=@()
  foreach( $user in $((Get-ChildItem HKU:\).PSChildName | Sort-Object)) {
-  try {$DateFormat=(Get-ItemProperty -ErrorAction SilentlyContinue -Path "HKU:\$user\Control Panel\International")} catch {}
+  try {$DateFormat=(Get-ItemProperty -ErrorAction SilentlyContinue -Path "HKU:\$user\Control Panel\International")} catch { Write-Error "Nothing here" }
   if ($DateFormat) {
    $obj = New-Object PSObject
    if (($user -eq ".DEFAULT") -or ( !(Get-Command "Get-UserFromSID" -ErrorAction SilentlyContinue))) {$login=$user} else { $login=$(Get-UserFromSID $user) }
@@ -2440,7 +2448,7 @@ Function Get-IP {
   if (($_.OperationalStatus -eq "Down") -and ! ($ShowDisconnected)) {Return}
   $IpProperties=$_.GetIPProperties()
   $IpStatistics=$_.GetIPStatistics()
-  $IpMetricInfo=$(Try { Get-NetIPInterface -InterfaceAlias $_.Name -AddressFamily IPv4 } Catch {})
+  $IpMetricInfo=$(Try { Get-NetIPInterface -InterfaceAlias $_.Name -AddressFamily IPv4 } Catch { Write-Error "Nothing here" })
   New-Object PSObject -Property @{
    MAC=$_.GetPhysicalAddress()
    Name=$_.Name
@@ -2496,7 +2504,9 @@ Function Get-IP {
     write-colored $fontcolor (Align -Variable "Driver Description " -Size $alignsize -Ending " : ") $AdapterInfo.DriverDescription
     write-colored $fontcolor (Align -Variable "Driver Info " -Size $alignsize -Ending " : ") $($AdapterInfo.DriverProvider,"[",$AdapterInfo.DriverVersionString,"]","(",$AdapterInfo.DriverDate,")")
     write-colored $fontcolor (Align -Variable "Driver Ndis Version " -Size $alignsize -Ending " : ") $AdapterInfo.NdisVersion
-   } Catch {}
+   } Catch {
+    Write-Error "Nothing here"
+   }
   }
 
     # Driver info
@@ -2504,7 +2514,9 @@ Function Get-IP {
      Try {
       $AdapterBindings = ( Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop  | Get-NetAdapterBinding | Where-Object Enabled ).ComponentID -join ","
       write-colored $fontcolor (Align -Variable "Enabled bindings " -Size $alignsize -Ending " : ") $AdapterBindings
-     } Catch {}
+     } Catch {
+      Write-Error "Nothing here"
+     }
     }
 
   # Network Category
@@ -2521,7 +2533,9 @@ Function Get-IP {
      # Internet Connectivity (IPv6)
      if ($ConnectionProfile.IPv6Connectivity -ne 'Internet') {$StatusColor = "Red"} else { $StatusColor="Green" }
      write-colored $StatusColor (Align -Variable "Internet Access (IPv6)" -Size $alignsize -Ending " : ") $ConnectionProfile.IPv6Connectivity
-    } Catch {}
+    } Catch {
+     Write-Error "Nothing here"
+    }
    }
 
    # IP information
@@ -3512,7 +3526,9 @@ Function Get-ADMembersWithMails {
    $mail=(get-aduser $_.SamAccountName -properties mail).mail
    $allmails=$allmails+$mail+";" }
    write-host -nonewline "$mail;"
-  } catch {}
+  } catch {
+   Write-Error "Nothing here"
+  }
  }
  clear-host
  $allmails
@@ -4923,7 +4939,7 @@ Function CheckDNS {
 Param (
  $Server=$($env:computername)
 )
-try { $IP=[IPAddress]$Server } catch {}
+try { $IP=[IPAddress]$Server } catch { Write-Error "Nothing here" }
 
  try {
 
@@ -4948,7 +4964,7 @@ Function CheckVLAN {
   $GatewayIP
  )
  #1) Check if IP is valid
- try {[ipaddress]$GatewayIP 2>&1>$null} catch {}
+ try {[ipaddress]$GatewayIP 2>&1>$null} catch { Write-Error "Nothing here" }
  if (!$? -or !$GatewayIP -or [regex]::matches("$GatewayIP","\.").count -ne 3) { Write-Colored -Color "red" -NonColoredText  "" "You must provide a correct Gateway IP" ; return}
 
  #2) Show which Gateway will be used
@@ -5254,7 +5270,7 @@ Function Get-Rights {
 
  try {
   # while ( ! $path ) { $path = read-host "Enter path to check" }
-  if ( ! ($(try {test-path $path -ErrorAction SilentlyContinue} catch {}))) {write-Colored -Color "Red" -ColoredText "Please provide a valid path. `"$path`" is not accessible" ; return}
+  if ( ! ($(try {test-path $path -ErrorAction SilentlyContinue} catch { Write-Error "Nothing here" }))) {write-Colored -Color "Red" -ColoredText "Please provide a valid path. `"$path`" is not accessible" ; return}
   $objlist=@()
   get-acl $path | ForEach-Object {$_.Access} | Sort-Object | ForEach-Object {
    $obj = New-Object PSObject
@@ -6663,7 +6679,6 @@ Function Set-KeycloakValue { #To be tested
  Param (
   [Parameter(Mandatory=$true)]$KeycloakURL,
   $Realm = 'master',
-  $MaxAnswers = '20000',
   [Parameter(Mandatory=$true)]$BearerToken,
   [Parameter(Mandatory=$true)]$Request
  )
@@ -6673,7 +6688,6 @@ Function Remove-KeycloakValue { #To be tested
  Param (
   [Parameter(Mandatory=$true)]$KeycloakURL,
   $Realm = 'master',
-  $MaxAnswers = '20000',
   [Parameter(Mandatory=$true)]$BearerToken,
   [Parameter(Mandatory=$true)]$Request
  )
@@ -8225,7 +8239,7 @@ Function Get-WallpaperForAllUsers { # Check the wallpaper applied for all users 
  $RegValueToUpdate="Control Panel\Desktop"
 
  foreach( $User in $((Get-ChildItem HKU:\).PSChildName | Sort-Object )) {
-  try {$Value=(Get-ItemProperty -ErrorAction SilentlyContinue -Path "HKU:\$user\$RegValueToUpdate")} catch {}
+  try {$Value=(Get-ItemProperty -ErrorAction SilentlyContinue -Path "HKU:\$user\$RegValueToUpdate")} catch { Write-Error "Nothing here" }
   if (! $value) {return} else {
    $CurrentUser=Get-UserFromSID $User
    $UserRegPath="HKU:\$user\$RegValueToUpdate"
@@ -8251,7 +8265,7 @@ Function Get-DuplicatePSModules { # Check duplicate Powershell modules as the ol
  $ModulePaths | ForEach-Object {
   Try {
    Get-ChildItem $_ -Directory -ErrorAction Stop | ForEach-Object {
-    $CurrentModule = $_
+    $CurrentModule = $_.FullName
     $ModuleVersions = Get-ChildItem $CurrentModule -Directory | Select-Object Name,FullName,@{Label='Version';Expression={[Version]$_.Name}} | Sort-Object Version
     if ($ModuleVersions.count -gt 1) {
      $LatestVersion = $($ModuleVersions | Select-Object -Last 1).Name
@@ -8430,7 +8444,7 @@ Function Install-ModuleRemote { # Install a Module on a remote machine
  } Catch {
   write-host -foregroundcolor Red "$(get-date -uformat '%Y-%m-%d %T') - $RemoteServer - ERROR : $($Error[0])"
  }
- try { Remove-PSSession $SessionInfo -ErrorAction SilentlyContinue } catch {}
+ try { Remove-PSSession $SessionInfo -ErrorAction SilentlyContinue } catch { Write-Error "Nothing here" }
 }
 Function New-Password { # Generate random password.  Will not start with : @ | and will not use : ' %^,<>"~`
  Param (
@@ -8852,7 +8866,9 @@ Function Clear-CBSFolder {
  # For Windows 7 Bug : system queued windows error Reporting taking too much space
  Try {
   Get-Process TrustedInstaller -ErrorAction Stop | Stop-Process -Confirm:$false -Force
- } Catch {}
+ } Catch {
+  Write-Error "Nothing here"
+ }
  Remove-Item C:\Windows\Logs\CBS\CbsPersist_*.*
  Remove-Item C:\Windows\Logs\CBS\cbs.log
  Start-Service TrustedInstaller
@@ -9006,7 +9022,7 @@ Function MenuNmap { # Menu to help with default nmap scans [Requires NMAP]
   Write-StarLine
 
   #Read Answer
-  try { [int]$ExitValue = Read-Host } catch {}
+  try { [int]$ExitValue = Read-Host } catch { Write-Error "Nothing here" }
 
   if ($ExitValue -eq 0) {return}
 
@@ -12869,7 +12885,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
 
   $JWTClaims = @{
    aud = $LoginURL
-   exp = [int][double]::Parse(((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
+   exp = (((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
    iss = $ApplicationID
    sub = $ApplicationID
   } | ConvertTo-Json -Compress
