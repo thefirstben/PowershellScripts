@@ -12342,7 +12342,13 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
   }
-  $GroupList = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$GroupName')").value
+  $GroupList = @()
+  $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$GroupName')" -MaximumRetryCount 2
+  $GroupList += $CurrentResult.Value
+  while ($CurrentResult.'@odata.nextLink') {
+   $CurrentResult = $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 2
+   $GroupList += $CurrentResult.Value
+  }
  } else {
   $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
  }
