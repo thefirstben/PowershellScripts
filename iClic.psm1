@@ -12057,10 +12057,10 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   Progress -Message "Getting all MFA Status of Users Loop $Count : " -Value $GlobalResult.Count -PrintTime
   Try {
    if ($FirstRun) {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails"
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" -MaximumRetryCount 2
     $FirstRun=$False
    } else {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
    }
    $NextRequest = $CurrentResult.'@odata.nextLink'
    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
@@ -12884,7 +12884,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
 
   $JWTClaims = @{
    aud = $LoginURL
-   exp = [int][double]::Parse(((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
+   exp = (((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
    iss = $ApplicationID
    sub = $ApplicationID
   } | ConvertTo-Json -Compress
