@@ -58,15 +58,17 @@
 # Set future console in QuickEdit mode
 if ( ($host.Name -match 'consolehost') ) { set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1 }
 
-$iClic_TempPath = "$($env:LOCALAPPDATA)\iClic\"
-
 if ($env:LOCALAPPDATA) {
- if (! (Test-Path $iClic_TempPath)) {
-  New-item -ItemType Directory $iClic_TempPath\ -Force | Out-Null
- }
+ $iClic_TempPath = "$($env:LOCALAPPDATA)\iClic\"
+} else {
+ $iClic_TempPath = "C:\Temp\"
+}
+
+if (! (Test-Path $iClic_TempPath)) {
+ New-item -ItemType Directory $iClic_TempPath\ -Force | Out-Null
  Set-Location -Path "$iClic_TempPath"
-} elseif (Test-Path "C:\Temp\") {
- Set-Location -Path "C:\Temp\"
+} else {
+ Set-Location -Path "$iClic_TempPath"
 }
 
 # Set default colors used in functions
