@@ -58,8 +58,14 @@
 # Set future console in QuickEdit mode
 if ( ($host.Name -match 'consolehost') ) { set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1 }
 
-# Set Path to C:\
-if (Test-Path "C:\Temp\") {
+$iClic_TempPath = "$($env:LOCALAPPDATA)\iClic\"
+
+if ($env:LOCALAPPDATA) {
+ if (! (Test-Path $iClic_TempPath)) {
+  New-item -ItemType Directory $iClic_TempPath\ -Force | Out-Null
+ }
+ Set-Location -Path "$iClic_TempPath"
+} elseif (Test-Path "C:\Temp\") {
  Set-Location -Path "C:\Temp\"
 }
 
@@ -3163,7 +3169,7 @@ Function Get-TasksLogs {
    $EndTime=$(Get-Date),
    [Switch]$NoFilter,
    [Switch]$ExportLog,
-   $LogPath="C:\Temp\TasksLogsExport_$(get-date -uformat '%Y-%m-%d').csv"
+   $LogPath="$iClic_TempPath\TasksLogsExport_$(get-date -uformat '%Y-%m-%d').csv"
   )
 
   #Event To ID:
@@ -3532,7 +3538,7 @@ Function Get-ADMembersWithMails {
  }
  clear-host
  $allmails
- # Get-ADMembersWithMails | Out-File "C:\Temp\ADUsersMails.csv"
+ # Get-ADMembersWithMails | Out-File "$iClic_TempPath\ADUsersMails.csv"
 }
 Function Get-ADUserMemberOf {
  Param (
@@ -3635,7 +3641,7 @@ Function Get-ADUnusedComputers {
 Function Get-ADUsersMailsWithNoExchangeAccount {
  # Return All AD Account with a mail with no corresponding account in Exchange
  Get-ADUsersMails | ForEach-Object { if ( ! (Assert-IsInExchange $_.SamAccountName) ) { Format-ADUserExtract $_ } }
- # Get-ADUsersMailsWithNoExchangeAccount | Export-Csv "C:\Temp\ADUsersMailsWithNoExchangeAccount.csv" -encoding "unicode" -notypeinformation
+ # Get-ADUsersMailsWithNoExchangeAccount | Export-Csv "$iClic_TempPath\ADUsersMailsWithNoExchangeAccount.csv" -encoding "unicode" -notypeinformation
 }
 Function Get-ADUserLastLogonInOU {
  Param (
@@ -3649,7 +3655,7 @@ Function Get-ADUsersUPN {
  )
  (Get-ADUser -properties Name,SamAccountName,proxyAddresses,UserPrincipalName,AccountExpirationDate,CanonicalName,EmailAddress,Description -SearchBase $OU -Filter {( ObjectClass -like "user") -and (Enabled -eq "True")} ) |
  Select-Object Name,SamAccountName,UserPrincipalName,AccountExpirationDate,CanonicalName,Description,EmailAddress,@{name="ProxyAddresses";expression={$_.proxyaddresses -replace "SMTP:","" -join ","}}
- # Get-ADUsersUPN | Export-Csv "C:\Temp\AllUsers.csv" -encoding "unicode" -notypeinformation
+ # Get-ADUsersUPN | Export-Csv "$iClic_TempPath\AllUsers.csv" -encoding "unicode" -notypeinformation
 }
 Function Get-ADComputersAll {
  Param (
@@ -4228,7 +4234,7 @@ Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements a
   $PropertyList = @("Name","DisplayName","WindowsLiveID","ExternalDirectoryObjectId","IsDirSynced","CustomAttribute10","RecipientType","RecipientTypeDetails"),
   $RecipientTypeToCheck = @("MailUser","UserMailbox"),
   $RecipientTypeDetailsToCheck = @("MailUser","DiscoveryMailbox","EquipmentMailbox","RoomMailbox","SchedulingMailbox","SharedMailbox","TeamMailbox","UserMailbox"),
-  $ExportFileName = "C:\Temp\Global_ExchangeUserDetails_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $ExportFileName = "$iClic_TempPath\Global_ExchangeUserDetails_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   [Switch]$UsingToken,
   [Switch]$Export
  )
@@ -4383,10 +4389,10 @@ Function Remove-O365UserFromDG {
 
  # Remove user from Distribution List
  $DistributionGroupList | ForEach-Object {
-  New-item -ItemType Directory C:\Temp\ -Force | Out-Null
+  New-item -ItemType Directory $iClic_TempPath\ -Force | Out-Null
   write-host "Removing User $Mail from Distribution Group $($_.DisplayName)"
   Remove-DistributionGroupMember -Identity $_.DisplayName -Member $UPN
-  write-output "Removed user $UPN from Distribution Group $($_.DisplayName)" >> "C:\Temp\O365-DG-Removal.log"
+  write-output "Removed user $UPN from Distribution Group $($_.DisplayName)" >> "$iClic_TempPath\O365-DG-Removal.log"
  }
 }
 Function Get-DistributionGroupMemberRecursive {
@@ -4485,7 +4491,7 @@ Function Get-WU {
 
  Param (
   $ServerName=$Env:ComputerName,
-  $ScriptLog="C:\Temp\$($MyInvocation.MyCommand).Log",
+  $ScriptLog="$iClic_TempPath\$($MyInvocation.MyCommand).Log",
   [switch]$Install,
   [switch]$IgnoreWsus,
   $UpdateID
@@ -4890,7 +4896,7 @@ Function Connect-WSUS { # Open connection to WSUS service
  Param (
   [Parameter(Mandatory=$true)]$WsusServer, #WSUS FQDN
   [Switch]$NoSSL,
-  $Path="C:\Temp\"
+  $Path="$iClic_TempPath\"
  )
  if ($NoSSL) {
   $UseSSL=$false
@@ -5716,7 +5722,7 @@ Function Set-KasperskyServer {
 }
 Function Set-KasperskyCert {
  Param (
-  $CertLocation="C:\Temp\klserver.cer",
+  $CertLocation="$iClic_TempPath\klserver.cer",
   $KasperskyPath="${env:ProgramFiles(x86)}\Kaspersky Lab\NetworkAgent\"
  )
  # Cert location on server %ALLUSERSPROFILE%\Application Data\KasperskyLab\adminkit\1093\cert
@@ -6761,7 +6767,7 @@ Function Get-KeyCloakRolesFromID { # Get All Assigned Role from Users or Service
 # KPI Active Directory
 Function Get-KPIADComputer {
  Param (
-  $Path="C:\Temp\KPI\"
+  $Path="$iClic_TempPath\KPI\"
  )
  Function IsOSServerOrWorkstation ($TypeOfOS,$OU) {
   if ((! $TypeOfOS) -or ($TypeOfOS -eq "unknown")) {return "Unknown"
@@ -6791,7 +6797,7 @@ Function Get-KPIADComputer {
 }
 Function Get-KPIADUser {
  Param (
-  $Path="C:\Temp\KPI\"
+  $Path="$iClic_TempPath\KPI\"
  )
  if ( ! (test-path $Path)) { write-Colored -Color "Red" -ColoredText "Unavailable path : $Path" ; return }
 
@@ -6819,7 +6825,7 @@ Function Get-KPIADUser {
 Function Get-KPIWsus {
  Param (
   [Parameter(Mandatory=$true)]$WsusServersADGroup,
-  $Path="C:\Temp\KPI"
+  $Path="$iClic_TempPath\KPI"
  )
 
  $OutputFileWSUS="$Path\WSUS-$(get-date -uformat '%Y-%m-%d').csv"
@@ -6894,7 +6900,7 @@ Function Get-KPIWsus {
 Function Get-KPIWsusFull {
  Param (
   [Parameter(Mandatory=$true)]$WsusServersADGroup,
-  $Path = "C:\Temp\KPI"
+  $Path = "$iClic_TempPath\KPI"
  )
 
  $OutputFile = "$Path\WSUS-GlobalInfo-$(get-date -uformat '%Y-%m-%d').csv"
@@ -7020,7 +7026,7 @@ Function Get-KPIVMwarePerHost {
 Param (
  $ESX,
  $ClusterList,
- $Path="C:\Temp\KPI",
+ $Path="$iClic_TempPath\KPI",
  $OutputFile="$Path\KPI-VMware-PerHost-$(get-date -uformat '%Y-%m-%d').csv"
 )
 Connect-vCenter
@@ -7072,7 +7078,7 @@ $ESXListResult | Select-Object Name,VMCluster,NumCpu,CPUCurrent,CPUTotal,'CPU%',
 Function Get-KPIVMwarePerCluster {
 Param (
  $ClusterList,
- $Path="C:\Temp\KPI",
+ $Path="$iClic_TempPath\KPI",
  $OutputFile="$Path\KPI-VMware-PerCluster-$(get-date -uformat '%Y-%m-%d').csv"
 )
 Connect-vCenter
@@ -7107,7 +7113,7 @@ $ClusterList | ForEach-Object {
 }
 Function Get-KPIVMWareDiskSpaceDataStore {
  Param (
-  $Path="C:\Temp\KPI",
+  $Path="$iClic_TempPath\KPI",
   $OutputFile="$Path\KPI-VMware-DiskSpaceDataStore-$(get-date -uformat '%Y-%m-%d').csv"
  )
  Connect-vCenter
@@ -7121,7 +7127,7 @@ Function Get-KPIVMWareDiskSpaceDataStore {
 }
 Function Get-KPIVMWareDiskSpaceReal {
 Param (
- $Path="C:\Temp\KPI",
+ $Path="$iClic_TempPath\KPI",
  $OutputFile="$Path\KPI-VMware-DiskSpaceReal-$(get-date -uformat '%Y-%m-%d').csv"
 )
 Connect-vCenter
@@ -7162,7 +7168,7 @@ Function Get-KPILinux {
 Param (
  [Parameter(Mandatory=$true)]$MachineGroup,
  [Parameter(Mandatory=$true)]$ScriptLocation,
- $ResultFile = "C:\Temp\LinuxStatus.csv",
+ $ResultFile = "$iClic_TempPath\LinuxStatus.csv",
  [Parameter(Mandatory=$true)]$User
 )
 
@@ -7246,7 +7252,7 @@ Function Install-MSIRemote { #Copy and Install a MSI on a remote computer
  Param(
   [Parameter(Mandatory=$true)]$ServerName,
   [Parameter(Mandatory=$true)]$MSIPath,
-  $TempPath='C:\Temp\'
+  $TempPath='$iClic_TempPath\'
  )
 
  $ErrorActionPreference="Stop"
@@ -8846,7 +8852,7 @@ Function MassCheckLinuxScript {
  Param (
   $UserName = $env:USERNAME,
   [Parameter(Mandatory=$true)]$ScriptLocation, #Script Path (Full path)
-  $ResultLocation = "C:\Temp\LinuxStatus-$(get-date -uformat '%Y-%m-%d').csv",
+  $ResultLocation = "$iClic_TempPath\LinuxStatus-$(get-date -uformat '%Y-%m-%d').csv",
   [Parameter(Mandatory=$true)]$Servers # List of Server Names
  )
  $FirstRun=$true
@@ -9392,15 +9398,15 @@ Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
    }
   } Catch {
    Write-host -ForegroundColor Red -Object "Error in Subscription $subscriptionName ($subscriptionId)"
-   "$subscriptionName;$subscriptionId;$($Error[0])" | Out-File "C:\Temp\AzureAllResources_Error_$([DateTime]::Now.ToString("yyyyMMdd")).log" -Append
+   "$subscriptionName;$subscriptionId;$($Error[0])" | Out-File "$iClic_TempPath\AzureAllResources_Error_$([DateTime]::Now.ToString("yyyyMMdd")).log" -Append
   }
-  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+  $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
  ProgressClear
 }
 Function Get-AzureResourceGroups { # Get all Azure Resource Groups for all Subscriptions
  Param (
-  $ExportFileName = "C:\Temp\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+  $ExportFileName = "$iClic_TempPath\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
  )
  Get-AzureSubscriptions | ForEach-Object {
   $subscriptionId = $_.id
@@ -9510,7 +9516,7 @@ Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (C
    $_ | Add-Member -NotePropertyName lastModifiedBy -NotePropertyValue  $KV_Properties.systemData.lastModifiedBy
    $_ | Add-Member -NotePropertyName lastModifiedByType -NotePropertyValue  $KV_Properties.systemData.lastModifiedByType
   }
-  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllKeyvaults_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+  $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllKeyvaults_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzureStorageAccounts { # Get all Azure Storage Accounts for all Subscriptions (Checks ACLs)
@@ -9583,7 +9589,7 @@ Function Get-AzureStorageAccounts { # Get all Azure Storage Accounts for all Sub
    $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
   }
-  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllStorageAccounts_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+  $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllStorageAccounts_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzureSQLServers { # Get all Azure SQL Servers for all Subscription (check ACLs and firewall rules)
@@ -9625,7 +9631,7 @@ Function Get-AzureSQLServers { # Get all Azure SQL Servers for all Subscription 
    $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
   }
-  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllSQLServers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+  $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllSQLServers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add all Tags in separate columns, same for Extensions [See example : Get-MDCConfiguration]
@@ -9662,7 +9668,7 @@ Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add a
    $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
   }
-  $CurrentSubscriptionResources | Export-Csv "C:\Temp\AzureAllVMs_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+  $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllVMs_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
@@ -9679,7 +9685,7 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
    @{N="Sys_createdByType";E={$_.systemData.createdByType}},
    @{N="Sys_lastModifiedAt";E={$_.systemData.lastModifiedAt}},
    @{N="Sys_lastModifiedBy";E={$_.systemData.lastModifiedBy}},
-   @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "C:\Temp\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+   @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "$iClic_TempPath\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the tenant
@@ -9696,7 +9702,7 @@ Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the ten
      $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
      $_ | Add-Member -NotePropertyName subscriptionId -NotePropertyValue $subscriptionId
     }
-    $CurrentSubscriptionResources | Export-Csv "C:\Temp\WebAppCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+    $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\WebAppCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
    }
   }
  }
@@ -9708,7 +9714,7 @@ Function Get-AzureCertificates { # Check All Azure Web Certificates -> Check key
   Progress -Message "Checking Certificates of subscription : " -Value $subscriptionName -PrintTime
   $CertificateList = (az rest --method GET --uri "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Web/certificates?api-version=2022-03-01" | convertfrom-json).value
   $CertificateList | Select-Object -ExpandProperty properties -ExcludeProperty tags,properties,keyVaultId *,@{Name="SubscriptionID";Expression={$subscriptionId}},@{Name="SubscriptionName";Expression={$subscriptionName}} `
-   | Export-Csv "C:\Temp\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+   | Export-Csv "$iClic_TempPath\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzureReservation { # Check all Azure Reservation Orders
@@ -10453,7 +10459,7 @@ Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Reg
   } else {
    Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName
   }
- } | Export-Csv "C:\Temp\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ } | Export-Csv "$iClic_TempPath\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  ProgressClear
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
@@ -10569,9 +10575,9 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
 }
 Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App Registration of a Tenant
  Param (
-  $ExportFile = "C:\Temp\AppRegistrationPermissionsGUIDOnly_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $FinalFile = "C:\Temp\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $LogFile = "C:\Temp\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).log",
+  $ExportFile = "$iClic_TempPath\AppRegistrationPermissionsGUIDOnly_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $FinalFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $LogFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).log",
   [Switch]$Verbose
  )
 
@@ -11135,7 +11141,7 @@ Function Get-AzureServicePrincipalOwnerForAllApps { # Get Owner(s) of all Servic
  Get-AzureServicePrincipal | ForEach-Object {
   Progress -Message "Checking current Service Principal : " -Value $_.DisplayName
   Get-AzureServicePrincipalOwner -ServicePrincipalID $_.id
- } | Export-Csv "C:\Temp\AzureServicePrincipalOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ } | Export-Csv "$iClic_TempPath\AzureServicePrincipalOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  ProgressClear
 }
 Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (it is different than App Registration Owners) - The ID must be the ObjectID of the 'Enterprise App'
@@ -11861,7 +11867,7 @@ Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) co
  # Remove duplicate values
  $MemberList = $MemberList | Select-Object -Unique
  ProgressClear
- $GlobalResult | Select-Object $MemberList | Export-Csv "C:\Temp\MDCConfiguration_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+ $GlobalResult | Select-Object $MemberList | Export-Csv "$iClic_TempPath\MDCConfiguration_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
 }
 Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  Param (
@@ -11930,7 +11936,7 @@ Function Get-ADOUsers {
   @{Name="LicenseSource";Expression={$_.accessLevel.licensingSource}},
   @{Name="LicenseAssignementSource";Expression={$_.accessLevel.assignmentSource}},
   @{Name="LicenseStatus";Expression={$_.accessLevel.status}},
-  @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "C:\Temp\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+  @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "$iClic_TempPath\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
 }
 Function Get-ADOPermissions_Groups { # Project Level Permission Only
  Param (
@@ -12034,7 +12040,7 @@ Function Get-ADORepositoryList {
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
   $Throttle = 10, # Time in Seconds to wait in case of throttle
-  $ExportFileName = "C:\Temp\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $ExportFileName = "$iClic_TempPath\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   [Parameter(Mandatory)]$Token
  )
 
@@ -12500,7 +12506,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
  Param (
   [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
   [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
-  $ExportFileName = "C:\Temp\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
+  $ExportFileName = "$iClic_TempPath\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $Throttle = 2,
   $Token,
   [Switch]$NoFileExport
