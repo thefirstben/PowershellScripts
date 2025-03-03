@@ -10941,7 +10941,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI or To
   $Result = $ResultJson | ConvertFrom-Json
  }
 
- $Result | Add-Member -Name ApplicationID -Value $AppRegistrationID -MemberType NoteProperty
+ $Result | Add-Member -Name ApplicationID -Value $AppInfo.AppID -MemberType NoteProperty
  $Result | Add-Member -Name ApplicationObjectID -Value $AppObjectId -MemberType NoteProperty
  $Result | Add-Member -Name ApplicationDisplayName -Value $AppName -MemberType NoteProperty
 
@@ -12041,10 +12041,10 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   Progress -Message "Getting all MFA Status of Users Loop $Count : " -Value $GlobalResult.Count -PrintTime
   Try {
    if ($FirstRun) {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails"
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" -MaximumRetryCount 2
     $FirstRun=$False
    } else {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
    }
    $NextRequest = $CurrentResult.'@odata.nextLink'
    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
@@ -12058,11 +12058,12 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
     @{Name="MFA_Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
     @{Name="MFA_Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
     @{Name="MFA_Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
+    @{Name="MFA_Method_passKeyDeviceBoundAuthenticator";Expression={$_.methodsRegistered -contains 'passKeyDeviceBoundAuthenticator'}},
     @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
     @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
     @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
-   # Adding a base sleep to avoid being throttled too many times
-   Start-Sleep -Seconds $Throttle
+   # Adding a base sleep to avoid being throttled too many times - Replace with the Maximum Retry Count which uses the Retry-After answer from API, it will wait 30 seconds by default which may add time to the script but remove multiple retry
+   # Start-Sleep -Seconds $Throttle
   } catch {
    $ErrorInfo = $Error[0]
    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
@@ -13226,6 +13227,10 @@ Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptio
  } else {
   ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
  }
+}
+Function Get-TOR_IP_List { # Will not work with Zscaler
+ $response = Invoke-WebRequest -Uri "https://check.torproject.org/torbulkexitlist" -UseBasicParsing
+ $response.RawContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }
 }
 
 #Alias
