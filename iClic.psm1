@@ -11091,6 +11091,7 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
   $Token
  )
 
+ try {
  if ($ID) {
   $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals/$ID`?`$select=$Value"
  } else {
@@ -11107,11 +11108,19 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
   $Result = (az rest --method GET --uri $RequestURL --headers Content-Type=application/json | ConvertFrom-Json)
  }
 
+ if (! $Result ) {
+  Return "$AppID$ID"
+ }
+
  # Result format is different depending on the request
  if ($ID) {
   $Result.$Value
  } else {
   $Result.value.$Value
+ }
+ } catch {
+  Write-Verbose "Application $AppID$ID not found"
+  return "$AppID$ID"
  }
 }
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
@@ -13021,7 +13030,14 @@ Function Get-AzureConditionalAccessPolicies {
 
  $Result | Select-Object `
  id,displayName,createdDateTime,modifiedDateTime,state,
- @{name="Access_Control";expression={($_.grantControls.builtInControls + ("$($_.grantcontrols.authenticationStrength.displayname) [$($_.grantcontrols.authenticationStrength.allowedCombinations -replace ",","+" -join ",")]")) -join(" "+$_.grantControls.operator+" ")}},
+ @{name="Access_Control";expression={
+  $Controls = ($_.grantControls.builtInControls + ("$($_.grantcontrols.authenticationStrength.displayname) [$($_.grantcontrols.authenticationStrength.allowedCombinations -replace ",","+" -join ",")]"))
+  if ($Controls.Count -gt 1) {
+   $Controls -join(" "+$_.grantControls.operator+" ")
+  } else {
+   $Controls
+  }
+ }},
  @{name="IncludedUsers";expression={
   if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
    ($_.conditions.users.includeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
