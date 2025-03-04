@@ -13031,7 +13031,13 @@ Function Get-AzureConditionalAccessPolicies {
  $Result | Select-Object `
  id,displayName,createdDateTime,modifiedDateTime,state,
  @{name="Access_Control";expression={
-  $Controls = ($_.grantControls.builtInControls + ("$($_.grantcontrols.authenticationStrength.displayname) [$($_.grantcontrols.authenticationStrength.allowedCombinations -replace ",","+" -join ",")]"))
+  $Controls = @()
+  if ($_.grantControls.builtInControls) {
+   $Controls += $_.grantControls.builtInControls
+  }
+  if ($_.grantcontrols.authenticationStrength) {
+   $Controls += "$($_.grantcontrols.authenticationStrength.displayname) [$($_.grantcontrols.authenticationStrength.allowedCombinations -replace ",","+" -join ",")]"
+  }
   if ($Controls.Count -gt 1) {
    $Controls -join(" "+$_.grantControls.operator+" ")
   } else {
