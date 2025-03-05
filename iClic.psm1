@@ -12369,7 +12369,9 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
  }
  $Result = $GroupList |`
   Select-Object displayName,description,@{Name="GroupID";Expression={$_.Id}},
-  @{Name="Type";Expression={if ($_.membershipRule) {"Dynamic"} else {"Fixed"} }},
+  @{Name="Type";Expression={
+   if ($_.membershipRule -and ($_.membershipRuleProcessingState -ne 'Paused')) {"Dynamic"} else {"Fixed"}
+  }},
    membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
 
  if ($ShowMembers) {
