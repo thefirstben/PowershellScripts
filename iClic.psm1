@@ -12616,6 +12616,8 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   [Switch]$Detailed,
   [Switch]$ShowManager,
   [Switch]$ShowMemberOf,
+  [Switch]$ShowOwnedObjects,
+  [Switch]$ShowOwnedDevices,
   $Token
  )
 
@@ -12669,6 +12671,22 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName ManagerdisplayName -NotePropertyValue $Manager.ManagerdisplayName
   $Result | Add-Member -NotePropertyName ManagerUPN -NotePropertyValue $Manager.ManagerUPN
   $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
+ }
+ if ($ShowOwnedObjects) {
+  if ($Token) { # This my limit to the first 100 objects
+   $OwnedObjects = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects"
+  } else {
+   $OwnedObjects = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects" --headers Content-Type=application/json | ConvertFrom-Json
+  }
+  $Result | Add-Member -NotePropertyName OwnedObjects -NotePropertyValue $OwnedObjects
+ }
+ if ($ShowOwnedDevices) {
+  if ($Token) { # This my limit to the first 100 objects
+   $OwnedDevices = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices"
+  } else {
+   $OwnedDevices = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices" --headers Content-Type=application/json | ConvertFrom-Json
+  }
+  $Result | Add-Member -NotePropertyName OwnedDevices -NotePropertyValue $OwnedDevices
  }
  if ($ShowMemberOf) {
   $MemberOf=@()
@@ -13285,6 +13303,46 @@ Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptio
 Function Get-TOR_IP_List { # Will not work with Zscaler
  $response = Invoke-WebRequest -Uri "https://check.torproject.org/torbulkexitlist" -UseBasicParsing
  $response.RawContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }
+}
+Function Get-AzureLogAnalyticsRequest {
+ Param(
+  [Parameter(Mandatory)]$WorkspaceID,
+  [Parameter(Mandatory)]$Query, #in string (if JSON it can be a POST query with query in BODY)
+  [Parameter(Mandatory)]$Token,
+  $BaseAPIURL = "api.loganalytics.io" #URL api.loganalytics.io will be deprecated, replace it with https://api.loganalytics.azure.com when available
+ )
+
+ Write-Verbose -Message "Checking Token validity"
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+
+ Write-Verbose -Message "Generating Headers"
+ $headers = @{ 'Authorization' = "$($Token.token_type) $($Token.access_token)" ; 'Content-type'  = "application/json" }
+
+ Write-Verbose -Message "Requesting Rest Method"
+ # Using GET with Query in the URL
+ # $Result = Invoke-RestMethod -Method GET -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2
+
+ # Using post with Query in the BODY
+ $QueryJSON = @{"query" = $Query} | ConvertTo-Json
+ $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON
+
+ Write-Verbose -Message "Converting result to Object"
+ if ($Result) {
+  # Format Result to PSObject
+  $headerRow = $null
+  $headerRow = $result.tables.columns | Select-Object name
+  $columnsCount = $headerRow.Count
+  $logData = @()
+  foreach ($row in $result.tables.rows) {
+   $data = new-object PSObject
+   for ($i = 0; $i -lt $columnsCount; $i++) { $data | add-member -membertype NoteProperty -name $headerRow[$i].name -value $row[$i] }
+   $logData += $data
+   $data = $null
+  }
+  $logData
+ } else {
+  write-output "No result found"
+ }
 }
 
 #Alias
