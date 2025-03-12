@@ -56,7 +56,13 @@
 # ToDo : add measure-command function to time functions whenever possible
 
 # Set future console in QuickEdit mode
-if ( ($host.Name -match 'consolehost') ) { set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1 }
+if ( ($host.Name -match 'consolehost') ) {
+ Try {
+  set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1 -ErrorAction Ignore
+ } catch {
+  Write-Verbose "Issue setting QuickEdit ${$Error[0]}"
+ }
+}
 
 if ($env:LOCALAPPDATA) {
  $iClic_TempPath = "$($env:LOCALAPPDATA)\iClic\"
@@ -13366,5 +13372,9 @@ if (Assert-MinPSVersion 6 -Silent) {
  if ( (test-path $env:iClic_Addon_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Addon_Path }
  if ( (test-path $env:iClic_Perso_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Perso_Path }
 } else {
- Write-Host -ForegroundColor "Magenta" -Object "WARNING : You are using old legacy PowerShell versions - Some Cmdlet will surely fail"
+ Try {
+  Write-Host -ForegroundColor "Magenta" -Object "WARNING : You are using old legacy PowerShell versions - Some Cmdlet will surely fail"
+ } Catch {
+  Write-Output -InputObject "WARNING : You are using old legacy PowerShell versions - Some Cmdlet will surely fail"
+ }
 }
