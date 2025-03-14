@@ -13093,7 +13093,11 @@ Function Get-AzureConditionalAccessPolicies {
   ($_.conditions.users.excludeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
  }},
  @{name="excludeRoles";expression={$_.conditions.users.excludeRoles}},
- @{name="excludeGuestsOrExternalUsers";expression={($_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes) -join(";")}},
+ @{name="excludeGuestsOrExternalUsers";expression={
+  # $ExternalGuestUsers = $_.conditions.users.excludeGuestsOrExternalUsers
+  # $ExternalGuestUsers | Select-Object @{name="ExternalUsers";expression={"$($_.guestOrExternalUserTypes) [$($_.externalTenants.members)]"}}
+  $_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes -join(";")
+ }},
  @{name="includeApplications";expression={
   ($_.conditions.applications.includeApplications | ForEach-Object { Get-AzureServicePrincipalNameFromID -AppID  $_ -Token $Token }) -Join(";")
  }},
