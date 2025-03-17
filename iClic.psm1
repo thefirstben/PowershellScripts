@@ -12794,7 +12794,8 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
    Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID"  -Body $ParamJson | Out-Null
    if ($ShowResult) {
     $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
-    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID" | Select-Object displayName,userPrincipalName,@{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
+    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID" | Select-Object displayName,userPrincipalName,
+     @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
    }
   } catch {
    $Exception = $($Error[0])
@@ -12843,6 +12844,47 @@ Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expir
   Write-host -ForegroundColor Red "Error setting Password Never Expires for user $UPNorID ($StatusCode | $StatusMessage))"
  }
 }
+Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates for Devices vs Users
+ Param (
+  [Parameter(Mandatory)][GUID]$DeviceObjectID,
+  [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
+  [Parameter(Mandatory)]$Value,
+  [Parameter(Mandatory)]$Token,
+  [Switch]$ShowResult
+ )
+  Try {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+
+   $params = @{
+    "extensionAttributes" = @{
+     $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
+    }
+   }
+
+   $ParamJson = $params | convertto-json
+   Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID"  -Body $ParamJson | Out-Null
+   if ($ShowResult) {
+    $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
+    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID" | Select-Object displayName,userPrincipalName,
+     @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
+   }
+  } catch {
+   $Exception = $($Error[0])
+   $StatusCodeJson = $Exception.ErrorDetails.message
+   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+   $StatusMessageJson = $Exception.ErrorDetails.message
+   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+   Write-host -ForegroundColor Red "Error setting extension attribute $ExtensionAttributeNumber for user $DeviceObjectID ($StatusCode | $StatusMessage))"
+  }
+}
+
 Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
  Param (
   [Parameter(Mandatory)]$UPNorID,
