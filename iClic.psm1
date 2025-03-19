@@ -11480,6 +11480,22 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
  }
 
 }
+Function Remove-AzureServicePrincipalPermissions { # Remove rights on Service Principal - Uses Rest API with Token
+ Param (
+  [Parameter(Mandatory=$true)]$PermissionID,
+  [parameter(Mandatory = $true)]$Token
+ )
+ Try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  Invoke-RestMethod -Method DELETE -headers $headers -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$PermissionID"
+ } Catch {
+  write-host -foregroundcolor "Red" -Object "Error removing permissions $PermissionID : $($Error[0])"
+ }
+}
 Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignement Status
  Param (
   [Switch]$ShowAssignements # Slow
