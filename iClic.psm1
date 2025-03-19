@@ -10544,7 +10544,7 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  Get-AzureADRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
   @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
 }
-Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster)
+Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses Az Cli
  Param (
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
@@ -10581,7 +10581,7 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
   $Result.Rules
  }
 }
-Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App Registration of a Tenant
+Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App Registration of a Tenant | Uses Get-AzureAppRegistrationPermissions
  Param (
   $ExportFile = "$iClic_TempPath\AppRegistrationPermissionsGUIDOnly_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $FinalFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
@@ -10591,7 +10591,7 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
 
  #Extract all App Registration Permission with only GUID (Faster)
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 1 | " -ColoredText "Retrieving App Registrations"
- $AppRegistrationList = Get-AzureAppRegistration
+ $AppRegistrationList = Get-AzureAppRegistrations
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 2 | " -ColoredText "Found $($AppRegistrationList.Count) App Registrations"
 
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 3 | " -ColoredText "Retrieving App Registration Permission with GUID Only (Will take about 2 seconds per app Registration) : File used : $ExportFile"
