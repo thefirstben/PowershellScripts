@@ -10775,7 +10775,8 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
     } else {
      $_.TimeUntilExpiration
     }
-   }}
+   }},
+   @{Name="SecretCount";Expression={$_.KeyCount + $_.CertificateCount}}
 }
 Function Get-AzureAppRegistrationAudience { # Check All App registration Audiences : this can be added to filter wrong configured ones | ? AppAudience -ne "AzureADMyOrg"
  az ad app list --all -o json --query "[].{DisplayName:displayName,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience}" | ConvertFrom-Json | Select-Object `
@@ -13128,6 +13129,14 @@ Function Get-AzureConditionalAccessPolicies {
    $Controls
   }
  }},
+ @{name="Sign-in frequency";expression={
+  if ($_.sessionControls.signInFrequency.isEnabled) {
+   $_.sessionControls.signInFrequency.frequencyInterval
+  } else {
+   "False"
+  }
+
+ }},
  @{name="IncludedUsers";expression={
   if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
    ($_.conditions.users.includeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
@@ -13195,7 +13204,10 @@ Function Get-AzureConditionalAccessPolicies {
    ($_.conditions.locations.excludeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
   } else {
    $_.conditions.locations.excludeLocations
-  } }}
+  }}},
+  @{name="Full_JSON";expression={
+   $_ | ConvertTo-Json -Depth 6
+  }}
 }
 # Misc
 Function Get-AzureADUserOwnedDevice {
