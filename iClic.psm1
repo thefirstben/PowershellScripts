@@ -2458,11 +2458,12 @@ Function Get-IP {
 
  # Get Interface info
 
- $InterfaceList=[System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object Name -ne 'Loopback Pseudo-Interface 1' | ForEach-Object {
-  if (($_.OperationalStatus -eq "Down") -and ! ($ShowDisconnected)) {Return}
+ $InterfaceList=[System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object Name -ne 'Loopback Pseudo-Interface 1' | Sort-Object Name | ForEach-Object {
+  if ((($_.OperationalStatus -in "Down","NotPresent") -or ($_.Speed -eq '-1')) -and ! ($ShowDisconnected)) {Return}
   $IpProperties=$_.GetIPProperties()
   $IpStatistics=$_.GetIPStatistics()
-  $IpMetricInfo=$(Try { Get-NetIPInterface -InterfaceAlias $_.Name -AddressFamily IPv4 } Catch { Write-Error "Nothing here" })
+  $IpMetricInfo=Get-NetIPInterface -InterfaceAlias $_.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue
+  if (! $IpMetricInfo -and ! $ShowDisconnected) {return}
   New-Object PSObject -Property @{
    MAC=$_.GetPhysicalAddress()
    Name=$_.Name
@@ -2500,8 +2501,8 @@ Function Get-IP {
   write-colored $fontcolor (Align -Variable "Interface Name " -Size $alignsize -Ending " : ") $_.Name
   write-colored $fontcolor (Align -Variable "Interface Description " -Size $alignsize -Ending " : ") $_.Description
   write-colored $fontcolor (Align -Variable "Interface Type " -Size $alignsize -Ending " : ") $_.NetworkInterfaceType
-  write-colored $fontcolor (Align -Variable "Interface Metric " -Size $alignsize -Ending " : ") "$($_.Metric)$(if ($_.AutomaticMetric) {" (Automatic)"})"
-  write-colored $fontcolor (Align -Variable "Interface Index " -Size $alignsize -Ending " : ") $_.Index
+  if ($_.Metric) { write-colored $fontcolor (Align -Variable "Interface Metric " -Size $alignsize -Ending " : ") "$($_.Metric)$(if ($_.AutomaticMetric) {" (Automatic)"})" }
+  if ($_.Index) { write-colored $fontcolor (Align -Variable "Interface Index " -Size $alignsize -Ending " : ") $_.Index }
   if ($_.OperationalStatus -eq "Up") {$StatusColor = "Green"} elseif ($_.OperationalStatus -eq "Down") {$StatusColor = "Red"} else {$StatusColor = "DarkYellow"}
   write-colored $StatusColor (Align -Variable "Interface Status " -Size $alignsize -Ending " : ") $_.OperationalStatus
   if ($_.InterfaceSpeed) { write-colored $fontcolor (Align -Variable "Interface Speed " -Size $alignsize -Ending " : ") $_.InterfaceSpeed }
@@ -11344,6 +11345,7 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission
   [switch]$HideDate
  )
  if (!$principalId) {$principalId = (Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $principalName)}
+ if (!$principalName) {$principalName = $(Get-AzureServicePrincipalNameFromID -ID $principalId)}
 
  $ResultAppRole = (az rest --method get --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" --headers 'Content-Type=application/json' | ConvertFrom-Json).Value
 
@@ -11357,7 +11359,6 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission
    $_ | Add-Member -MemberType NoteProperty -Name "appRoleId" -Value $_.clientId
    $_ | Add-Member -MemberType NoteProperty -Name "createdDateTime" -Value ""
    $_ | Add-Member -MemberType NoteProperty -Name "deletedDateTime" -Value ""
-   if (!$principalName) {$principalName = $(Get-AzureServicePrincipalNameFromID -ID $_.principalId)}
    $_ | Add-Member -MemberType NoteProperty -Name "principalDisplayName" -Value "$principalName"
    $_ | Add-Member -MemberType NoteProperty -Name "principalType" -Value "ServicePrincipal"
    $_ | Add-Member -MemberType NoteProperty -Name "appRoleValue" -Value ""
@@ -11834,6 +11835,25 @@ Function Add-AzureRole {
   Write-host -ForegroundColor Red "Error Adding Role ($($Error[0]))"
  }
 }
+# Devices
+Function Get-AzureDeviceObjectIDFromName {
+ param(
+  [parameter(Mandatory=$true)][String]$DeviceName,
+  [parameter(Mandatory=$true)]$Token
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ $RequestURL = "https://graph.microsoft.com/v1.0/devices?`$filter=displayName eq '$DeviceName'&`$select=id,deviceId,displayName"
+ $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
+ if ($Result.Value) {
+  return $Result.Value
+ } else {
+  Write-host -ForegroundColor Red "Device $DeviceName not found"
+ }
+}
 
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
@@ -11859,6 +11879,7 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
 }
 # Defender for Cloud (MDC)
 Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AZ CLI rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
+ $APIVersion = "2024-01-01"
  $GlobalResult = $()
  $Subscriptions = Get-AzureSubscriptions
  #Variable to follow up the columns without having to rebuild the entire object (Otherwise export-csv only export columns depending on the first object created)
@@ -11869,7 +11890,7 @@ Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) co
   Progress -PrintTime -Message "Checking subscription " -Value "$($_.ID) ($($_.Name))"
 
   # Export all information of MDC in current subscription
-  $Result = (az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/?api-version=2023-01-01"  `
+  $Result = (az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings?api-version=$APIVersion"  `
    --headers "Content-Type=application/json" | ConvertFrom-Json).Value `
    | Select-Object id,Name,
    @{Name="SubscriptionName";Expression={$SubscriptionName}},
@@ -11906,56 +11927,60 @@ Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) co
 Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  Param (
   [Parameter(Mandatory=$true)]$SubscriptionID,
-  [Switch]$EnableVMProtection # Does not set it by default until we have a clear view of the impact
+  [Switch]$EnableVMProtection, # Does not set it by default until we have a clear view of the impact
+  $APIVersion = "2024-01-01"
  )
+ $BaseURL = "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings"
  if ($EnableVMProtection) {
  # VirtualMachines
   $Body = '{\"properties\":{\"extensions\":[{\"isEnabled\":\"False\",\"name\":\"MdeDesignatedSubscription\"},{\"additionalExtensionProperties\":{\"ExclusionTags\":\"[]\"},\"isEnabled\":\"True\",\"name\":\"AgentlessVmScanning\"}],\"pricingTier\":\"Standard\",\"subPlan\":\"P2\"}"}'
-  az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/VirtualMachines/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+  az rest --method PUT --uri "$BaseURL/VirtualMachines?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  }
  # SqlServers
  $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/SqlServers/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/SqlServers?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # AppServices
  $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/AppServices/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/AppServices?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # StorageAccounts
  $Body = '{\"properties\":{\"extensions\":[{\"name\":\"OnUploadMalwareScanning\",\"isEnabled\":\"False\",},{\"name\":\"SensitiveDataDiscovery\",\"isEnabled\":\"True\"}],\"subPlan\":\"DefenderForStorageV2\",\"pricingTier\":\"Standard\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/StorageAccounts/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/StorageAccounts?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # SqlServerVirtualMachines
  $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/SqlServerVirtualMachines/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/SqlServerVirtualMachines?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # KubernetesService
  $Body = '{\"properties\":{\"pricingTier\":\"Free\",\"isEnabled\":\"False\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/KubernetesService/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/KubernetesService?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # ContainerRegistry
  $Body = '{\"properties\":{\"pricingTier\":\"Free\",\"isEnabled\":\"False\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/ContainerRegistry/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/ContainerRegistry?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # Keyvaults
  $body = '{\"name\":\"KeyVaults\",\"properties\":{\"pricingTier\":\"Standard\",\"subPlan\":\"PerKeyVault\"} }'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Keyvaults/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/Keyvaults?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # Dns
  $Body = '{\"properties\":{\"pricingTier\":\"Free\",\"isEnabled\":\"False\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Dns/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/Dns?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # Arm
  $Body='{\"properties\":{\"pricingTier\":\"Standard\",\"subPlan\":\"PerSubscription\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Arm/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/Arm?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # OpenSourceRelationalDatabases
  $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/OpenSourceRelationalDatabases/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/OpenSourceRelationalDatabases/?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # CosmosDbs
  $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/CosmosDbs/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
- # Containers
- $Body='{\"name\":\"Containers\",\"properties\":{\"extensions\":[{\"isEnabled\":\"True\",\"name\":\"ContainerRegistriesVulnerabilityAssessments\"}],\"pricingTier\":\"Standard\"},\"type\":\"Microsoft.Security/pricings\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Containers/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
- # CloudPosture
- $Body='{\"properties\":{\"extensions\":[{\"isEnabled\":\"True\",\"name\":\"SensitiveDataDiscovery\"},{\"isEnabled\":\"True\",\"name\":\"ContainerRegistriesVulnerabilityAssessments\"},{\"isEnabled\":\"True\",\"name\":\"AgentlessDiscoveryForKubernetes\"},{\"additionalExtensionProperties\":{\"ExclusionTags\":\"[]\"},\"isEnabled\":\"True\",\"name\":\"AgentlessVmScanning\"}],\"pricingTier\":\"Standard\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/CloudPosture/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/CosmosDbs?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
+ # Containers (Updated on 2025-04-01)
+ $Body='{\"name\":\"Containers\",\"properties\":{\"extensions\":[{\"isEnabled\":\"True\",\"name\":\"ContainerRegistriesVulnerabilityAssessments\"},{ \"isEnabled\": \"True\", \"name\": \"ContainerSensor\"},{\"isEnabled\": \"True\",\"name\": \"ContainerIntegrityContribution\"}],\"pricingTier\":\"Standard\"},\"type\":\"Microsoft.Security/pricings\"}}'
+ az rest --method PUT --uri "$BaseURL/Containers?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
+ # CloudPosture (CSPM) (Updated on 2025-04-01)
+ $Body='{\"properties\":{\"extensions\":[{\"isEnabled\":\"True\",\"name\":\"SensitiveDataDiscovery\"},{\"isEnabled\":\"True\",\"name\":\"ContainerRegistriesVulnerabilityAssessments\"},{\"isEnabled\":\"True\",\"name\":\"AgentlessDiscoveryForKubernetes\"},{\"additionalExtensionProperties\":{\"ExclusionTags\":\"[]\"},\"isEnabled\":\"True\",\"name\":\"AgentlessVmScanning\"},{ \"isEnabled\": \"True\",\"name\": \"ApiPosture\"}],\"pricingTier\":\"Standard\"}}'
+ az rest --method PUT --uri "$BaseURL/CloudPosture?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
  # Api
- # $Body = '{\"properties\":{\"pricingTier\":\"Standard\"}}'
  $Body = '{\"properties\":{\"pricingTier\":\"Free\"}}'
- az rest --method PUT --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings/Api/?api-version=2023-01-01" --headers "Content-Type=application/json" --body $body
+ az rest --method PUT --uri "$BaseURL/Api?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
+# AI (Updated on 2025-04-01)
+ $Body = '{\"properties\":{\"extensions\": [ {\"isEnabled\": \"True\", \"name\": \"AIPromptEvidence\" }, { \"isEnabled\": \"False\", \"name\": \"AIPromptSharingWithPurview\" }],\"freeTrialRemainingTime\": \"P29DT22H11M\",\"pricingTier\": \"Standard\", \"resourcesCoverageStatus\": \"FullyCovered\"}}'
+ az rest --method PUT --uri "$BaseURL/AI?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
 }
 # DevOps
 Function Get-ADOUsers {
@@ -12455,14 +12480,15 @@ Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI or token
   [Parameter(Mandatory)]$UPNorID,
   $Token
  )
-
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-  Write-Error "Token is invalid, provide a valid token"
-  return
- } else {
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Write-Error "Token is invalid, provide a valid token"
+   return
+  } else {
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
   }
  }
 
@@ -12897,11 +12923,39 @@ Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates
    if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
    $StatusMessageJson = $Exception.ErrorDetails.message
    if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-   Write-host -ForegroundColor Red "Error setting extension attribute $ExtensionAttributeNumber for user $DeviceObjectID ($StatusCode | $StatusMessage))"
+   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error $($Error[0].TargetObject)" ; $StatusMessage = $($Error[0])}
+   Write-host -ForegroundColor Red "Error setting extension attribute $ExtensionAttributeNumber for Device $DeviceObjectID ($StatusCode | $StatusMessage))"
   }
 }
+Function Get-AzureADRiskyUsers { # Can only get 500 users at the time
+ Param (
+  [Parameter(Mandatory)]$Token
+ )
+ (get-azuregraph -Token $Token -GraphRequest "/identityProtection/riskyUsers?`$top=500&`$filter=riskState eq 'atRisk'").value
+}
+Function Confirm-AzureADRiskyUser {
+ Param (
+  [Parameter(Mandatory)]$Token,
+  [Parameter(Mandatory)]$UserList # Array of user Object ID
+ )
+ Try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
 
+ $UserListOject = @{}
+ $UserListOject.userIds = $UserList
+ $UserListJson = $UserListOject | ConvertTo-Json
+
+ Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/identityProtection/riskyUsers/dismiss"  -Body $UserListJson | Out-Null
+ } catch {
+  Write-host -ForegroundColor Red "Error during  Azure AD Risky Users Removal ($($Error[0]))"
+ }
+}
 Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
  Param (
   [Parameter(Mandatory)]$UPNorID,
@@ -12958,7 +13012,7 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
  $RestResult
 }
 # Graph Management
-Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for App Reg with Secret
+Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for App Reg with Secret or CertificateThumbprint on user device (personal cert)
  Param (
   [parameter(Mandatory = $True)]$TenantID,
   [parameter(Mandatory = $True, ParameterSetName="AppRegistration")]$ApplicationID,
@@ -13046,7 +13100,8 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
   [parameter(Mandatory = $True)]$Token,
   [parameter(Mandatory = $True)]$GraphRequest,
-  $BaseURL = 'https://graph.microsoft.com/beta'
+  $BaseURL = 'https://graph.microsoft.com/beta',
+  [ValidateSet("GET","POST","DELETE")]$Method='GET'
 
  )
 
@@ -13063,7 +13118,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  $URL = $BaseURL + $GraphRequest
 
  # Call the REST-API
- $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri $url
+ $RestResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url
 
  return $RestResult
  } catch {
@@ -13170,6 +13225,12 @@ Function Get-AzureConditionalAccessPolicies {
  }},
  @{name="excludeApplications";expression={
   ($_.conditions.applications.excludeApplications | ForEach-Object { Get-AzureServicePrincipalNameFromID -AppID  $_ -Token $Token }) -Join(";")
+ }},
+ @{name="applicationFilter_Include";expression={
+  ($_.conditions.applications.applicationFilter | Where-Object mode -eq include).Rule
+ }},
+ @{name="applicationFilter_Exclude";expression={
+  ($_.conditions.applications.applicationFilter | Where-Object mode -eq exclude).Rule
  }},
  @{name="includePlatforms";expression={
   $_.conditions.platforms.includePlatforms -Join(";")
