@@ -44,6 +44,9 @@
 #  Measure-Command {$AppRegistrationExpiration.apptags | Where-Object {$_.Contact -eq "$ValueToSearch"}}
 #  Measure-Command {$AppRegistrationExpiration.apptags.Where{$_.Contact -eq "$ValueToSearch"}}
 #  Measure-Command {$AppRegistrationExpiration[$AppRegistrationExpiration.apptags.indexof($ValueToSearch)]} # WARNING INDEXOF RETURN -1 IF NO VALUE FOUND
+#  Best method : Convert to hashTable
+#  $TotoHash = @{} ; $toto | ForEach-Object { $TotoHash[$_.ID] = $_ }
+#  measure-command {$TotoHash[$TotoHash.ContainsKey("$KeyValueToCheck")]}
 # Az CLI Token Management
 #  To use Current user token for Az : $UserToken = az account get-access-token
 
@@ -7351,7 +7354,7 @@ Function Install-GIT { # Download and install latest GIT [User version] (Non Adm
  }
 
  try {
-  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/downloads/win).links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href
+  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/downloads/win).links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href[0]
   #Check Newest Version :
   $NewestVersion = ($DownloadLink -split "/" | Select-Object -Last 1) -replace '-64-bit.exe','' -replace 'Git-',''
   Write-Colored -NonColoredText "Newest version : " -ColoredText $NewestVersion -PrintDate
@@ -11858,9 +11861,14 @@ Function Get-AzureDeviceObjectIDFromName {
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
  Param (
-  $Filter
+  $Filter,
+  $Token
  )
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits$Filter" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
+ if ($Token) {
+  (get-AzureGraph -Token $token -GraphRequest "/directory/administrativeUnits$Filter" -Method GET).value
+ } else {
+  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits$Filter" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
+ }
 }
 # Schema Extensions
 Function Get-AzureADExtension { # Extract all schema extension of Azure AD
@@ -12931,7 +12939,25 @@ Function Get-AzureADRiskyUsers { # Can only get 500 users at the time
  Param (
   [Parameter(Mandatory)]$Token
  )
- (get-azuregraph -Token $Token -GraphRequest "/identityProtection/riskyUsers?`$top=500&`$filter=riskState eq 'atRisk'").value
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+
+ # Set Header
+ $header = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+
+ $UserList = @()
+ $Count = 0
+ $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/identityProtection/riskyUsers?`$top=500&`$filter=riskState eq 'atRisk'"
+ $UserList += $CurrentResult.Value
+ while ($CurrentResult.'@odata.nextLink') {
+  $Count++
+  Progress -Message "Looping through result Loop : " -Value $Count
+  $CurrentResult = $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 2
+  $UserList += $CurrentResult.Value
+ }
+ $UserList
 }
 Function Confirm-AzureADRiskyUser {
  Param (
@@ -12951,7 +12977,7 @@ Function Confirm-AzureADRiskyUser {
  $UserListOject.userIds = $UserList
  $UserListJson = $UserListOject | ConvertTo-Json
 
- Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/identityProtection/riskyUsers/dismiss"  -Body $UserListJson | Out-Null
+ Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/identityProtection/riskyUsers/dismiss" -Body $UserListJson | Out-Null
  } catch {
   Write-host -ForegroundColor Red "Error during  Azure AD Risky Users Removal ($($Error[0]))"
  }
@@ -13101,8 +13127,8 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   [parameter(Mandatory = $True)]$Token,
   [parameter(Mandatory = $True)]$GraphRequest,
   $BaseURL = 'https://graph.microsoft.com/beta',
-  [ValidateSet("GET","POST","DELETE")]$Method='GET'
-
+  [ValidateSet("GET","POST","DELETE")]$Method='GET',
+  $Body # Json Format Body
  )
 
  try {
@@ -13118,7 +13144,11 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  $URL = $BaseURL + $GraphRequest
 
  # Call the REST-API
- $RestResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url
+ if ($Body) {
+  $RestResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url -Body $Body -ContentType "application/json"
+ } else {
+  $RestResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url
+ }
 
  return $RestResult
  } catch {
