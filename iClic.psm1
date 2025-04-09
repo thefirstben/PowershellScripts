@@ -10986,25 +10986,35 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI or To
   $Result | Select-Object ApplicationDisplayName,ApplicationID,displayName,secretText,startDateTime,endDateTime
  }
 }
-Function Remove-AzureAppRegistrationPassword { # Remove Secret to App (uses AZ CLI)
+Function Remove-AzureAppRegistrationSecret { # Remove Secret to App (uses Rest API / Removal) - Not working for Certificate because of requirement for 'Proof'
  Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
-  [parameter(Mandatory=$true)]$KeyID
+  [parameter(Mandatory=$true)]$Token,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationName")]$AppRegistrationName,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationObjectID")]$AppRegistrationObjectID,
+  [parameter(Mandatory=$true)]$KeyID,
+  [ValidateSet("Secret","Certificate")]$KeyType = "Secret"
  )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
+ if (! $AppRegistrationObjectID) {
+  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $Token).AppID}
+  # Parameters
+  $AppRegistrationObjectID = Get-AzureAppRegistrationFromAppID -AppID $AppRegistrationID -Token $token -Value id
+ }
 
- # Parameters
- $AppInfo = (az ad app show --id $AppRegistrationID -o json | convertfrom-json)
- $AppObjectId = $AppInfo.ID
+ if ($KeyType -eq  "Secret") {
+  $RemovalFunction = "removePassword"
+ } else {
+  $RemovalFunction = "removeKey"
+ }
 
- $body = '"{\"keyId\": \"'+$KeyID+'\"}"'
+ $Body = (@{
+  "keyId" = "$KeyID"
+ })
 
- $ResultJson = az rest --method POST --uri "https://graph.microsoft.com/v1.0/applications/$AppObjectId/removePassword" `
- --headers "Content-Type=application/json" `
- --body $body
+ $BodyJSON = $Body | ConvertTo-JSON -Depth 6
 
- $ResultJson | ConvertFrom-Json
+ Get-AzureGraph -GraphRequest "/applications/$AppRegistrationObjectID/$RemovalFunction" -Method 'POST' -Body $BodyJSON -Token $Token
+
 }
 Function Set-AzureAppRegistrationConsent { # Consent on permission (Warning : It consents all permissions on an App, you cannot select what permission to consent, so check before)
  Param (
