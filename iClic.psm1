@@ -11074,6 +11074,58 @@ $Result = Get-AzureAppRegistration -AppID $AppRegistrationID | Select-Object @{N
 if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
 $Result
 }
+Function Add-AzureAppRegistrationAppRoles {
+ Param (
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
+  [parameter(Mandatory=$true)]$Description,
+  [parameter(Mandatory=$true)]$DisplayName,
+  [parameter(Mandatory=$true)]$Value,
+  $AppRoleList,
+  [parameter(Mandatory=$true)]$Token,
+  [ValidateSet("User","Application","Both")]$allowedMemberTypes
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+  Write-Error "Token is invalid, provide a valid token"
+  return
+ }
+
+ if ($allowedMemberTypes -eq 'Both') {
+  $allowedMemberTypes = "User","Application"
+ }
+
+ $header = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+
+if ($AppRoleList) {
+ $body = @{
+  appRoles = @(
+     $AppRoleList
+  )
+  }| ConvertTo-Json -Depth 10
+
+} else {
+ $body = @{
+  appRoles = @(
+    @{
+      allowedMemberTypes = @($allowedMemberTypes)
+      description         = $Description
+      displayName         = $DisplayName
+      id                  = [guid]::NewGuid()
+      isEnabled           = $true
+      value               = $Value
+    }
+  )
+} | ConvertTo-Json -Depth 10
+
+}
+
+Invoke-RestMethod -Method Patch `
+  -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" `
+  -Headers $header `
+  -Body $body
+}
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
  Param (
@@ -12027,7 +12079,7 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  az rest --method PUT --uri "$BaseURL/AI?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
 }
 # DevOps
-Function Get-ADOUsers {
+Function Get-ADOUsers { # Get All Azure DevOps Users
  # This needs to be setup first : az devops configure -d organization=ORG_URL
  (az devops user list --top 1000 -o json | convertfrom-json).Members | Select-Object dateCreated,lastAccessedDate,
   @{Name="DisplayName";Expression={$_.User.displayName}},
@@ -12080,7 +12132,7 @@ Function Get-ADOProjectMembers { # Get all members of a Project (it lists only G
   $Result | Select-Object displayName,principalName,origin,subjectKind,originId,descriptor
  }
 }
-Function Get-ADOGroupMembers {
+Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requires Group Descriptor in Azure DevOps)
  Param (
   [Parameter(Mandatory)]$GroupDescriptor,
   [Switch]$ShowAll
@@ -12335,6 +12387,11 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
   }
+ } else {
+  if (! $(Assert-IsCommandAvailable "Az")) {
+   Write-Error "Missing Az Module"
+   Return
+  }
  }
 
  if (Assert-IsGUID $Group) {
@@ -12370,7 +12427,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   if ($FirstRun) {
    if ($Token) {
     if ($Fast) {
-    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
+     $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
     } else {
      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
     }
