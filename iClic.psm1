@@ -49,6 +49,7 @@
 #  measure-command {$TotoHash[$TotoHash.ContainsKey("$KeyValueToCheck")]}
 # Az CLI Token Management
 #  To use Current user token for Az : $UserToken = az account get-access-token
+# Re-Use Parameter in subfunction : $PSBoundParameters
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -10386,19 +10387,32 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
   [Switch]$Fast,
   $NameFilter,
   $URLFilter,
-  [switch]$Verbose
+  [switch]$Verbose,
+  $Token
  )
 
- $CmdLine = '"https://graph.microsoft.com/beta/applications?$top=999'
- if ($ShowAllColumns) {
-  $CmdLine += "`""
- } else {
-  if ($fast) {
-   $CmdLine += '&$select=DisplayName,appId,id"'
-  } else {
-   $CmdLine += '&$select=DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,'+
-   'keyCredentials,passwordCredentials,publisherDomain,signInAudience,tags,publicClient,spa,web"'
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
   }
+ }
+
+ $FastColumns = "DisplayName,appId,id"
+ $DefaultColumns = "DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,keyCredentials,passwordCredentials,publisherDomain,signInAudience,tags,publicClient,spa,web"
+ if ($Fast) {
+  $Columns = $FastColumns
+ } else {
+  $Columns = $DefaultColumns
+ }
+
+ if ($token) {
+  $CmdLine = "https://graph.microsoft.com/beta/applications?`$top=999"
+  if (! $ShowAllColumns) { $CmdLine += "&`$select=$Columns" }
+ } else {
+  $CmdLine = '"https://graph.microsoft.com/beta/applications?$top=999'
+  if ($ShowAllColumns) { $CmdLine += "`"" } else { $CmdLine += '&$select='+$Columns+'"' }
  }
 
  $Count=0
@@ -10408,20 +10422,31 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  While ($ContinueRunning -eq $True) {
   if ($Verbose) { Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime }
   if ($FirstRun) {
-   $CurrentResult = az rest --method get --uri $CmdLine --header Content-Type="application/json" -o json | convertfrom-json
+   if ($token) {
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CmdLine
+    $NextRequest = $CurrentResult.'@odata.nextLink'
+   } else {
+    $CurrentResult = az rest --method get --uri $CmdLine --header Content-Type="application/json" -o json | convertfrom-json
+    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+   }
    $FirstRun=$False
   } else {
-   $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-   If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-    Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 5s sleep"
-    Start-Sleep 5
-    Continue
+   if ($Token) {
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $NextRequest
+    $NextRequest = $CurrentResult.'@odata.nextLink'
+   } else {
+    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
+     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 5s sleep"
+     Start-Sleep 5
+     Continue
+    }
+    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
    }
-   $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
   }
   $Count++
-  $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
   $GlobalResult += $CurrentResult.Value
  }
@@ -10451,7 +10476,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationObjectID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
   [switch]$SearchAppInfo,
-  $AccessToken
+  $Token
  )
  if ($AppRegistrationID -and (! $AppRegistrationObjectID)) {
   $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID
@@ -10476,8 +10501,8 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  if (! $AppRegistrationID) { $AppRegistrationID = $AppInfo.appId}
  if (! $AppRegistrationName) { $AppRegistrationName = $AppInfo.displayName}
 
- if ($AccessToken) {
-  $Result = (Get-AzureGraph -Token $AccessToken -GraphRequest /applications/$AppRegistrationObjectID/owners).value
+ if ($Token) {
+  $Result = (Get-AzureGraph -Token $Token -GraphRequest /applications/$AppRegistrationObjectID/owners).value
  } else {
   $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value
   # az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
@@ -10488,12 +10513,12 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
 }
 Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Registration
  Param (
-  $AccessToken
+  $Token
  )
  Get-AzureAppRegistrations -Fast | ForEach-Object {
   Progress -Message "Checking current App : " -Value $_.DisplayName
-  if ($AccessToken) {
-   Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName -AccessToken $AccessToken
+  if ($Token) {
+   Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName -Token $Token
   } else {
    Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName
   }
@@ -11042,6 +11067,35 @@ Function Remove-AzureAppRegistrationSecret { # Remove Secret to App (uses Rest A
  Get-AzureGraph -GraphRequest "/applications/$AppRegistrationObjectID/$RemovalFunction" -Method 'POST' -Body $BodyJSON -Token $Token
 
 }
+Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last secret on app registration (only works with Secrets, not certificates)
+ Param (
+  [parameter(Mandatory=$true)]$Token,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationName")]$AppRegistrationName,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationObjectID")]$AppRegistrationObjectID,
+  [switch]$NoConfirm
+  )
+ $AppInfoParam = $PSBoundParameters
+ $AppInfoParam.Remove('KeyType') | Out-Null
+ $AppInfoParam.Remove('KeyType') | Out-Null
+ $AppInfo = Get-AzureAppRegistrationSecrets @AppInfoParam
+ $SecretInfo = $AppInfo.passwordCredentials
+
+ if ($SecretInfo.count -eq "1") {
+  write-host -ForegroundColor "Magenta" -Object "Only one secret is available on Application $($AppInfo.displayName) ($($AppInfo.AppID))"
+ } else {
+  $LatestSecret = ($SecretInfo | Sort-Object endDateTime)[-1]
+  $OldSecrets = $SecretInfo | Where-Object keyId -ne $LatestSecret.keyid
+  $OldSecrets | ForEach-Object {
+   Write-host -ForegroundColor "Red" -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] that will expire on $($_.endDateTime)"
+   if (! $NoConfirm ) {
+    $Answer = Question "Please confirm removal" -defaultChoice "1"
+    if (! $Answer) {write-host -foregroundcolor "Yellow" "Cancelled" ; return}
+   }
+   Remove-AzureAppRegistrationSecret -Token $Token -AppRegistrationID $AppInfo.AppID -KeyID $_.KeyID
+  }
+ }
+}
 Function Set-AzureAppRegistrationConsent { # Consent on permission (Warning : It consents all permissions on an App, you cannot select what permission to consent, so check before)
  Param (
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
@@ -11057,10 +11111,14 @@ Param (
  [switch]$HideGUID
 )
  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
+ if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).DisplayName}
 
- # az ad sp show --id $AppRegistrationID --query "oauth2Permissions[]" --only-show-errors | ConvertFrom-Json
  $Result = (az ad app show --id $AppRegistrationID --query '{Exposed:api.oauth2PermissionScopes}'  | ConvertFrom-Json).Exposed
- if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty ID }
+
+ $Result | Add-Member -MemberType NoteProperty -Name AppName -Value $AppRegistrationName
+ $Result | Add-Member -MemberType NoteProperty -Name AppID -Value $AppRegistrationID
+
+ if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
  $Result
 }
 Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration
@@ -11070,9 +11128,15 @@ Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App R
  [switch]$HideGUID
 )
  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
-$Result = Get-AzureAppRegistration -AppID $AppRegistrationID | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
-if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
-$Result
+ if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).DisplayName}
+
+ $Result = Get-AzureAppRegistration -AppID $AppRegistrationID | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
+
+ $Result | Add-Member -MemberType NoteProperty -Name AppName -Value $AppRegistrationName
+ $Result | Add-Member -MemberType NoteProperty -Name AppID -Value $AppRegistrationID
+
+ if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
+ $Result
 }
 Function Add-AzureAppRegistrationAppRoles {
  Param (
