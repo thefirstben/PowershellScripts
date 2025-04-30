@@ -23,7 +23,7 @@
 #   Modify : Set-PSSessionConfiguration -showSecurityDescriptorUI
 # To pass variable from a function to the inside of a function use Splatting:
 #   https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_splatting
-#   Example with AZ Cli : Get-AzureServicePrincipal
+#   Example with AzCli : Get-AzureServicePrincipal
 #   Example with standard PowerShell cmdlet : Get-NetStat
 # Create Objects
 #   $Lic_List=@()
@@ -39,7 +39,7 @@
 # Example to add all Members to an Object without knowing the name first
 #  $TagList = [PSCustomObject]@{}
 #  $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] }
-# Check Get-AzureADObjectInfo to see Error Management for Az Cli cmdlines
+# Check Get-AzureADObjectInfo to see Error Management for AzCli cmdlines
 # Methods to look into a hastable from slowest to fastest
 #  Measure-Command {$AppRegistrationExpiration.apptags | Where-Object {$_.Contact -eq "$ValueToSearch"}}
 #  Measure-Command {$AppRegistrationExpiration.apptags.Where{$_.Contact -eq "$ValueToSearch"}}
@@ -47,7 +47,7 @@
 #  Best method : Convert to hashTable
 #  $TotoHash = @{} ; $toto | ForEach-Object { $TotoHash[$_.ID] = $_ }
 #  measure-command {$TotoHash[$TotoHash.ContainsKey("$KeyValueToCheck")]}
-# Az CLI Token Management
+# AzCLI Token Management
 #  To use Current user token for Az : $UserToken = az account get-access-token
 # Re-Use Parameter in subfunction : $PSBoundParameters
 
@@ -9346,8 +9346,8 @@ Function Open-MgGraphConnection {
   }
  }
 }
-# Az Cli Env Management
-Function Get-AzureEnvironment { # Get Current Environment used by Az Cli
+# AzCli Env Management
+Function Get-AzureEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
@@ -9381,7 +9381,7 @@ Function Get-AzureSubscriptions { # Get all subscription of a Tenant, a lot fast
  }
  az account list @Arguments | convertfrom-json | select-object id,name,state
 }
-Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups Using Az Cli
+Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups Using AzCli
  $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
  (az graph query -q $Query -o json --first 200 | ConvertFrom-Json).data | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
 }
@@ -10599,7 +10599,7 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  Get-AzureADRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
   @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
 }
-Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses Az Cli
+Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses AzCli
  Param (
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
@@ -10965,7 +10965,7 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
   write-host -foregroundcolor "Red" -Object "Error getting secret from $AppRegistrationID$AppRegistrationName$AppRegistrationObjectID : $($Error[0])"
  }
 }
-Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AZ CLI or Token)
+Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Token)
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationName")]$AppRegistrationName,
@@ -11789,7 +11789,7 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
   [Switch]$HideGUID
  )
 
- # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AZ Cli with User Authentication. Missing Consent
+ # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AzCli with User Authentication. Missing Consent
  # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
 
  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
@@ -12038,7 +12038,7 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  }
 }
 # Defender for Cloud (MDC)
-Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AZ CLI rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
+Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AzCli rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
  $APIVersion = "2024-01-01"
  $GlobalResult = $()
  $Subscriptions = Get-AzureSubscriptions
@@ -12432,7 +12432,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
  }
 }
-Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az CLI) - Before beta it did not list Service principals
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using AzCli) - Before beta it did not list Service principals
  Param (
   [Parameter(Mandatory)]$Group,
   [Switch]$Recurse,
@@ -12548,7 +12548,7 @@ Function Get-AzureADGroupIDFromName {
   (az rest --method GET --uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.id
  }
 }
-Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using Az CLI)
+Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using AzCli)
  Param (
   [Parameter(Mandatory)]$GroupName,
   [Switch]$ShowMembers,
@@ -12601,7 +12601,7 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   $Result
  }
 }
-Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI) or Rest if token is provided
+Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or Rest if token is provided
  Param (
   [Parameter(Mandatory)]$GroupName,
   [Parameter(Mandatory)]$UPNorID,
@@ -12643,7 +12643,7 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using Az CLI) o
   az ad group member remove --group $GroupGUID --member-id $UserGUID
  }
 }
-Function Add-AzureADGroupMember { # Add Member from group (Using Az CLI or token)
+Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
  Param (
   [Parameter(Mandatory)]$GroupName,
   [Parameter(Mandatory)]$UPNorID,
