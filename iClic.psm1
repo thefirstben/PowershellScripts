@@ -9770,7 +9770,7 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN ; A
     'Content-type'  = "application/json"
    }
 
-   $GraphURL = "https://graph.microsoft.com/v1.0/users?`$filter=startswith(userprincipalname,'$UPN')"
+   $GraphURL = "https://graph.microsoft.com/beta/users?`$filter=startswith(userprincipalname,'$UPN')"
 
    $ResultJSON = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
    $Result = $ResultJSON.Value
@@ -10599,17 +10599,35 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  Get-AzureADRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
   @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
 }
-Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses AzCli
+Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses AzCli or Token
  Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+  [parameter(Mandatory=$True,ParameterSetName="AppID")]$AppRegistrationID,
+  [parameter(Mandatory=$True,ParameterSetName="AppName")]$AppRegistrationName,
   [switch]$Readable,
-  [switch]$HideGUID
+  [switch]$HideGUID,
+  $Token
  )
 
- if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).displayName}
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
- $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { write-error "Token is invalid, provide a valid token" ; Return }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  if ($AppRegistrationName) {
+   $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$AppRegistrationName'&`$select=id,appId,displayName,requiredResourceAccess" | Select-Object * -ExpandProperty value -ExcludeProperty Value
+  } else {
+   $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications(appId='$AppRegistrationID')?`$select=id,appId,displayName,requiredResourceAccess"
+  }
+  $AppRegistrationName = $CurrentResult.displayName
+  $AppRegistrationID = $CurrentResult.appId
+  $PermissionListJson = $CurrentResult.requiredResourceAccess
+ } else {
+  if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).displayName}
+  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
+  $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
+ }
+
  $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
    $Rules_List=@()
    $PolicyID = $_.resourceAppId
@@ -10626,7 +10644,11 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
   }
  }
  If ($Readable -and $Result.Rules) {
-  $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules
+  if ($Token) {
+   $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules -Token $Token
+  } else {
+   $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules
+  }
   if ($HideGUID) {
    $ReadablePermissionList | Select-Object -ExcludeProperty *ID
   } else {
@@ -11191,7 +11213,7 @@ Invoke-RestMethod -Method Patch `
   -Body $body
 }
 # Service Principal (Enterprise Applications) [Only]
-Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest
+Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AzCli AzAD Cmdlet are 5 times slower than AzRest
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
@@ -11214,21 +11236,44 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   $URLFilter,
   $Token
  )
- $Arguments = '--output', 'json', '--all', '--only-show-errors'
 
- if ( ! $ShowAllColumns ) {
-  $Arguments += '--query'
-  if ($Fast) {
-   $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
-  } else {
-   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls}"'
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { write-error "Token is invalid, provide a valid token" ; Return }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
   }
+
+  if ($fast) {
+   $Arguments = "?`$select=id,appId,displayName,servicePrincipalType"
+  } elseif ($ShowAllColumns) {
+   $Arguments = "?`$select=id,objectType,servicePrincipalType,appId,publisherName,appDisplayName,displayName,accountEnabled,appRoleAssignmentRequired,notificationEmailAddresses,createdDateTime,preferredSingleSignOnMode,loginUrl,replyUrls"
+  } else {
+   $Arguments = ""
+  }
+
+  $Result = @()
+  $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments"
+  While ($CurrentResult.'@odata.nextLink') {
+   $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 3
+   $Result += $CurrentResult.value
+  }
+ } else {
+  $Arguments = '--output', 'json', '--all', '--only-show-errors'
+  if ( ! $ShowAllColumns ) {
+   $Arguments += '--query'
+   if ($Fast) {
+    $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
+   } else {
+    $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls}"'
+   }
+  }
+  if ($filter) {
+   $Arguments += "--filter"
+   $Arguments += $filter
+  }
+  $Result = az ad sp list @Arguments | ConvertFrom-Json | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
  }
- if ($filter) {
-  $Arguments += "--filter"
-  $Arguments += $filter
- }
- $Result = az ad sp list @Arguments | ConvertFrom-Json | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
  if ($URLFilter) {
   $Result = $Result | Where-Object URLs -like "*$URLFilter*"
  }
@@ -11336,10 +11381,11 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
    --headers Content-Type=application/json `
    --body $Body
 }
-Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example)
+Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example). Uses AzCli or Token
  Param (
   [Parameter(Mandatory=$true)]$ServicePrincipalID
  )
+
  $PolicyListJson = az ad sp show --id $ServicePrincipalID --only-show-errors -o json | ConvertFrom-Json
  $PolicyName = $PolicyListJson.displayName
 
@@ -12871,7 +12917,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
    $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
   }
   $Result = $RestResult | Select-Object `
-  id,onPremisesImmutableId,displayName,userPrincipalName,accountEnabled,createdDateTime,
+  id,onPremisesImmutableId,displayName,userPrincipalName,mail,accountEnabled,createdDateTime,
   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
   @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
   @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},lastPasswordChangeDateTime
@@ -13220,65 +13266,68 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
   $Resource = "https://graph.microsoft.com/"
  )
 
- #Default Values for Login & Graph
- $LoginURL = "https://login.microsoftonline.com/$tenantId/oauth2/token"
+ try {
+  #Default Values for Login & Graph
+  $LoginURL = "https://login.microsoftonline.com/$tenantId/oauth2/token"
 
- Write-Host "Requesting API Token from $Resource using $ApplicationID" -ForegroundColor Cyan
+  Write-Host "Requesting API Token from $Resource using $ApplicationID" -ForegroundColor Cyan
 
- if ($ClientKey) {
-  $Body = @{
-   grant_type    = 'client_credentials'
-   client_id     = $ApplicationID
-   client_secret = $ClientKey
-   resource      = $Resource
+  if ($ClientKey) {
+   $Body = @{
+    grant_type    = 'client_credentials'
+    client_id     = $ApplicationID
+    client_secret = $ClientKey
+    resource      = $Resource
+   }
+  } else {
+   # Authenticate using Certificate
+   $Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction Stop
+   if (-not $Certificate) { throw "Certificate with thumbprint '$CertificateThumbprint' not found." }
+
+   # Generate JWT Assertion for Client Certificate Authentication
+   $JWTHeader = @{ alg = "RS256" ; typ = "JWT" ; x5t = [System.Convert]::ToBase64String($Certificate.GetCertHash()) } | ConvertTo-Json -Compress
+
+   $JWTClaims = @{
+    aud = $LoginURL
+    exp = (((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
+    iss = $ApplicationID
+    sub = $ApplicationID
+   } | ConvertTo-Json -Compress
+
+   $JWTHeaderBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTHeader)).TrimEnd("=")
+   $JWTClaimsBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTClaims))
+   $JWTToSign = "$JWTHeaderBase64.$JWTClaimsBase64"
+
+   $RSA = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+   $Signature = [Convert]::ToBase64String($RSA.SignData(
+    [System.Text.Encoding]::UTF8.GetBytes($JWTToSign),
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1))
+   $Signature = $Signature.Replace("=", "").Replace("+", "-").Replace("/", "_")
+
+   $ClientAssertion = "$JWTToSign.$Signature"
+
+   $Body = @{
+    grant_type            = "client_credentials"
+    client_id             = $ApplicationID
+    client_assertion      = $ClientAssertion
+    client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+    resource              = $Resource
+   }
   }
- } else {
-  # Authenticate using Certificate
-  $Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My\$CertificateThumbprint"
-  if (-not $Certificate) {
-   throw "Certificate with thumbprint '$CertificateThumbprint' not found."
+
+  $tokenRequest = Invoke-WebRequest -Method Post -Uri $LoginURL -ContentType "application/x-www-form-urlencoded" -Body $body -UseBasicParsing
+  # Unpack Access Token
+  $token = ($tokenRequest.Content | ConvertFrom-Json)
+  $ExpirationDate = Format-date (Get-Date -UnixTimeSeconds $token.expires_on)
+  write-host "API Token will expire at : $ExpirationDate"  -ForegroundColor Cyan
+  if ($token) {
+   return $token
+  } else {
+   return $false
   }
-
-  # Generate JWT Assertion for Client Certificate Authentication
-  $JWTHeader = @{ alg = "RS256" ; typ = "JWT" ; x5t = [System.Convert]::ToBase64String($Certificate.GetCertHash()) } | ConvertTo-Json -Compress
-
-  $JWTClaims = @{
-   aud = $LoginURL
-   exp = (((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
-   iss = $ApplicationID
-   sub = $ApplicationID
-  } | ConvertTo-Json -Compress
-
-  $JWTHeaderBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTHeader)).TrimEnd("=")
-  $JWTClaimsBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTClaims))
-  $JWTToSign = "$JWTHeaderBase64.$JWTClaimsBase64"
-
-  $RSA = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
-  $Signature = [Convert]::ToBase64String($RSA.SignData(
-   [System.Text.Encoding]::UTF8.GetBytes($JWTToSign),
-   [System.Security.Cryptography.HashAlgorithmName]::SHA256,
-   [System.Security.Cryptography.RSASignaturePadding]::Pkcs1))
-  $Signature = $Signature.Replace("=", "").Replace("+", "-").Replace("/", "_")
-
-  $ClientAssertion = "$JWTToSign.$Signature"
-
-  $Body = @{
-   grant_type            = "client_credentials"
-   client_id             = $ApplicationID
-   client_assertion      = $ClientAssertion
-   client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-   resource              = $Resource
-  }
-}
-
- $tokenRequest = Invoke-WebRequest -Method Post -Uri $LoginURL -ContentType "application/x-www-form-urlencoded" -Body $body -UseBasicParsing
- # Unpack Access Token
- $token = ($tokenRequest.Content | ConvertFrom-Json)
- $ExpirationDate = Format-date (Get-Date -UnixTimeSeconds $token.expires_on)
- write-host "API Token will expire at : $ExpirationDate"  -ForegroundColor Cyan
- if ($token) {
-  return $token
- } else {
+ } catch {
+  Write-host -ForegroundColor Red "Error getting token ($($Error[0]))"
   return $false
  }
 }
@@ -13332,10 +13381,18 @@ Function Get-AzureGraph { # Send base graph request without any requirements
 }
 Function Convert-AccessToken {
  Param (
-  $Token
+  [Parameter(Mandatory=$true, ValueFromPipeline=$true)]$Token
  )
- $Token.access_token | Get-JwtPayload | ConvertFrom-Json
-
+ process {
+  # This code will now run FOR EACH $Token object piped in
+  try {
+   if (! $(Assert-IsCommandAvailable -commandname Get-JwtPayload)) {Throw "Get-JwtPayload (Module JWT) not available" }
+   # Assumes Get-JwtPayload is a function/cmdlet you have that decodes JWTs
+   $Token.access_token | Get-JwtPayload -ErrorAction Stop | ConvertFrom-Json
+  } catch {
+   Write-Error "Failed to get token: $($_.Exception.Message)"
+  }
+ }
 }
 Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
  (az account get-access-token --scope https://graph.microsoft.com/.default | ConvertFrom-Json).accessToken | Get-JwtPayload | ConvertFrom-Json
