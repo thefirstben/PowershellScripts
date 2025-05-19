@@ -10997,66 +10997,69 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
   [switch]$Force,
   $Token
  )
-
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Write-Error "Token is invalid, provide a valid token"
-   return
-  }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
-  if ($AppRegistrationName) {
-   $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $Token
-  } else {
-   $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $Token
-  }
-  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $Token) -gt 1) {
-   write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
-   if (! $Force) { return }
-  }
- } else { # If not using Token
-  if ($AppRegistrationName) {
-   $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName
-  } else {
-   $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID
-  }
-  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count) -gt 1) {
-   write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
-   if (! $Force) { return }
-  }
- }
-
- # Parameters
- $AppObjectId = $AppInfo.ID
- $AppName = $AppInfo.displayName
-
- $GraphURL = "https://graph.microsoft.com/v1.0/applications/$AppObjectId/addPassword"
-
- if ($Token) {
-  $params = @{
-   passwordCredential = @{
-    "displayName" = $SecretDescription
-    "endDateTime" = Format-Date($((Get-Date).AddMonths($AppMonths)))
+ try {
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Write-Error "Token is invalid, provide a valid token"
+    return
+   }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   if ($AppRegistrationName) {
+    $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $Token
+   } else {
+    $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $Token
+   }
+   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $Token) -gt 1) {
+    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
+    if (! $Force) { return }
+   }
+  } else { # If not using Token
+   if ($AppRegistrationName) {
+    $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName
+   } else {
+    $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID
+   }
+   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count) -gt 1) {
+    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
+    if (! $Force) { return }
    }
   }
-  $ParamJson = $params | ConvertTo-Json
-  $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
- } else {
-  $body = '"{\"passwordCredential\": {\"displayName\": \"' + $SecretDescription + '\",\"endDateTime\": \"' + $((Get-Date).AddMonths($AppMonths)) + '\"}}"'
-  $ResultJson = az rest --method POST --uri $GraphURL --headers "Content-Type=application/json" --body $body
-  $Result = $ResultJson | ConvertFrom-Json
- }
 
- $Result | Add-Member -Name ApplicationID -Value $AppInfo.AppID -MemberType NoteProperty
- $Result | Add-Member -Name ApplicationObjectID -Value $AppObjectId -MemberType NoteProperty
- $Result | Add-Member -Name ApplicationDisplayName -Value $AppName -MemberType NoteProperty
+  # Parameters
+  $AppObjectId = $AppInfo.ID
+  $AppName = $AppInfo.displayName
 
- if ($ShowObjectID) {
-  $Result | Select-Object ApplicationDisplayName,ApplicationID,ApplicationObjectID,displayName,secretText,startDateTime,endDateTime
- } else {
-  $Result | Select-Object ApplicationDisplayName,ApplicationID,displayName,secretText,startDateTime,endDateTime
+  $GraphURL = "https://graph.microsoft.com/v1.0/applications/$AppObjectId/addPassword"
+
+  if ($Token) {
+   $params = @{
+    passwordCredential = @{
+     "displayName" = $SecretDescription
+     "endDateTime" = Format-Date($((Get-Date).AddMonths($AppMonths)))
+    }
+   }
+   $ParamJson = $params | ConvertTo-Json
+   $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
+  } else {
+   $body = '"{\"passwordCredential\": {\"displayName\": \"' + $SecretDescription + '\",\"endDateTime\": \"' + $((Get-Date).AddMonths($AppMonths)) + '\"}}"'
+   $ResultJson = az rest --method POST --uri $GraphURL --headers "Content-Type=application/json" --body $body
+   $Result = $ResultJson | ConvertFrom-Json
+  }
+
+  $Result | Add-Member -Name ApplicationID -Value $AppInfo.AppID -MemberType NoteProperty
+  $Result | Add-Member -Name ApplicationObjectID -Value $AppObjectId -MemberType NoteProperty
+  $Result | Add-Member -Name ApplicationDisplayName -Value $AppName -MemberType NoteProperty
+
+  if ($ShowObjectID) {
+   $Result | Select-Object ApplicationDisplayName,ApplicationID,ApplicationObjectID,displayName,secretText,startDateTime,endDateTime
+  } else {
+   $Result | Select-Object ApplicationDisplayName,ApplicationID,displayName,secretText,startDateTime,endDateTime
+  }
+ } catch {
+  write-host -foregroundcolor "Red" -Object "Error adding secret |$AppRegistrationID|$AppRegistrationName| : $($Error[0])"
  }
 }
 Function Remove-AzureAppRegistrationSecret { # Remove Secret to App (uses Rest API / Removal) - Not working for Certificate because of requirement for 'Proof'
@@ -11759,23 +11762,43 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
  }
 }
 Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Service Principals
+ [CmdletBinding(DefaultParameterSetName = 'SPName_SubName')] # Optional: sets a default if no unique set is determined
  Param (
-  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]
-  [parameter(Mandatory = $false,ParameterSetName = "ServicePrincipalName")]$ServicePrincipalName,
-  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]
-  [Parameter(Mandatory = $false,ParameterSetName = 'ServicePrincipalID')]$ServicePrincipalID,
-  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]$SubscriptionName,
-  [Parameter(Mandatory = $false,ParameterSetName = 'Subscription')]$SubscriptionID,
-  [Parameter(Mandatory = $true)]$ResourceGroupName,
-  [Parameter(Mandatory = $true)]$Permission
- )
+   # --- Parameter Set: ServicePrincipalName and SubscriptionName ---
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPName_SubName', HelpMessage = "The name of the Azure AD service principal.")]
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPName_SubID', HelpMessage = "The name of the Azure AD service principal.")]
+  [string]$ServicePrincipalName,
+
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPID_SubName', HelpMessage = "The Object ID or Application ID of the Azure AD service principal.")]
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPID_SubID', HelpMessage = "The Object ID or Application ID of the Azure AD service principal.")]
+  [string]$ServicePrincipalID,
+
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPName_SubName', HelpMessage = "The name of the Azure subscription.")]
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPID_SubName', HelpMessage = "The name of the Azure subscription.")]
+  [string]$SubscriptionName,
+
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPName_SubID', HelpMessage = "The ID of the Azure subscription.")]
+  [Parameter(Mandatory = $true, ParameterSetName = 'SPID_SubID', HelpMessage = "The ID of the Azure subscription.")]
+  [string]$SubscriptionID,
+
+  # --- Common Parameters ---
+  [Parameter(Mandatory = $true, HelpMessage = "The permission level to assign (e.g., Reader, Contributor).")]
+  [string]$Permission,
+
+  [Parameter(Mandatory = $false, HelpMessage = "Optional. The name of the resource group to scope the permission. If not provided, permission is usually applied at the subscription scope.")]
+  [string]$ResourceGroupName
+)
  if (! $SubscriptionID ) { $SubscriptionID = $((Get-AzureSubscriptions -Name $SubscriptionName).id) }
  if (! $SubscriptionID ) { write-host -ForegroundColor Red "Subscription $SubscriptionName not found" ; Return}
 
  if (! $ServicePrincipalID) { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName }
  if (! $ServicePrincipalID ) { write-host -ForegroundColor Red "Service Principal $ServicePrincipalName not found" ; Return}
 
- Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID/resourceGroups/$ResourceGroupName"
+ if ($ResourceGroupName) {
+  Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID/resourceGroups/$ResourceGroupName"
+ } else {
+  Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID"
+ }
 }
 Function Add-AzureServicePrincipalAssignments {
  Param (
