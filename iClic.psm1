@@ -12689,6 +12689,32 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
   az ad group member remove --group $GroupGUID --member-id $UserGUID
  }
 }
+Function Remove-AzureADGroupOwner { # Remove Owner from group using Rest
+ Param (
+  [Parameter(Mandatory)]$GroupID,
+  [Parameter(Mandatory)]$UserID,
+  [Parameter(Mandatory)]$Token
+ )
+ Try {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+  Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupID/owners/$UserID/`$ref"
+
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
+ }
+}
 Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
  Param (
   [Parameter(Mandatory)]$GroupName,
