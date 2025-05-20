@@ -50,6 +50,7 @@
 # AzCLI Token Management
 #  To use Current user token for Az : $UserToken = az account get-access-token
 # Re-Use Parameter in subfunction : $PSBoundParameters
+# Console history found here : (Get-PSReadLineOption).HistorySavePath
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -7197,6 +7198,39 @@ Get-ADGroupMember $MachineGroup | Sort-Object Name | ForEach-Object {
 }
 }
 
+# Powershell history management (Found on github : https://github.com/PowerShell/PSReadLine/issues/1778)
+Function Remove-PSReadlineHistory {
+ param (
+  [Parameter(Mandatory = $true)]
+  [string]$Pattern
+ )
+ $historyPath = (Get-PSReadLineOption).HistorySavePath
+ $historyLines = [System.IO.File]::ReadAllLines($historyPath)
+ $filteredLines = $historyLines | Where-Object { $_ -notmatch $Pattern }
+ [System.IO.File]::WriteAllLines($historyPath, $filteredLines)
+
+ Write-Host "Removed $($historyLines.Count - $filteredLines.Count) line(s) from PSReadLine history."
+}
+Function Remove-PSHistory {
+ param (
+  [Parameter(Mandatory = $true)]
+  [string]$Pattern
+ )
+
+ $historyLines = Get-History
+ $matchingLines = $historyLines | Where-Object { $_.CommandLine -match $Pattern }
+ $matchingLines | ForEach-Object { Clear-History -Id $_.Id }
+ Write-Host "Removed $($matchingLines.Count) line(s) from PowerShell history."
+}
+Function Remove-History {
+ param (
+  [Parameter(Mandatory = $true)]
+  [string]$Pattern
+ )
+ Remove-PSReadlineHistory -Pattern $Pattern
+ Remove-PSHistory -Pattern $Pattern
+}
+
 # Install APP (Generic Functions)
 Function Add-ToPath {
  Param (
@@ -11112,7 +11146,7 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
   $LatestSecret = ($SecretInfo | Sort-Object endDateTime)[-1]
   $OldSecrets = $SecretInfo | Where-Object keyId -ne $LatestSecret.keyid
   $OldSecrets | ForEach-Object {
-   Write-host -ForegroundColor "Red" -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] that will expire on $($_.endDateTime)"
+   Write-host -ForegroundColor "Red" -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] from App $($AppInfo.displayName) that will expire on $($_.endDateTime)"
    if (! $NoConfirm ) {
     $Answer = Question "Please confirm removal" -defaultChoice "1"
     if (! $Answer) {write-host -foregroundcolor "Yellow" "Cancelled" ; return}
@@ -12831,6 +12865,69 @@ Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Gr
     }
    }
   }
+ }
+}
+Function New-AzureADGroup { # Create New Group using Graph
+ Param (
+  [Parameter(Mandatory)]$Token,
+  [Parameter(Mandatory)]$GroupName,
+  [Parameter(Mandatory)]$GroupDescription,
+  [Switch]$SecurityEnabled,
+  [Switch]$MailEnabled,
+  [Switch]$Unified,
+  [Switch]$Dynamic,
+  [Switch]$isAssignableToRole,
+  $membershipRule,
+  $mailNickname
+ )
+ Try {
+
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+
+  if (! $mailNickname) { $mailNickname = $GroupName }
+  if ($Unified) {
+   if ($Dynamic) {
+    $GroupType = '["Unified","DynamicMembership"]'
+   } else {
+    $GroupType = '["Unified"]'
+   }
+  } else {
+   if ($Dynamic) {
+    $GroupType = '["DynamicMembership"]'
+   } else {
+    $GroupType = @()
+   }
+  }
+
+  $params = @{
+   description = $GroupDescription
+   displayName = $GroupName
+   groupTypes = $GroupType
+   mailNickname = $mailNickname
+  }
+
+  if ($MailEnabled) { $params.mailEnabled = $true } else { $params.mailEnabled = $false }
+  if ($SecurityEnabled) { $params.securityEnabled = $true } else { $params.securityEnabled = $false }
+  if ($isAssignableToRole) { $params.isAssignableToRole = $true } else { $params.isAssignableToRole = $false }
+
+  if ($membershipRule) {
+   $params.membershipRule = $membershipRule
+   $params.membershipRuleProcessingState = "On"
+  }
+
+  $ParamJSON = $params | ConvertTo-Json
+
+
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+  $GraphURL = 'https://graph.microsoft.com/v1.0/groups/'
+
+  Invoke-RestMethod -Method POST -headers $headers -Uri $GraphURL -Body $ParamJson
+ } catch {
+  Write-host -ForegroundColor Red "Error Creating Group $GroupName ($($Error[0]))"
  }
 }
 # AAD User Management
