@@ -10396,7 +10396,7 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
  }
 }
-Function Get-AzureAppRegistrationFromAppID {
+Function Get-AzureAppRegistrationFromAppID { # Get the App Registration information from AppID | Uses Token
  Param (
   [Parameter(Mandatory)]$AppID,
   $Value = "displayName", # or UserPrincipalName
