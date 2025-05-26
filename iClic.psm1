@@ -12655,6 +12655,7 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
  Param (
   [Parameter(Mandatory)]$GroupName,
   [Switch]$ShowMembers,
+  [Switch]$ShowAppRoles,
   [Switch]$ExcludeDynamicGroups,
   $DoNotExpandGroups, # Used to avoid checking members of some groups, this must be an object like @("Group1","Group2")
   $Token
@@ -12676,6 +12677,15 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
    $CurrentResult = $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 2
    $GroupList += $CurrentResult.Value
   }
+  if ($ShowAppRoles) {
+   $GroupWithRoles = @()
+   $GroupList | ForEach-Object {
+    $AppRoles = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$($_.ID)/appRoleAssignments" -MaximumRetryCount 2
+    $_ | Add-Member -MemberType "NoteProperty" -Name "AppRoles" -Value $AppRoles.value.resourceDisplayName
+    $GroupWithRoles += $_
+   }
+   $GroupList = $GroupWithRoles
+  }
  } else {
   $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
  }
@@ -12688,7 +12698,7 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   @{Name="Type";Expression={
    if ($_.membershipRule -and ($_.membershipRuleProcessingState -ne 'Paused')) {"Dynamic"} else {"Fixed"}
   }},
-   membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled
+   membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled,AppRoles
 
  if ($ShowMembers) {
   $Result | Select-Object *,@{Name="Members";Expression={
