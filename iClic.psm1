@@ -51,6 +51,7 @@
 #  To use Current user token for Az : $UserToken = az account get-access-token
 # Re-Use Parameter in subfunction : $PSBoundParameters
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
+# To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate –Subject CERTIFICATENAME -CertStoreLocation Cert:\CurrentUser\My -NotAfter $DataOfExpiration
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -11284,7 +11285,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   if ($fast) {
    $Arguments = "?`$select=id,appId,displayName,servicePrincipalType"
   } elseif ($ShowAllColumns) {
-   $Arguments = "?`$select=id,objectType,servicePrincipalType,appId,publisherName,appDisplayName,displayName,accountEnabled,appRoleAssignmentRequired,notificationEmailAddresses,createdDateTime,preferredSingleSignOnMode,loginUrl,replyUrls"
+   $Arguments = "?`$select=id,objectType,servicePrincipalType,appId,publisherName,appDisplayName,displayName,accountEnabled,appRoleAssignmentRequired,notificationEmailAddresses,createdDateTime,preferredSingleSignOnMode,loginUrl,replyUrls,signInAudience,passwordCredentials"
   } else {
    $Arguments = ""
   }
@@ -11302,7 +11303,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
    if ($Fast) {
     $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
    } else {
-    $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls}"'
+    $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
    }
   }
   if ($filter) {
@@ -11758,17 +11759,29 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
 }
 Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration) - Used to get SAML certificate Expiration
  Param (
-  $Expiration = 30,
   [switch]$PrintOnly,
   [switch]$ShowAll,
+  [switch]$ShowOnlySAML,
   [switch]$ExcludeLegacy,
   $NameFilterInclusion,
-  $NameFilterExclusion
+  $NameFilterExclusion,
+  $Expiration = 30,
+  $Token
  )
- $AppList = az ad sp list --all -o json --query "[].{DisplayName:displayName,id:id,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,servicePrincipalType:servicePrincipalType,preferredSingleSignOnMode:preferredSingleSignOnMode,notificationEmailAddresses:notificationEmailAddresses,replyUrls:replyUrls}" | ConvertFrom-Json
+
+
+ # Get Data
+ if ($Token) {
+  $AppList = Get-AzureServicePrincipal -Token $Token
+ } else {
+  $AppList = Get-AzureServicePrincipal
+ }
+
  $Date_Today = Get-Date
+
+ # Format data
  $Result = $AppList | Where-Object passwordCredentials | Select-Object `
-  @{Name="Name";Expression={$_.DisplayName}},AppID,ID,
+  @{Name="Name";Expression={$_.DisplayName}},AppID,id,appRoleAssignmentRequired,
   @{Name="Mode";Expression={$_.preferredSingleSignOnMode}},
   @{Name="Type";Expression={$_.servicePrincipalType}},
   @{Name="Contacts";Expression={$_.notificationEmailAddresses -join ","}},
@@ -11783,17 +11796,16 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
    @{Name="ExpiresIn";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
     Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
     @{Name="Count";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
+
+ # Filter Data
  if ($NameFilterInclusion) { $Result = $Result | Where-Object Name -like $NameFilterInclusion }
  if ($NameFilterExclusion) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
  if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
- if ($PrintOnly) {
-  if (! $ShowAll) {
-   $Result = $Result | Where-Object ExpiresIn -lt $Expiration
-  }
-  $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs
- } else {
-  $Result
- }
+ if ($ShowOnlySAML) { $Result = $Result | Where-Object Mode -eq "saml" }
+ if (! $ShowAll) { $Result = $Result | Where-Object ExpiresIn -lt $Expiration }
+
+ # Print Data
+ $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,appRoleAssignmentRequired,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs,AppID,ID,SecretDescription,SecretCreatedOn,SecretType
 }
 Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Service Principals
  [CmdletBinding(DefaultParameterSetName = 'SPName_SubName')] # Optional: sets a default if no unique set is determined
@@ -11918,7 +11930,7 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
 
  # Convert all user ID
  Progress -Message "Current Step : " -Value "Convert all user ID" -PrintTime
- $PrincipalInfo = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfoREST -ObjectID $_ -Token $Token }
+ $PrincipalInfo = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_ -Token $Token }
 
  Progress -Message "Current Step : " -Value "Check Roles" -PrintTime
  $Result = $DirectMembersGUID + $DirectMembersEligibleGUID | Select-Object *,
@@ -11926,7 +11938,7 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
    if ($RoleDefinitionList.id.contains($_.roleDefinitionId)) {
     ($RoleDefinitionList[$RoleDefinitionList.id.indexof($_.roleDefinitionId)]).displayName
    } else {
-    (Get-AzureADObjectInfoREST -ObjectID $_.roleDefinitionId -Token $token).displayName
+    (Get-AzureADObjectInfo -ObjectID $_.roleDefinitionId -Token $token).displayName
    }
   }},
   @{name="directoryScopeInfo";expression={
@@ -11936,7 +11948,7 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
    } elseif ($_.directoryScopeID -eq "/") {
     [pscustomobject]@{Name="Directory";Type="Directory"}
    } else {
-    $ObjectInfo = Get-AzureADObjectInfoREST -ObjectID (($_.directoryScopeID).split('/'))[-1] -Token $Token
+    $ObjectInfo = Get-AzureADObjectInfo -ObjectID (($_.directoryScopeID).split('/'))[-1] -Token $Token
     if (! $ObjectInfo) {
      [pscustomobject]@{Name="NOT FOUND Role $($_.roleDefinitionId) | Scope $($_.directoryScopeID) | principalId $($_.principalId) ";Type="NOT FOUND"}
     } else {
@@ -13750,40 +13762,37 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
  Param (
   [Parameter(Mandatory)][GUID]$ObjectID,
   [Switch]$PrintError,
-  [Switch]$ShowAll
+  [Switch]$ShowAll,
+  $Token
  )
- $ResultJson = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json 2>&1
- $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
- $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
- if ($ErrorMessage) {
-  if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for ObjectID $ObjectID [$ErrorMessage]" }
-  [pscustomobject]@{ID=$ObjectID;Type="Unknown";DisplayName="ID Not Found in Azure";mail="Unknown";userPrincipalName="Unknown"}
- } else {
-  $Result = $ResultJson | ConvertFrom-Json
+ if ($Token) {
+  $Result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID/"
   if ($ShowAll) {
    $Result
   } else {
    $Result | Select-Object `
     @{name="ID";expression={$_.id}},
-    @{name="Type";expression={$_.'@odata.type'}},
-    @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
+    @{name="Type";expression={$_.'@odata.type' -replace "#microsoft.graph.",""}},
+    @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName,description
   }
- }
-}
-Function Get-AzureADObjectInfoREST {
- Param (
-  [Parameter(Mandatory)][GUID]$ObjectID,
-  [parameter(Mandatory = $True)]$Token,
-  [Switch]$ShowAll
- )
- $Result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID/"
- if ($ShowAll) {
-  $Result
  } else {
-  $Result | Select-Object `
-   @{name="ID";expression={$_.id}},
-   @{name="Type";expression={$_.'@odata.type' -replace "#microsoft.graph.",""}},
-   @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName,description
+  $ResultJson = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json 2>&1
+  $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+  $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+  if ($ErrorMessage) {
+   if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for ObjectID $ObjectID [$ErrorMessage]" }
+   [pscustomobject]@{ID=$ObjectID;Type="Unknown";DisplayName="ID Not Found in Azure";mail="Unknown";userPrincipalName="Unknown"}
+  } else {
+   $Result = $ResultJson | ConvertFrom-Json
+   if ($ShowAll) {
+    $Result
+   } else {
+    $Result | Select-Object `
+     @{name="ID";expression={$_.id}},
+     @{name="Type";expression={$_.'@odata.type'}},
+     @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
+   }
+  }
  }
 }
 Function Send-MailMGGraph {  # To make automated Email, it requires an account with a mailbox | Should add a "From" Option | Requires MG Graph
