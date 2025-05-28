@@ -12539,12 +12539,24 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
  Param (
   [Parameter(Mandatory=$true)]$UserName,
   [Parameter(Mandatory=$true)]$Group,
-  [Switch]$UsingObjectID #For faster search
+  $Token
  )
- if ($UsingObjectID){
-  (az ad group member check --group $Group --member-id $UserName -o json --only-show-errors | ConvertFrom-Json).Value
+ if ($Token) {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Write-Error "Token is invalid, provide a valid token" ; return } else {
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+  }
+  if ( (! (Assert-IsGUID $Group)) -or (! (Assert-IsGUID $UserName)) ) { Write-host "When using graph GUID is mandatory" ; return }
+  $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/users/$UserName/memberof/$Group"
+  if ($Result.id -eq $Group) { return $True } else { return $False }
  } else {
-  (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
+  if (Assert-IsGUID $Group) {
+   (az ad group member check --group $Group --member-id $UserName -o json --only-show-errors | ConvertFrom-Json).Value
+  } else {
+   (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
+  }
  }
 }
 Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using AzCli) - Before beta it did not list Service principals
