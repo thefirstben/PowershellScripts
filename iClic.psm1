@@ -2526,7 +2526,7 @@ Function Get-IP {
     write-colored $fontcolor (Align -Variable "Driver Info " -Size $alignsize -Ending " : ") $($AdapterInfo.DriverProvider,"[",$AdapterInfo.DriverVersionString,"]","(",$AdapterInfo.DriverDate,")")
     write-colored $fontcolor (Align -Variable "Driver Ndis Version " -Size $alignsize -Ending " : ") $AdapterInfo.NdisVersion
    } Catch {
-    Write-Error "Nothing here"
+    Write-Error "Nothing here (Driver Info)"
    }
   }
 
@@ -2536,7 +2536,7 @@ Function Get-IP {
       $AdapterBindings = ( Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop  | Get-NetAdapterBinding | Where-Object Enabled ).ComponentID -join ","
       write-colored $fontcolor (Align -Variable "Enabled bindings " -Size $alignsize -Ending " : ") $AdapterBindings
      } Catch {
-      Write-Error "Nothing here"
+      Write-Error "Nothing here (Bindings)"
      }
     }
 
@@ -2544,7 +2544,7 @@ Function Get-IP {
   if ($_.IP) {
    If (Assert-IsCommandAvailable Get-NetConnectionProfile) {
     try {
-     $ConnectionProfile=Get-NetConnectionProfile -InterfaceIndex $_.Index -ErrorAction Stop
+     $ConnectionProfile=Get-NetConnectionProfile -InterfaceIndex $_.Index -ErrorAction SilentlyContinue
      # Network Category
      if ($ConnectionProfile.NetworkCategory -eq 'Public') {$StatusColor = "Red"} else { $StatusColor="Green" }
      write-colored $StatusColor (Align -Variable "Network Category " -Size $alignsize -Ending " : ") $ConnectionProfile.NetworkCategory
@@ -2555,7 +2555,7 @@ Function Get-IP {
      if ($ConnectionProfile.IPv6Connectivity -ne 'Internet') {$StatusColor = "Red"} else { $StatusColor="Green" }
      write-colored $StatusColor (Align -Variable "Internet Access (IPv6)" -Size $alignsize -Ending " : ") $ConnectionProfile.IPv6Connectivity
     } Catch {
-     Write-Error "Nothing here"
+     Write-Error "Nothing here (Category Info) ($($Error[0]))"
     }
    }
 
@@ -10054,7 +10054,6 @@ Function Get-AzureADRBACRights { # Get all RBAC Rights (Works with Users, Servic
  $Arguments =
   '--only-show-errors',
   '--all',
-  '--include-classic-administrators',
   '--include-groups',
   '--query' , '"[].{principalName:principalName, principalId:principalId, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup, id:id}"',
   '--output', 'json'
