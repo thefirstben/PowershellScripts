@@ -7519,7 +7519,7 @@ Function Install-K9S { # Download and 'install' latest K9S - Add Binary to PATH 
  $Developer = 'derailed'
  $ApplicationName = "k9s"
  $FileNamePrefix = $ApplicationName
- $FileNameSuffix = "_Windows_x86_64.tar.gz"
+ $FileNameSuffix = "_Windows_amd64.zip"
  $TempFileName = $FileNamePrefix + $FileNameSuffix
  try {
   $GitHubInfo = Get-GITHUB_App_LatestVersion -Developper $Developer -ApplicationName $ApplicationName -FileNamePrefix $FileNamePrefix -FileNameSuffix $FileNameSuffix
