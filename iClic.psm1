@@ -707,6 +707,51 @@ function Convert-SIDToAzureObjectId { # Get Azure ObjectID From SID (based on : 
 
  return $guid
 }
+Function Convert-MacAddressFormat { # Convert Mac format to proper format [ Thanks Gemini ]
+    <#
+    .SYNOPSIS
+        Converts a MAC address string to a standard format with colons.
+    .DESCRIPTION
+        This function takes a string representing a MAC address, removes any existing separators (hyphens or colons),
+        validates that it contains exactly 12 hexadecimal characters, and then formats it with a colon every two characters.
+    .PARAMETER MacAddress
+        The MAC address string to be converted. It can be with or without separators.
+    .EXAMPLE
+        PS> ConvertTo-MacAddress -MacAddress "001122334455"
+        00:11:22:33:44:55
+    .EXAMPLE
+        PS> ConvertTo-MacAddress -MacAddress "AA-BB-CC-DD-EE-FF"
+        AA:BB:CC:DD:EE:FF
+    .EXAMPLE
+        PS> ConvertTo-MacAddress -MacAddress "aabbccddeeff"
+        aa:bb:cc:dd:ee:ff
+    .EXAMPLE
+        PS> ConvertTo-MacAddress -MacAddress "00112233445Z"
+        ERROR: Invalid character found in MAC address. Only hexadecimal characters (0-9, A-F) are allowed.
+    #>
+    param (
+        [Parameter(Mandatory=$true)][string]$MacAddress,
+        $JoinCharacter = ":"
+    )
+
+    # Remove any existing separators (hyphens or colons)
+    $cleanedMac = $MacAddress -replace '[:-]'
+
+    # Check if the cleaned string contains only valid hexadecimal characters and is 12 characters long
+    if ($cleanedMac -notmatch '^[a-fA-F0-9]{12}$') {
+        if ($cleanedMac.Length -ne 12) {
+            Write-Error "Invalid MAC address length. The input string must resolve to 12 characters after removing separators."
+        } else {
+            Write-Error "Invalid character found in MAC address. Only hexadecimal characters (0-9, A-F) are allowed."
+        }
+        return
+    }
+
+    # Insert a colon every two characters
+    $formattedMac = ($cleanedMac -split '(..)' | Where-Object { $_ }) -join "$JoinCharacter"
+
+    return $formattedMac
+}
 
 # Linux equivalent
 Function Watch { # 'watch' equivalent
@@ -2455,8 +2500,10 @@ Function Get-EthernetConf {
 Function Get-IP {
  Param (
   [Switch]$ShowDisconnected,
+  [Switch]$ShowSubInterface, # Show Interfaces without Index (Sub Interfaces linked to real cards
   [Switch]$ShowDriverInfo, # Slower
-  [Switch]$ShowBindings # Slower
+  [Switch]$ShowBindings, # Slower
+  $MacFilter
  )
  $alignsize=35
  $fontcolor="Cyan"
@@ -2469,7 +2516,8 @@ Function Get-IP {
   $IpProperties=$_.GetIPProperties()
   $IpStatistics=$_.GetIPStatistics()
   $IpMetricInfo=Get-NetIPInterface -InterfaceAlias $_.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue
-  if (! $IpMetricInfo -and ! $ShowDisconnected) {return}
+  if ((! $IpMetricInfo.ifIndex) -and (! $ShowSubInterface) ) {Return}
+  if (! $IpMetricInfo -and ! $ShowDisconnected -and ! $ShowSubInterface) {return}
   New-Object PSObject -Property @{
    MAC=$_.GetPhysicalAddress()
    Name=$_.Name
@@ -2497,14 +2545,29 @@ Function Get-IP {
  # Get all Route info
  $RouteInfo = Get-NetRoute
 
+ if ($MacFilter) {
+  $InterfaceList = $InterfaceList | Where-Object Mac -eq $MacFilter
+ }
+
+ if ($HideSubInterface) {
+  $InterfaceList = $InterfaceList | Where-Object
+ }
 
  $InterfaceList | Sort-Object OperationalStatus,Metric | ForEach-Object {
   Write-StarLine -character "-"
-  if ($_.Mac.ToString().Trim() -ne "") {Write-Centered -Color 'Magenta' $_.Mac} else {Write-Centered -Color 'Magenta' $_.Name}
+  if ($_.Mac.ToString().Trim() -eq "") {
+   $DeviceDisplay = $_.Name
+   $MAC = ""
+  } else {
+   $MAC = Convert-MacAddressFormat -MacAddress $_.MAC
+   $DeviceDisplay = "$($_.Name) [$MAC]"
+  }
+  Write-Centered -Color 'Magenta' -message $DeviceDisplay
   Write-StarLine -character "-"
 
   # Interface info
   write-colored $fontcolor (Align -Variable "Interface Name " -Size $alignsize -Ending " : ") $_.Name
+  if ($MAC) { write-colored $fontcolor (Align -Variable "Interface MAC " -Size $alignsize -Ending " : ") "$($_.MAC) ($MAC)" }
   write-colored $fontcolor (Align -Variable "Interface Description " -Size $alignsize -Ending " : ") $_.Description
   write-colored $fontcolor (Align -Variable "Interface Type " -Size $alignsize -Ending " : ") $_.NetworkInterfaceType
   if ($_.Metric) { write-colored $fontcolor (Align -Variable "Interface Metric " -Size $alignsize -Ending " : ") "$($_.Metric)$(if ($_.AutomaticMetric) {" (Automatic)"})" }
