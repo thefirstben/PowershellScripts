@@ -2499,8 +2499,8 @@ Function Get-EthernetConf {
 }
 Function Get-IP {
  Param (
-  [Switch]$ShowDisconnected,
   [Switch]$ShowSubInterface, # Show Interfaces without Index (Sub Interfaces linked to real cards
+  [Switch]$ShowDisconnected, # Show all Interfaces
   [Switch]$ShowDriverInfo, # Slower
   [Switch]$ShowBindings, # Slower
   $MacFilter
@@ -9258,11 +9258,23 @@ Function Get-LocalGroupMod { # Get Information on the modification of local grou
  }
 }
 Function Get-InstalledApps { # List all installed apps with required information
- $32BitsInstall = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName | Select-Object DisplayName,
-  DisplayVersion, Publisher, InstallDate,UninstallString,PSPath
- $64BitsInstall = Get-ItemProperty HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName | Select-Object DisplayName,
-  DisplayVersion, Publisher, InstallDate,UninstallString,PSPath
- $32BitsInstall + $64BitsInstall  | Sort-Object DisplayName
+ $PathList = @()
+ $PathList += [pscustomobject]@{Name="HKLM_32Bits_Path";Key="HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"}
+ $PathList += [pscustomobject]@{Name="HKLM_64Bits_Path";Key="HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"}
+ $PathList += [pscustomobject]@{Name="HKCU_32Bits_Path";Key="HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"}
+ $PathList += [pscustomobject]@{Name="HKCU_64Bits_Path";Key="HKCU:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"}
+
+ $GlobalResult = @()
+
+ $PathList | ForEach-Object {
+  $CurrentPath = $_.Name
+  $Result = Get-ItemProperty $_.Key | Select-Object *,@{Label='Source';Expression={$CurrentPath}}
+  $GlobalResult += $Result
+ }
+
+ $GlobalResult | Select-Object  @{Label='Name';Expression={if ($_.DisplayName) {$_.DisplayName} else {$_.PSChildName} }},
+  DisplayVersion, Publisher, InstallDate, UninstallString, WindowsInstaller, SystemComponent, InstallSource,
+  InstallLocation, Source, @{Label='RegeditSrc';Expression={($_.PSPath -Split "::")[1]}} | Sort-Object Name
 }
 Function Get-InstalledAppsFromEvents { # Check all installed apps using event logs to see who installed what/when with what account
  Get-WinEvent -FilterHashtable @{ProviderName='MsiInstaller';ID=$(1033,1034,1035,1036,1037)} | Select-Object RecordId,
