@@ -14012,6 +14012,55 @@ Function Get-TOR_IP_List { # Will not work with Zscaler
  $response = Invoke-WebRequest -Uri "https://check.torproject.org/torbulkexitlist" -UseBasicParsing
  $response.RawContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }
 }
+Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
+ Param (
+  [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true,Mandatory)]$LogAnalyticsResult
+ )
+  process {
+   Write-Verbose -Message "Converting result to Object"
+
+   # First, check if the result has the expected structure and contains any rows.
+   # The '?.' null-conditional operator safely checks for the 'rows' property.
+   if (-not $LogAnalyticsResult.tables?.rows) {
+    Write-Output "No results found for the query."
+    # Exit the function, returning nothing ($null).
+    return
+   }
+
+   # FIX 1: Guarantee that column headers are always an array.
+   # The .name property on a single-column result would return a single string.
+   # Wrapping it in @() ensures that even a single column name becomes an array of one.
+   $headerRow = @($LogAnalyticsResult.tables.columns.name)
+   $columnsCount = $headerRow.Count
+
+   $logData = @()
+
+   # FIX 2: Guarantee that the rows collection is always an array of arrays.
+   # This is the main fix for the "single result" problem.
+   $rowsCollection = $LogAnalyticsResult.tables.rows
+
+   # When one row is returned, PowerShell might "unwrap" it from [["value1", "value2"]]
+   # to just ["value1", "value2"]. We need to detect this and re-wrap it.
+   # The condition checks if the collection's first item is NOT another collection.
+   if ($rowsCollection -is [System.Collections.IList] -and $rowsCollection.Count -gt 0 -and $rowsCollection[0] -isnot [System.Collections.IList]) {
+    # The collection is a single, unwrapped row. We re-wrap it into an outer array
+    # using the unary comma operator, so it becomes a collection of one row.
+    $rowsCollection = @(,$rowsCollection)
+   }
+
+   # Now that we are certain $rowsCollection is an array of arrays, we can safely loop.
+   foreach ($row in $rowsCollection) {
+    $properties = [ordered]@{}
+    for ($i = 0; $i -lt $columnsCount; $i++) {
+     # We can now safely index into the $row array.
+     $properties[$headerRow[$i]] = $row[$i]
+    }
+    $logData += [PSCustomObject]$properties
+   }
+   # Return the final array of PSObjects.
+   $logData
+ }
+}
 Function Get-AzureLogAnalyticsRequest {
  Param(
   [Parameter(Mandatory)]$WorkspaceID,
@@ -14035,22 +14084,7 @@ Function Get-AzureLogAnalyticsRequest {
  $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON
 
  Write-Verbose -Message "Converting result to Object"
- if ($Result) {
-  # Format Result to PSObject
-  $headerRow = $null
-  $headerRow = $result.tables.columns | Select-Object name
-  $columnsCount = $headerRow.Count
-  $logData = @()
-  foreach ($row in $result.tables.rows) {
-   $data = new-object PSObject
-   for ($i = 0; $i -lt $columnsCount; $i++) { $data | add-member -membertype NoteProperty -name $headerRow[$i].name -value $row[$i] }
-   $logData += $data
-   $data = $null
-  }
-  $logData
- } else {
-  write-output "No result found"
- }
+ $Result | Convert-AzureLogAnalyticsRequestAnswer
 }
 
 #Alias
