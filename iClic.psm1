@@ -10772,12 +10772,18 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
   $ExportFile = "$iClic_TempPath\AppRegistrationPermissionsGUIDOnly_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $FinalFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $LogFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).log",
-  [Switch]$Verbose
+  [Switch]$Verbose,
+  $Token
  )
 
  #Extract all App Registration Permission with only GUID (Faster)
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 1 | " -ColoredText "Retrieving App Registrations"
- $AppRegistrationList = Get-AzureAppRegistrations
+ if ($Token) {
+  $AppRegistrationList = Get-AzureAppRegistrations -Token $Token
+ } else {
+  $AppRegistrationList = Get-AzureAppRegistrations
+ }
+
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 2 | " -ColoredText "Found $($AppRegistrationList.Count) App Registrations"
 
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 3 | " -ColoredText "Retrieving App Registration Permission with GUID Only (Will take about 2 seconds per app Registration) : File used : $ExportFile"
@@ -10786,7 +10792,13 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
   $AppRegistrationListCount++
   Write-Colored -Color "Cyan" -FilePath $LogFile -NonColoredText "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -ColoredText $_.DisplayName
   Try {
-   $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName
+   if ($Token) {
+    write-host "Get-AzureAppRegistrationPermissions -AppRegistrationID $($_.AppID) -AppRegistrationName $($_.DisplayName) -Token $Token"
+    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName -Token $Token
+   } else {
+    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName
+   }
+
    #Added this otherwise Export-CSV sends an error if the app registration has no rights
    if ($Permission) {
     $Permission | Export-CSV $ExportFile -Append
@@ -11493,7 +11505,7 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
    --headers Content-Type=application/json `
    --body $Body
 }
-Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example). Uses AzCli or Token
+Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example). Uses AzCli
  Param (
   [Parameter(Mandatory=$true)]$ServicePrincipalID
  )
@@ -11649,7 +11661,7 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
  }
  az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
 }
-Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission
+Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. Uses AzCli
  Param (
   [Parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalId, # ID of the App to be changed
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalName, # Display Name of App Registration
@@ -12754,63 +12766,80 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   [Parameter(Mandatory)]$GroupName,
   [Switch]$ShowMembers,
   [Switch]$ShowAppRoles,
+  [Switch]$ShowMemberOf,
   [Switch]$ExcludeDynamicGroups,
   $DoNotExpandGroups, # Used to avoid checking members of some groups, this must be an object like @("Group1","Group2")
   $Token
  )
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Write-Error "Token is invalid, provide a valid token"
-   return
-  }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
-  $GroupList = @()
-  $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$GroupName')" -MaximumRetryCount 2
-  $GroupList += $CurrentResult.Value
-  while ($CurrentResult.'@odata.nextLink') {
-   $CurrentResult = $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 2
+ Try {
+  if (Assert-IsGUID $GroupName) { Throw "GroupName must be a name not a GUID as this is a search function" }
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   $GroupList = @()
+   $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$GroupName')" -MaximumRetryCount 2
    $GroupList += $CurrentResult.Value
-  }
-  if ($ShowAppRoles) {
-   $GroupWithRoles = @()
-   $GroupList | ForEach-Object {
-    $AppRoles = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$($_.ID)/appRoleAssignments" -MaximumRetryCount 2
-    $_ | Add-Member -MemberType "NoteProperty" -Name "AppRoles" -Value $AppRoles.value.resourceDisplayName
-    $GroupWithRoles += $_
+   while ($CurrentResult.'@odata.nextLink') {
+    $CurrentResult = $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 2
+    $GroupList += $CurrentResult.Value
    }
-   $GroupList = $GroupWithRoles
-  }
- } else {
-  $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
- }
-
- # Exclude Dynamic Groups if requested
- if ($ExcludeDynamicGroups) { $GroupList = $GroupList | Where-Object {! $_.membershipRule}  }
-
- $Result = $GroupList |`
-  Select-Object displayName,description,@{Name="GroupID";Expression={$_.Id}},
-  @{Name="Type";Expression={
-   if ($_.membershipRule -and ($_.membershipRuleProcessingState -ne 'Paused')) {"Dynamic"} else {"Fixed"}
-  }},
-   membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled,AppRoles
-
- if ($ShowMembers) {
-  $Result | Select-Object *,@{Name="Members";Expression={
-   if ($_.displayName -NotIn $DoNotExpandGroups) {
-    if ($Token) {
-     Get-AzureADGroupMembers -Group $($_.GroupID) -Recurse -RecurseHideGroups -ForceName -Token $Token
-    } else {
-     Get-AzureADGroupMembers -Group $($_.GroupID) -Recurse -RecurseHideGroups -ForceName
+   if ($ShowAppRoles) {
+    $GroupWithRoles = @()
+    $GroupList | ForEach-Object {
+     $AppRoles = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$($_.ID)/appRoleAssignments" -MaximumRetryCount 2
+     $_ | Add-Member -MemberType "NoteProperty" -Name "AppRoles" -Value $AppRoles.value.resourceDisplayName
+     $GroupWithRoles += $_
     }
+    $GroupList = $GroupWithRoles
    }
-  }}
- } else {
-  $Result
+   if ($ShowMemberOf) {
+    $GroupWithRoles = @()
+    $GroupList | ForEach-Object {
+     $memberOf = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$($_.ID)/memberOf" -MaximumRetryCount 2
+     $_ | Add-Member -MemberType "NoteProperty" -Name "memberOf" -Value $($memberOf.value | Select-Object id,displayName)
+     $GroupWithRoles += $_
+    }
+    $GroupList = $GroupWithRoles
+   }
+  } else { # If not using Tokens, simpler function (additional Switches are not available)
+   $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
+  }
+
+  # Exclude Dynamic Groups if requested
+  if ($ExcludeDynamicGroups) { $GroupList = $GroupList | Where-Object {! $_.membershipRule}  }
+
+  $Result = $GroupList |`
+   Select-Object displayName,description,@{Name="GroupID";Expression={$_.Id}},
+   @{Name="Type";Expression={
+    if ($_.membershipRule -and ($_.membershipRuleProcessingState -ne 'Paused')) {"Dynamic"} else {"Fixed"}
+   }},
+    membershipRule,mailEnabled,securityEnabled,isAssignableToRole,onPremisesSyncEnabled,AppRoles,memberOf
+
+  if (! $ShowAppRoles) { $Result = $Result | Select-Object -ExcludeProperty AppRoles }
+  if (! $ShowMemberOf) { $Result = $Result | Select-Object -ExcludeProperty memberOf }
+
+  if ($ShowMembers) {
+   $Result | Select-Object *,@{Name="Members";Expression={
+    if ($_.displayName -NotIn $DoNotExpandGroups) {
+     if ($Token) {
+      Get-AzureADGroupMembers -Group $($_.GroupID) -Recurse -RecurseHideGroups -ForceName -Token $Token
+     } else {
+      Get-AzureADGroupMembers -Group $($_.GroupID) -Recurse -RecurseHideGroups -ForceName
+     }
+    }
+   }}
+  } else {
+   $Result
+  }
+ } Catch {
+  Write-Error "Error getting groups ($($Error[0]))"
  }
+
+
 }
 Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or Rest if token is provided
  Param (
@@ -12818,20 +12847,8 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
   [Parameter(Mandatory)]$UPNorID,
   $Token
  )
- if (Assert-IsGUID $UPNorID) {
-  $UserGUID = $UPNorID
- } else {
-  $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
- }
-
- if (Assert-IsGUID $GroupName) {
-  $GroupGUID = $GroupName
- } else {
-  $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
- }
-
- if ($Token) {
-  Try {
+ Try {
+  if ($Token) {
    if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
     Throw "Token is invalid, provide a valid token"
    }
@@ -12839,19 +12856,43 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
    }
-   Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/$UserGUID/`$ref"
-
-  } catch {
-   $Exception = $($Error[0])
-   $StatusCodeJson = $Exception.ErrorDetails.message
-   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-   $StatusMessageJson = $Exception.ErrorDetails.message
-   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-   Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
   }
- } else {
-  az ad group member remove --group $GroupGUID --member-id $UserGUID
+
+  # Get user GUID if not provided
+  if (Assert-IsGUID $UPNorID) {
+   $UserGUID = $UPNorID
+  } else {
+   if ($Token) {
+    $UserGUID = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'"
+   } else {
+    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+   }
+  }
+
+  # Get Group GUID if not provided
+  if (Assert-IsGUID $GroupName) {
+   $GroupGUID = $GroupName
+  } else {
+   if ($Token) {
+    $GroupGUID = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'"
+   } else {
+    $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+   }
+  }
+
+  if ($Token) {
+   Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/$UserGUID/`$ref"
+  } else {
+   az ad group member remove --group $GroupGUID --member-id $UserGUID
+  }
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
  }
 }
 Function Remove-AzureADGroupOwner { # Remove Owner from group using Rest
@@ -13046,7 +13087,8 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   $ExportFileName = "$iClic_TempPath\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $Throttle = 2,
   $Token,
-  [Switch]$NoFileExport
+  [Switch]$NoFileExport,
+  [Switch]$HideProgress
  )
  # Get list of all AAD users (takes some minutes with 50k+ users)
  if ($Advanced) {
@@ -13068,7 +13110,9 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    $ContinueRunning = $True
 
    While ($ContinueRunning) {
-    Progress -Message "Getting all User Status Loop $Count : " -Value $GlobalResult.Count -PrintTime
+    if (! $HideProgress) {
+     Progress -Message "Getting all User Status Loop $Count : " -Value $GlobalResult.Count -PrintTime
+    }
     if ($FirstRun) {
      $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$top=999&`$select=id,userPrincipalName,
      displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,
