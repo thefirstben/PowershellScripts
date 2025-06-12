@@ -51,7 +51,7 @@
 #  To use Current user token for Az : $UserToken = az account get-access-token
 # Re-Use Parameter in subfunction : $PSBoundParameters
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
-# To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate –Subject CERTIFICATENAME -CertStoreLocation Cert:\CurrentUser\My -NotAfter $DataOfExpiration
+# To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate –Subject CERTIFICATENAME -CertStoreLocation Cert:\CurrentUser\My -NotAfter $((get-date).AddMonths(6))
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -12429,9 +12429,9 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
 
 # Examples :
 # Users on Organization Level :
-# $Users = (Get-ADO_Request -RequestURI "graph/users" -Header $header -Organization dekracloud -BaseURI "https://vssps.dev.azure.com/")
+# $Users = (Get-ADO_Request -RequestURI "graph/users" -Header $header -Organization 'OrgName' -BaseURI "https://vssps.dev.azure.com/")
 # Groups on Organization level :
-# $Groups = (Get-ADO_Request -RequestURI "graph/groups" -Header $header -Organization dekracloud -BaseURI "https://vssps.dev.azure.com/")
+# $Groups = (Get-ADO_Request -RequestURI "graph/groups" -Header $header -Organization 'OrgName' -BaseURI "https://vssps.dev.azure.com/")
 
 
  $FullResult = @()
@@ -13554,17 +13554,34 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
 }
 # Graph Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for App Reg with Secret or CertificateThumbprint on user device (personal cert)
+ [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
-  [parameter(Mandatory = $True)]$TenantID,
-  [parameter(Mandatory = $True, ParameterSetName="AppRegistration")]$ApplicationID,
-  [parameter(Mandatory = $False, ParameterSetName="ClientKey")]
-  [parameter(Mandatory = $False, ParameterSetName="AppRegistration")]$ClientKey,
-  [parameter(Mandatory = $False, ParameterSetName="CertificateThumbprint")]
-  [parameter(Mandatory = $False, ParameterSetName="AppRegistration")]$CertificateThumbprint, # Thumbprint must be in local user store
+  # This parameter is mandatory for both sets.
+  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
+  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
+  $TenantID,
+
+  # This parameter is also mandatory for both sets.
+  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
+  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
+  $ApplicationID,
+
+  # This parameter is mandatory only for the 'ClientSecret' set.
+  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
+  $ClientKey,
+
+  # This parameter is mandatory only for the 'Certificate' set.
+  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
+  $CertificateThumbprint, # Thumbprint must be in the local user certificate store
+
+  # Optional parameter, available to all sets.
   $Resource = "https://graph.microsoft.com/"
  )
-
  try {
+
+  if (! (Assert-IsGUID -Value $TenantID) ) { Throw "Wrong Tenant ID Format (Not GUID)" }
+  if (! (Assert-IsGUID -Value $ApplicationID) ) { Throw "Wrong Application ID Format (Not GUID)" }
+
   #Default Values for Login & Graph
   $LoginURL = "https://login.microsoftonline.com/$tenantId/oauth2/token"
 
@@ -13616,10 +13633,11 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
 
   $tokenRequest = Invoke-WebRequest -Method Post -Uri $LoginURL -ContentType "application/x-www-form-urlencoded" -Body $body -UseBasicParsing
   # Unpack Access Token
-  $token = ($tokenRequest.Content | ConvertFrom-Json)
-  $ExpirationDate = Format-date (Get-Date -UnixTimeSeconds $token.expires_on)
-  write-host "API Token will expire at : $ExpirationDate"  -ForegroundColor Cyan
+  $token = ($tokenRequest.Content | ConvertFrom-Json) | Select-Object token_type,@{name="expires_on";expression={Get-Date -UnixTimeSeconds $_.expires_on}},resource,access_token
   if ($token) {
+   # $ExpirationDate = Format-date (Get-Date -UnixTimeSeconds $token.expires_on)
+   $ExpirationDate = Format-date (Get-Date $token.expires_on)
+   write-host "API Token will expire at : $ExpirationDate"  -ForegroundColor Cyan
    return $token
   } else {
    return $false
@@ -13627,6 +13645,75 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for
  } catch {
   Write-host -ForegroundColor Red "Error getting token ($($Error[0]))"
   return $false
+ }
+}
+Function Get-AzureGraphToken { # Get API Token using base MS Authentication Module : MSAL.PS
+ [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
+ Param (
+  # --- Common Parameters for All Sets ---
+
+  # This parameter is mandatory for all three authentication methods.
+  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
+  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
+  [parameter(Mandatory = $True, ParameterSetName="Interactive")]
+  $TenantID,
+
+  # This parameter is optional for all sets and defaults to the Azure CLI's public App ID.
+  [parameter(Mandatory = $False, ParameterSetName="ClientSecret")]
+  [parameter(Mandatory = $False, ParameterSetName="Certificate")]
+  [parameter(Mandatory = $False, ParameterSetName="Interactive")]
+  $ApplicationID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46",
+
+  # Optional resource parameter, available to all sets.
+  # Changed the default to /.default which is the modern recommended scope.
+  $Resource = "https://graph.microsoft.com/.default",
+
+  # --- Parameters for Specific Auth Sets ---
+
+  # This parameter is mandatory ONLY for the 'ClientSecret' set.
+  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
+  $ClientKey,
+
+  # This parameter is mandatory ONLY for the 'Certificate' set.
+  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
+  $CertificateThumbprint, # Thumbprint must be in the local user certificate store
+
+  # This switch activates the 'Interactive' parameter set.
+  [parameter(Mandatory = $True, ParameterSetName="Interactive")]
+  [switch]$Interactive
+ )
+
+ Write-Verbose "Active Parameter Set: $($PSCmdlet.ParameterSetName)"
+
+ try {
+  switch ($PSCmdlet.ParameterSetName) {
+   "ClientSecret" {
+     Write-Host "Authenticating with Application ID and Client Secret..."
+     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientSecret $clientSecret
+     # $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientSecret (ConvertTo-SecureString $ClientKey -AsPlainText -Force)
+   }
+   "Certificate" {
+     Write-Host "Authenticating with Application ID and Certificate..."
+     $ClientCertificate = Get-Item "Cert:\CurrentUser\My\$($CertificateThumbprint)"
+     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientCertificate $ClientCertificate
+   }
+   "Interactive" {
+     Write-Host "Authenticating interactively..."
+     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -Interactive
+   }
+  }
+
+  $accessToken=[pscustomobject]@{
+   token_type=$tokenResponse.TokenType;
+   expires_on=$tokenResponse.ExpiresOn.LocalDateTime;
+   resource=$tokenResponse.Scopes;
+   access_token=$tokenResponse.AccessToken;
+  }
+
+  Write-Verbose "Successfully retrieved token!"
+  return $accessToken
+ } catch {
+  Write-Error "Failed to acquire token. Error: $_"
  }
 }
 Function Assert-IsTokenLifetimeValid {
@@ -13639,10 +13726,12 @@ Function Assert-IsTokenLifetimeValid {
   Return
  }
  if ($ShowExpiration) {
-  $ExpirationDate = $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))
+  # $ExpirationDate = $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))
+  $ExpirationDate = $(Format-date (Get-Date $token.expires_on))
   Write-Host "Token will expire at $ExpirationDate"
  }
- return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
+ # return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
+ return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $token.expires_on))) -gt 0)
 }
 Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
