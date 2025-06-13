@@ -2582,25 +2582,20 @@ Function Get-IP {
   }
 
   # Driver info
-  if ($ShowDriverInfo) {
-   Try {
-    $AdapterInfo=Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop | Select-Object DriverProvider,DriverVersionString,NdisVersion,DriverDescription,DriverDate
+  if ($ShowDriverInfo -and $_.Index) {
+   $AdapterInfo = Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction SilentlyContinue | Select-Object DriverProvider,DriverVersionString,NdisVersion,DriverDescription,DriverDate
+   if ($AdapterInfo) {
     write-colored $fontcolor (Align -Variable "Driver Description " -Size $alignsize -Ending " : ") $AdapterInfo.DriverDescription
     write-colored $fontcolor (Align -Variable "Driver Info " -Size $alignsize -Ending " : ") $($AdapterInfo.DriverProvider,"[",$AdapterInfo.DriverVersionString,"]","(",$AdapterInfo.DriverDate,")")
     write-colored $fontcolor (Align -Variable "Driver Ndis Version " -Size $alignsize -Ending " : ") $AdapterInfo.NdisVersion
-   } Catch {
-    Write-Error "Nothing here (Driver Info)"
    }
   }
 
     # Driver info
-    if ($ShowBindings) {
-     Try {
-      if (! $_.Index) {Return}
-      $AdapterBindings = ( Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop  | Get-NetAdapterBinding | Where-Object Enabled ).ComponentID -join ","
+    if ($ShowBindings -and $_.Index) {
+     $AdapterBindings = ( Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction SilentlyContinue  | Get-NetAdapterBinding | Where-Object Enabled ).ComponentID -join ","
+     if ($AdapterBindings) {
       write-colored $fontcolor (Align -Variable "Enabled bindings " -Size $alignsize -Ending " : ") $AdapterBindings
-     } Catch {
-      Write-Error "Error getting Bindings for Interface Index $($_.Index) [$_]"
      }
     }
 
@@ -10794,7 +10789,6 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
   Write-Colored -Color "Cyan" -FilePath $LogFile -NonColoredText "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -ColoredText $_.DisplayName
   Try {
    if ($Token) {
-    write-host "Get-AzureAppRegistrationPermissions -AppRegistrationID $($_.AppID) -AppRegistrationName $($_.DisplayName) -Token $Token"
     $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName -Token $Token
    } else {
     $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName
