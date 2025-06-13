@@ -2596,10 +2596,11 @@ Function Get-IP {
     # Driver info
     if ($ShowBindings) {
      Try {
+      if (! $_.Index) {Return}
       $AdapterBindings = ( Get-NetAdapter -InterfaceIndex $_.Index -ErrorAction Stop  | Get-NetAdapterBinding | Where-Object Enabled ).ComponentID -join ","
       write-colored $fontcolor (Align -Variable "Enabled bindings " -Size $alignsize -Ending " : ") $AdapterBindings
      } Catch {
-      Write-Error "Nothing here (Bindings)"
+      Write-Error "Error getting Bindings for Interface Index $($_.Index) [$_]"
      }
     }
 
