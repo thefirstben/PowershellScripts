@@ -11104,6 +11104,7 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
  }
 }
 Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Token)
+ [CmdletBinding(DefaultParameterSetName = 'AppRegistrationID')]
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationName")]$AppRegistrationName,
@@ -12858,7 +12859,7 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
    $UserGUID = $UPNorID
   } else {
    if ($Token) {
-    $UserGUID = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'"
+    $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").Value.Id
    } else {
     $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
    }
@@ -12869,7 +12870,7 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
    $GroupGUID = $GroupName
   } else {
    if ($Token) {
-    $GroupGUID = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'"
+    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.ID
    } else {
     $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
    }
@@ -13327,7 +13328,11 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
  if ($UserGUID) { Write-Verbose "Working with GUID" } else {
   Write-Verbose "Working with UPN, will be slower"
-  $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
+  if ($Token) {
+   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID -Token $Token).id
+  } else {
+   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
+  }
  }
 
  if (! $UserGUID) {
@@ -13684,7 +13689,7 @@ Function Get-AzureGraphToken { # Get API Token using base MS Authentication Modu
   switch ($PSCmdlet.ParameterSetName) {
    "ClientSecret" {
      Write-Host "Authenticating with Application ID and Client Secret..."
-     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientSecret $clientSecret
+     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientSecret $ClientKey
      # $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientSecret (ConvertTo-SecureString $ClientKey -AsPlainText -Force)
    }
    "Certificate" {
