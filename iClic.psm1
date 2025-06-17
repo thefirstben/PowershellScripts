@@ -752,6 +752,13 @@ Function Convert-MacAddressFormat { # Convert Mac format to proper format [ Than
 
     return $formattedMac
 }
+function ConvertTo-Base64Url {
+ param($InputObject)
+  # Standard Base64 encoding can contain characters ('+', '/', '=') that are not URL-safe.
+  # Base64Url replaces them and removes padding.
+  $base64 = [System.Convert]::ToBase64String($InputObject)
+  return $base64.Replace('+', '-').Replace('/', '_').TrimEnd('=')
+}
 
 # Linux equivalent
 Function Watch { # 'watch' equivalent
@@ -13204,7 +13211,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
    $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
   }
  } else {
-  $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
+  $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,mail,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
   if ($Token) {
    $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -MaximumRetryCount 2
   } else {
@@ -13553,101 +13560,161 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
  $RestResult
 }
 # Graph Management
-Function Get-AzureGraphAPIToken { # Generate Graph API Token, currently only for App Reg with Secret or CertificateThumbprint on user device (personal cert)
+function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
-  # This parameter is mandatory for both sets.
+  # --- Common Parameters for All Sets ---
+
+  # This parameter is mandatory for all three authentication methods.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]
+  [parameter(Mandatory = $True, ParameterSetName="Interactive")]
   $TenantID,
 
-  # This parameter is also mandatory for both sets.
-  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
-  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
-  $ApplicationID,
+  # This parameter is optional for all sets and defaults to the Azure CLI's public App ID.
+  [parameter(Mandatory = $False, ParameterSetName="ClientSecret")]
+  [parameter(Mandatory = $False, ParameterSetName="Certificate")]
+  [parameter(Mandatory = $False, ParameterSetName="Interactive")]
+  $ApplicationID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46", # Azure CLI's Public App ID
 
-  # This parameter is mandatory only for the 'ClientSecret' set.
-  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
-  $ClientKey,
+  # Optional resource parameter, available to all sets /.default is the modern recommended scope.
+  [parameter(Mandatory = $False)]$Scope = "https://graph.microsoft.com/.default",
 
-  # This parameter is mandatory only for the 'Certificate' set.
-  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
-  $CertificateThumbprint, # Thumbprint must be in the local user certificate store
+  # --- Parameters for Specific Auth Sets ---
 
-  # Optional parameter, available to all sets.
-  $Resource = "https://graph.microsoft.com/"
+  # This parameter is mandatory ONLY for the 'ClientSecret' set.
+  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]$ClientKey,
+
+  # This parameter is mandatory ONLY for the 'Certificate' set. Thumbprint must be in the local user certificate store
+  [parameter(Mandatory = $True, ParameterSetName="Certificate")]$CertificateThumbprint,
+
+  # This switch activates the 'Interactive' parameter set.
+  [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive
  )
+
  try {
+  # --- Endpoint and Body setup based on Parameter Set ---
+  $tokenResponse = $null
+  $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
 
-  if (! (Assert-IsGUID -Value $TenantID) ) { Throw "Wrong Tenant ID Format (Not GUID)" }
-  if (! (Assert-IsGUID -Value $ApplicationID) ) { Throw "Wrong Application ID Format (Not GUID)" }
-
-  #Default Values for Login & Graph
-  $LoginURL = "https://login.microsoftonline.com/$tenantId/oauth2/token"
-
-  Write-Host "Requesting API Token from $Resource using $ApplicationID" -ForegroundColor Cyan
-
-  if ($ClientKey) {
+  if ($PSCmdlet.ParameterSetName -in @("ClientSecret", "Certificate")) {
+   # Client Credentials flow for non-interactive methods
    $Body = @{
-    grant_type    = 'client_credentials'
-    client_id     = $ApplicationID
-    client_secret = $ClientKey
-    resource      = $Resource
+    grant_type = 'client_credentials'
+    client_id  = $ApplicationID
+    scope   = $Scope
    }
-  } else {
-   # Authenticate using Certificate
-   $Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction Stop
-   if (-not $Certificate) { throw "Certificate with thumbprint '$CertificateThumbprint' not found." }
 
-   # Generate JWT Assertion for Client Certificate Authentication
-   $JWTHeader = @{ alg = "RS256" ; typ = "JWT" ; x5t = [System.Convert]::ToBase64String($Certificate.GetCertHash()) } | ConvertTo-Json -Compress
+   if ($PSCmdlet.ParameterSetName -eq "ClientSecret") {
+    $Body.client_secret = $ClientKey
+   } else { # Certificate
+    # 1. GET THE CERTIFICATE
+    $Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction Stop
+    # 2. BUILD THE JWT HEADER - The x5t claim (SHA-1 thumbprint) is required.
+    $jwtHeader = @{ alg = "RS256"; typ = "JWT"; x5t = ConvertTo-Base64Url -InputObject $Certificate.GetCertHash() } | ConvertTo-Json -Compress
+    # 3. BUILD THE JWT CLAIMS (Payload) - Using modern methods for timestamps and adding recommended claims.
+    $now = [System.DateTimeOffset]::UtcNow
+    $jwtClaims = @{
+     aud = $tokenEndpoint
+     iss = $ApplicationID
+     sub = $ApplicationID
+     jti = [System.Guid]::NewGuid().ToString()
+     nbf = $now.ToUnixTimeSeconds()
+     exp = $now.AddHours(1).ToUnixTimeSeconds()
+    } | ConvertTo-Json -Compress
 
-   $JWTClaims = @{
-    aud = $LoginURL
-    exp = (((Get-Date).AddHours(1) - (Get-Date "1970-01-01T00:00:00Z")).TotalSeconds)
-    iss = $ApplicationID
-    sub = $ApplicationID
-   } | ConvertTo-Json -Compress
+    # 4. ENCODE, SIGN, AND ASSEMBLE THE JWT
+    $encodedHeader = ConvertTo-Base64Url -InputObject ([System.Text.Encoding]::UTF8.GetBytes($jwtHeader))
+    $encodedClaims = ConvertTo-Base64Url -InputObject ([System.Text.Encoding]::UTF8.GetBytes($jwtClaims))
+    $signingInput = "$encodedHeader.$encodedClaims"
+    $rsaPrivateKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+    $signatureBytes = $rsaPrivateKey.SignData([System.Text.Encoding]::UTF8.GetBytes($signingInput), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $encodedSignature = ConvertTo-Base64Url -InputObject $signatureBytes
 
-   $JWTHeaderBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTHeader)).TrimEnd("=")
-   $JWTClaimsBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JWTClaims))
-   $JWTToSign = "$JWTHeaderBase64.$JWTClaimsBase64"
+    # 5. BUILD THE FINAL REQUEST BODY Using the V2 endpoint parameters.
+    $Body.client_assertion = "$encodedHeader.$encodedClaims.$encodedSignature"
+    $Body.client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+   }
+   $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $Body
 
-   $RSA = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
-   $Signature = [Convert]::ToBase64String($RSA.SignData(
-    [System.Text.Encoding]::UTF8.GetBytes($JWTToSign),
-    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
-    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1))
-   $Signature = $Signature.Replace("=", "").Replace("+", "-").Replace("/", "_")
+  } elseif ($PSCmdlet.ParameterSetName -eq "Interactive") {
+   # --- Native Interactive Authentication Flow ---
 
-   $ClientAssertion = "$JWTToSign.$Signature"
+   # 1. Set up a listener on localhost to catch the redirect
+   $redirectPort = 5001 # Can be any available port
+   $redirectUri = "http://localhost:$redirectPort/"
+   $httpListener = New-Object System.Net.HttpListener
+   $httpListener.Prefixes.Add($redirectUri)
+   $httpListener.Start()
 
+   # 2. Build the authorization URL and launch the browser
+   $authUrl = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/authorize?" +
+    "client_id=$ApplicationID" +
+    "&response_type=code" +
+    "&redirect_uri=$([System.Web.HttpUtility]::UrlEncode($redirectUri))" +
+    "&response_mode=query" +
+    "&scope=$([System.Web.HttpUtility]::UrlEncode($Scope))"
+
+   Write-Host "Launching browser for interactive login. Please complete authentication..." -ForegroundColor Yellow
+   Start-Process $authUrl
+
+   # 3. Wait for the user to login and be redirected
+   $context = $httpListener.GetContext()
+   $authCode = $context.Request.QueryString["code"]
+
+   # 4. Send a response to the browser and stop the listener
+   $responseHtml = "<html><body><h1>Authentication successful!</h1><p>You can close this browser tab now.</p></body></html>"
+   $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseHtml)
+   $context.Response.ContentLength64 = $buffer.Length
+   $context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
+   $context.Response.Close()
+   $httpListener.Stop()
+
+   if (-not $authCode) { throw "Authentication failed or was cancelled. Authorization code not received." }
+
+   # 5. Exchange the authorization code for an access token
    $Body = @{
-    grant_type            = "client_credentials"
-    client_id             = $ApplicationID
-    client_assertion      = $ClientAssertion
-    client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-    resource              = $Resource
+    grant_type = 'authorization_code'
+    client_id  = $ApplicationID
+    code    = $authCode
+    redirect_uri  = $redirectUri
+    scope   = $Scope
    }
+   $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $Body
   }
 
-  $tokenRequest = Invoke-WebRequest -Method Post -Uri $LoginURL -ContentType "application/x-www-form-urlencoded" -Body $body -UseBasicParsing
-  # Unpack Access Token
-  $token = ($tokenRequest.Content | ConvertFrom-Json) | Select-Object token_type,@{name="expires_on";expression={Get-Date -UnixTimeSeconds $_.expires_on}},resource,access_token
-  if ($token) {
-   # $ExpirationDate = Format-date (Get-Date -UnixTimeSeconds $token.expires_on)
-   $ExpirationDate = Format-date (Get-Date $token.expires_on)
-   write-host "API Token will expire at : $ExpirationDate"  -ForegroundColor Cyan
+  # --- Process and return the token ---
+  if ($tokenResponse) {
+   # If the server response includes a scope (interactive flow), use it.
+   # Otherwise (client credentials flow), use the scope that was originally requested.
+   $finalScope = if ($tokenResponse.PSObject.Properties.Match('scope').Count -gt 0) {
+    $tokenResponse.scope
+   } else {
+    $Scope
+   }
+
+   $token = [PSCustomObject]@{
+    token_type   = $tokenResponse.token_type
+    # Return a [DateTimeOffset] object. It's timezone-aware and prevents comparison issues.
+    expires_on   = ([System.DateTimeOffset]::UtcNow).AddSeconds($tokenResponse.expires_in)
+    scope  = $finalScope
+    access_token = $tokenResponse.access_token
+   }
+   $ExpirationDateTime = Format-date ($token.expires_on.ToLocalTime().DateTime)
+   Write-Host "API Token successfully acquired. It will expire at: $ExpirationDateTime" -ForegroundColor Cyan
    return $token
   } else {
-   return $false
+   throw "Token acquisition failed for an unknown reason."
   }
  } catch {
-  Write-host -ForegroundColor Red "Error getting token ($($Error[0]))"
-  return $false
+  Write-Error "Failed to acquire token. Error: $_"
+  if ($_.Exception.InnerException) {
+   Write-Error "Inner Exception: $($_.Exception.InnerException.Message)"
+  }
+  return $null
  }
 }
-Function Get-AzureGraphToken { # Get API Token using base MS Authentication Module : MSAL.PS
+Function Get-AzureGraphToken { # Get API Token using base MS Authentication Module : MSAL.PS # May conflict with other MS Modules
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
   # --- Common Parameters for All Sets ---
@@ -13725,13 +13792,15 @@ Function Assert-IsTokenLifetimeValid {
   Write-host -ForegroundColor "Red" -Object "Incorrect Token Format"
   Return
  }
+ $ExpirationTimeLocal = $token.expires_on.toLocalTime().DateTime
  if ($ShowExpiration) {
   # $ExpirationDate = $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))
-  $ExpirationDate = $(Format-date (Get-Date $token.expires_on))
+  # $ExpirationDate = $(Format-date (Get-Date $token.expires_on))
+  $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
   Write-Host "Token will expire at $ExpirationDate"
  }
  # return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
- return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $token.expires_on))) -gt 0)
+ return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $ExpirationTimeLocal))) -gt 0)
 }
 Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
@@ -13763,7 +13832,8 @@ Function Get-AzureGraph { # Send base graph request without any requirements
 
  return $RestResult
  } catch {
-  Write-host -ForegroundColor Red "Error during Azure Graph Request $GraphRequest ($($Error[0]))"
+  $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json).error.message
+  Write-host -ForegroundColor Red "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
  }
 }
 Function Convert-AccessToken {
@@ -13985,7 +14055,7 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
   $Token
  )
  if ($Token) {
-  $Result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID/"
+  $Result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID"
   if ($ShowAll) {
    $Result
   } else {
@@ -14111,9 +14181,9 @@ Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Reques
    # First, check if the result has the expected structure and contains any rows.
    # The '?.' null-conditional operator safely checks for the 'rows' property.
    if (-not $LogAnalyticsResult.tables?.rows) {
-    Write-Output "No results found for the query."
+    Write-Host "No results found for the query."
     # Exit the function, returning nothing ($null).
-    return
+    return $False
    }
 
    # FIX 1: Guarantee that column headers are always an array.
