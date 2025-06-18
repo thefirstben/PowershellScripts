@@ -13560,7 +13560,7 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
  $RestResult
 }
 # Graph Management
-function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed)
+Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
   # --- Common Parameters for All Sets ---
@@ -13701,10 +13701,10 @@ function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     access_token = $tokenResponse.access_token
    }
    $ExpirationDateTime = Format-date ($token.expires_on.ToLocalTime().DateTime)
-   Write-Host "API Token successfully acquired. It will expire at: $ExpirationDateTime" -ForegroundColor Cyan
+   Write-Host "API Token successfully acquired from ($Scope). It will expire at: $ExpirationDateTime" -ForegroundColor Cyan
    return $token
   } else {
-   throw "Token acquisition failed for an unknown reason."
+   throw "Token acquisition failed for an unknown reason. ($Scope)"
   }
  } catch {
   Write-Error "Failed to acquire token. Error: $_"
