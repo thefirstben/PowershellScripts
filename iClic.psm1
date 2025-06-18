@@ -56,8 +56,10 @@
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
 # For Azure : Azure CLI or Microsoft.Graph
+# For Exchange Management : ExchangeOnlineManagement
 # To store secure data in Credential Manager : TUN.CredentialManager
-# For Azure Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS
+# To decode JWT Tokens : JWT
+# For Azure Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS - Will avoid this module if possible as this generates conflicts with other MS Modules
 
 # ToDo : add measure-command function to time functions whenever possible
 
@@ -10512,7 +10514,8 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  }
 
  $FastColumns = "DisplayName,appId,id"
- $DefaultColumns = "DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,keyCredentials,passwordCredentials,publisherDomain,signInAudience,tags,publicClient,spa,web"
+ $DefaultColumns = "DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,keyCredentials,
+  passwordCredentials,publisherDomain,signInAudience,tags,publicClient,spa,web"
  if ($Fast) {
   $Columns = $FastColumns
  } else {
@@ -11357,11 +11360,12 @@ Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using RES
 }
 Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
  Param (
-  $Filter,
+  $Token,
+  $Filter, # Does not work with -Fast
   [Switch]$ShowAllColumns,
-  [Switch]$Fast,
+  [Switch]$Fast, # Get less values
   $URLFilter,
-  $Token
+  $NameFilter
  )
 
  if ($Token) {
@@ -11369,14 +11373,25 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   $headers = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
+   'ConsistencyLevel' = "eventual"
   }
 
   if ($fast) {
    $Arguments = "?`$select=id,appId,displayName,servicePrincipalType"
   } elseif ($ShowAllColumns) {
-   $Arguments = "?`$select=id,objectType,servicePrincipalType,appId,publisherName,appDisplayName,displayName,accountEnabled,appRoleAssignmentRequired,notificationEmailAddresses,createdDateTime,preferredSingleSignOnMode,loginUrl,replyUrls,signInAudience,passwordCredentials"
+   $Arguments = "?`$select=id,objectType,servicePrincipalType,appId,publisherName,appDisplayName,displayName,accountEnabled,
+   appRoleAssignmentRequired,notificationEmailAddresses,createdDateTime,preferredSingleSignOnMode,loginUrl,replyUrls,signInAudience,passwordCredentials"
   } else {
    $Arguments = ""
+  }
+
+  if ($NameFilter) {
+   if ($Arguments -like "?") {
+    $Arguments += "&"
+   } else {
+    $Arguments += "?"
+   }
+   $Arguments += "`$filter=contains(displayName,'$NameFilter')&`$count=true"
   }
 
   $Result = @()
@@ -11385,25 +11400,29 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
    $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 3
    $Result += $CurrentResult.value
   }
- } else {
+ } else { # If using Az Cli
   $Arguments = '--output', 'json', '--all', '--only-show-errors'
   if ( ! $ShowAllColumns ) {
    $Arguments += '--query'
    if ($Fast) {
     $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
    } else {
-    $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
+    $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,
+    appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,
+    notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,
+    loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
    }
   }
   if ($filter) {
    $Arguments += "--filter"
    $Arguments += $filter
   }
-  $Result = az ad sp list @Arguments | ConvertFrom-Json | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
+  $Result = az ad sp list @Arguments | ConvertFrom-Json
  }
- if ($URLFilter) {
-  $Result = $Result | Where-Object URLs -like "*$URLFilter*"
- }
+
+ # Common conversion
+ $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
+ if ($URLFilter) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
  $Result
 }
 Function Get-AzureServicePrincipalIDFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
@@ -13559,7 +13578,7 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
  }
  $RestResult
 }
-# Graph Management
+# Token Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
@@ -13783,7 +13802,7 @@ Function Get-AzureGraphToken { # Get API Token using base MS Authentication Modu
   Write-Error "Failed to acquire token. Error: $_"
  }
 }
-Function Assert-IsTokenLifetimeValid {
+Function Assert-IsTokenLifetimeValid { # Check validity of token
  Param (
   [parameter(Mandatory = $True)]$Token,
   [switch]$ShowExpiration
@@ -13802,6 +13821,25 @@ Function Assert-IsTokenLifetimeValid {
  # return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
  return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $ExpirationTimeLocal))) -gt 0)
 }
+Function Convert-AccessToken { # Convert Access Token
+ Param (
+  [Parameter(Mandatory=$true, ValueFromPipeline=$true)]$Token
+ )
+ process {
+  # This code will now run FOR EACH $Token object piped in
+  try {
+   if (! $(Assert-IsCommandAvailable -commandname Get-JwtPayload)) {Throw "Get-JwtPayload (Module JWT) not available" }
+   # Assumes Get-JwtPayload is a function/cmdlet you have that decodes JWTs
+   $Token.access_token | Get-JwtPayload -ErrorAction Stop | ConvertFrom-Json
+  } catch {
+   Write-Error "Failed to get token: $($_.Exception.Message)"
+  }
+ }
+}
+Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
+ (az account get-access-token --scope https://graph.microsoft.com/.default | ConvertFrom-Json).accessToken | Get-JwtPayload | ConvertFrom-Json
+}
+# Graph Management
 Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
   [parameter(Mandatory = $True)]$Token,
@@ -13835,24 +13873,6 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json).error.message
   Write-host -ForegroundColor Red "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
  }
-}
-Function Convert-AccessToken {
- Param (
-  [Parameter(Mandatory=$true, ValueFromPipeline=$true)]$Token
- )
- process {
-  # This code will now run FOR EACH $Token object piped in
-  try {
-   if (! $(Assert-IsCommandAvailable -commandname Get-JwtPayload)) {Throw "Get-JwtPayload (Module JWT) not available" }
-   # Assumes Get-JwtPayload is a function/cmdlet you have that decodes JWTs
-   $Token.access_token | Get-JwtPayload -ErrorAction Stop | ConvertFrom-Json
-  } catch {
-   Write-Error "Failed to get token: $($_.Exception.Message)"
-  }
- }
-}
-Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
- (az account get-access-token --scope https://graph.microsoft.com/.default | ConvertFrom-Json).accessToken | Get-JwtPayload | ConvertFrom-Json
 }
 # Conditional Access
 Function Get-AzureConditionalAccessLocations {
@@ -13998,6 +14018,81 @@ Function Get-AzureConditionalAccessPolicies {
   @{name="Full_JSON";expression={
    $_ | ConvertTo-Json -Depth 6
   }}
+}
+# Log Analytics
+Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
+ Param (
+  [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true,Mandatory)]$LogAnalyticsResult
+ )
+  process {
+   Write-Verbose -Message "Converting result to Object"
+
+   # First, check if the result has the expected structure and contains any rows.
+   # The '?.' null-conditional operator safely checks for the 'rows' property.
+   if (-not $LogAnalyticsResult.tables?.rows) {
+    Write-Host "No results found for the query."
+    # Exit the function, returning nothing ($null).
+    return $False
+   }
+
+   # FIX 1: Guarantee that column headers are always an array.
+   # The .name property on a single-column result would return a single string.
+   # Wrapping it in @() ensures that even a single column name becomes an array of one.
+   $headerRow = @($LogAnalyticsResult.tables.columns.name)
+   $columnsCount = $headerRow.Count
+
+   $logData = @()
+
+   # FIX 2: Guarantee that the rows collection is always an array of arrays.
+   # This is the main fix for the "single result" problem.
+   $rowsCollection = $LogAnalyticsResult.tables.rows
+
+   # When one row is returned, PowerShell might "unwrap" it from [["value1", "value2"]]
+   # to just ["value1", "value2"]. We need to detect this and re-wrap it.
+   # The condition checks if the collection's first item is NOT another collection.
+   if ($rowsCollection -is [System.Collections.IList] -and $rowsCollection.Count -gt 0 -and $rowsCollection[0] -isnot [System.Collections.IList]) {
+    # The collection is a single, unwrapped row. We re-wrap it into an outer array
+    # using the unary comma operator, so it becomes a collection of one row.
+    $rowsCollection = @(,$rowsCollection)
+   }
+
+   # Now that we are certain $rowsCollection is an array of arrays, we can safely loop.
+   foreach ($row in $rowsCollection) {
+    $properties = [ordered]@{}
+    for ($i = 0; $i -lt $columnsCount; $i++) {
+     # We can now safely index into the $row array.
+     $properties[$headerRow[$i]] = $row[$i]
+    }
+    $logData += [PSCustomObject]$properties
+   }
+   # Return the final array of PSObjects.
+   $logData
+ }
+}
+Function Get-AzureLogAnalyticsRequest {
+ Param(
+  [Parameter(Mandatory)]$WorkspaceID,
+  [Parameter(Mandatory)]$Query, #in string (if JSON it can be a POST query with query in BODY)
+  [Parameter(Mandatory)]$Token,
+  $BaseAPIURL = "api.loganalytics.io" #URL api.loganalytics.io will be deprecated, replace it with https://api.loganalytics.azure.com when available
+ )
+
+ Write-Verbose -Message "Checking Token validity"
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+
+ Write-Verbose -Message "Generating Headers"
+ $headers = @{ 'Authorization' = "$($Token.token_type) $($Token.access_token)" ; 'Content-type'  = "application/json" }
+
+ Write-Verbose -Message "Requesting Rest Method"
+ # Using GET with Query in the URL
+ # $Result = Invoke-RestMethod -Method GET -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2
+
+ # Using post with Query in the BODY
+ $QueryJSON = @{"query" = $Query} | ConvertTo-Json
+ $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON
+
+ Write-Verbose -Message "Converting result to Object"
+ $Result | Convert-AzureLogAnalyticsRequestAnswer
 }
 # Misc
 Function Get-AzureADUserOwnedDevice {
@@ -14170,80 +14265,6 @@ Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptio
 Function Get-TOR_IP_List { # Will not work with Zscaler
  $response = Invoke-WebRequest -Uri "https://check.torproject.org/torbulkexitlist" -UseBasicParsing
  $response.RawContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }
-}
-Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
- Param (
-  [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true,Mandatory)]$LogAnalyticsResult
- )
-  process {
-   Write-Verbose -Message "Converting result to Object"
-
-   # First, check if the result has the expected structure and contains any rows.
-   # The '?.' null-conditional operator safely checks for the 'rows' property.
-   if (-not $LogAnalyticsResult.tables?.rows) {
-    Write-Host "No results found for the query."
-    # Exit the function, returning nothing ($null).
-    return $False
-   }
-
-   # FIX 1: Guarantee that column headers are always an array.
-   # The .name property on a single-column result would return a single string.
-   # Wrapping it in @() ensures that even a single column name becomes an array of one.
-   $headerRow = @($LogAnalyticsResult.tables.columns.name)
-   $columnsCount = $headerRow.Count
-
-   $logData = @()
-
-   # FIX 2: Guarantee that the rows collection is always an array of arrays.
-   # This is the main fix for the "single result" problem.
-   $rowsCollection = $LogAnalyticsResult.tables.rows
-
-   # When one row is returned, PowerShell might "unwrap" it from [["value1", "value2"]]
-   # to just ["value1", "value2"]. We need to detect this and re-wrap it.
-   # The condition checks if the collection's first item is NOT another collection.
-   if ($rowsCollection -is [System.Collections.IList] -and $rowsCollection.Count -gt 0 -and $rowsCollection[0] -isnot [System.Collections.IList]) {
-    # The collection is a single, unwrapped row. We re-wrap it into an outer array
-    # using the unary comma operator, so it becomes a collection of one row.
-    $rowsCollection = @(,$rowsCollection)
-   }
-
-   # Now that we are certain $rowsCollection is an array of arrays, we can safely loop.
-   foreach ($row in $rowsCollection) {
-    $properties = [ordered]@{}
-    for ($i = 0; $i -lt $columnsCount; $i++) {
-     # We can now safely index into the $row array.
-     $properties[$headerRow[$i]] = $row[$i]
-    }
-    $logData += [PSCustomObject]$properties
-   }
-   # Return the final array of PSObjects.
-   $logData
- }
-}
-Function Get-AzureLogAnalyticsRequest {
- Param(
-  [Parameter(Mandatory)]$WorkspaceID,
-  [Parameter(Mandatory)]$Query, #in string (if JSON it can be a POST query with query in BODY)
-  [Parameter(Mandatory)]$Token,
-  $BaseAPIURL = "api.loganalytics.io" #URL api.loganalytics.io will be deprecated, replace it with https://api.loganalytics.azure.com when available
- )
-
- Write-Verbose -Message "Checking Token validity"
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
-
- Write-Verbose -Message "Generating Headers"
- $headers = @{ 'Authorization' = "$($Token.token_type) $($Token.access_token)" ; 'Content-type'  = "application/json" }
-
- Write-Verbose -Message "Requesting Rest Method"
- # Using GET with Query in the URL
- # $Result = Invoke-RestMethod -Method GET -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2
-
- # Using post with Query in the BODY
- $QueryJSON = @{"query" = $Query} | ConvertTo-Json
- $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON
-
- Write-Verbose -Message "Converting result to Object"
- $Result | Convert-AzureLogAnalyticsRequestAnswer
 }
 
 #Alias
