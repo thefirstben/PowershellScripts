@@ -11361,8 +11361,6 @@ Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using RES
 Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
  Param (
   $Token,
-  $Filter, # Does not work with -Fast
-  [Switch]$ShowAllColumns,
   [Switch]$Fast, # Get less values
   $URLFilter,
   $NameFilter
@@ -11378,50 +11376,43 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
 
   if ($fast) {
    $Arguments = "?`$select=id,appId,displayName,servicePrincipalType"
-  } elseif ($ShowAllColumns) {
-   $Arguments = "?`$select=id,objectType,servicePrincipalType,appId,publisherName,appDisplayName,displayName,accountEnabled,
-   appRoleAssignmentRequired,notificationEmailAddresses,createdDateTime,preferredSingleSignOnMode,loginUrl,replyUrls,signInAudience,passwordCredentials"
   } else {
    $Arguments = ""
   }
 
+  # Add ? if it was not yet set, otherwise add a & to add values
+  if ($Arguments -like "*?*") {
+   $Arguments += "&"
+  } else {
+   $Arguments += "?"
+  }
+
   if ($NameFilter) {
-   if ($Arguments -like "?") {
-    $Arguments += "&"
-   } else {
-    $Arguments += "?"
-   }
-   $Arguments += "`$filter=contains(displayName,'$NameFilter')&`$count=true"
+   $Arguments += "$`count=true&`$search=`"displayName:$NameFilter`""
+  } else {
+   $Arguments += "`$top=999"
   }
 
   $Result = @()
   $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments"
+  $Result += $CurrentResult.value
   While ($CurrentResult.'@odata.nextLink') {
    $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 3
    $Result += $CurrentResult.value
   }
  } else { # If using Az Cli
   $Arguments = '--output', 'json', '--all', '--only-show-errors'
-  if ( ! $ShowAllColumns ) {
-   $Arguments += '--query'
-   if ($Fast) {
-    $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
-   } else {
-    $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,
-    appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,
-    notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,
-    loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
-   }
-  }
-  if ($filter) {
-   $Arguments += "--filter"
-   $Arguments += $filter
+  $Arguments += '--query'
+  if ($Fast) {
+   $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
+  } else {
+   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
   }
   $Result = az ad sp list @Arguments | ConvertFrom-Json
  }
 
  # Common conversion
- $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
+ if (! $Fast) { $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}} }
  if ($URLFilter) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
  $Result
 }
@@ -11849,7 +11840,7 @@ Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal a
  Param (
   [Switch]$ShowAssignements # Slow
  )
- $AllApps = Get-AzureServicePrincipal -ShowAllColumns
+ $AllApps = Get-AzureServicePrincipal
 
  if ($ShowAssignements) {
   $AllApps | ForEach-Object {
