@@ -13724,7 +13724,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   return $null
  }
 }
-Function Get-AzureGraphToken { # Get API Token using base MS Authentication Module : MSAL.PS # May conflict with other MS Modules
+Function Get-AzureGraphAPITokenMSAL { # Get API Token using base MS Authentication Module : MSAL.PS # May conflict with other MS Modules
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
   # --- Common Parameters for All Sets ---
@@ -14069,7 +14069,10 @@ Function Get-AzureLogAnalyticsRequest {
  )
 
  Write-Verbose -Message "Checking Token validity"
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+  Write-Error "Token is invalid, provide a valid token"
+  return
+ }
 
  Write-Verbose -Message "Generating Headers"
  $headers = @{ 'Authorization' = "$($Token.token_type) $($Token.access_token)" ; 'Content-type'  = "application/json" }
