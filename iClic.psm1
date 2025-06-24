@@ -11227,25 +11227,40 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationObjectID")]$AppRegistrationObjectID,
   [switch]$NoConfirm
   )
- $AppInfoParam = $PSBoundParameters
- $AppInfoParam.Remove('KeyType') | Out-Null
- $AppInfoParam.Remove('KeyType') | Out-Null
- $AppInfo = Get-AzureAppRegistrationSecrets @AppInfoParam
- $SecretInfo = $AppInfo.passwordCredentials
 
- if ($SecretInfo.count -eq "1") {
-  write-host -ForegroundColor "Magenta" -Object "Only one secret is available on Application $($AppInfo.displayName) ($($AppInfo.AppID))"
- } else {
+ try {
+
+  # Check Token status
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+
+  # Get Param to send them to sub functions
+  $AppInfoParam = $PSBoundParameters
+  $AppInfoParam.Remove('KeyType') | Out-Null
+  $AppInfoParam.Remove('KeyType') | Out-Null
+  $AppInfo = Get-AzureAppRegistrationSecrets @AppInfoParam
+  $SecretInfo = $AppInfo.passwordCredentials
+
+  # Check current secret count
+  if ($SecretInfo.count -eq "1") { Throw "Only one secret is available on Application $($AppInfo.displayName) ($($AppInfo.AppID))" }
+
+  # Create list of Secret excluding the newest one
   $LatestSecret = ($SecretInfo | Sort-Object endDateTime)[-1]
   $OldSecrets = $SecretInfo | Where-Object keyId -ne $LatestSecret.keyid
+
+  # Loop through all values and ask for confirmation
   $OldSecrets | ForEach-Object {
+   # Print status
    Write-host -ForegroundColor "Red" -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] from App $($AppInfo.displayName) that will expire on $($_.endDateTime)"
+   # If confirmation is required ask for confirmation
    if (! $NoConfirm ) {
     $Answer = Question "Please confirm removal" -defaultChoice "1"
     if (! $Answer) {write-host -foregroundcolor "Yellow" "Cancelled" ; return}
    }
+   # Remove secret one by one
    Remove-AzureAppRegistrationSecret -Token $Token -AppRegistrationID $AppInfo.AppID -KeyID $_.KeyID
   }
+ } Catch {
+  write-host -foregroundcolor "Red" -Object $Error[0]
  }
 }
 Function Set-AzureAppRegistrationConsent { # Consent on permission (Warning : It consents all permissions on an App, you cannot select what permission to consent, so check before)
@@ -11852,9 +11867,57 @@ Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal a
 }
 Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on enterprise app to ensure Assignement is required
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID
+  [Parameter(Mandatory=$true)]$ServicePrincipalID,
+  $Token
  )
- az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
+ if ($Token) {
+  Try {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+
+   $ContentType = "application/json"
+
+   $headers = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = $ContentType
+   }
+
+   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID"
+
+   $CurrentValue = Invoke-RestMethod -Headers $headers -Method 'GET' -ContentType $ContentType -Uri $URI
+
+   if ( ! $CurrentValue.AppID ) { Throw "Service Principal not found" }
+
+   $Body = (@{
+    "appRoleAssignmentRequired" = 'true'
+   })
+   $BodyJSON = $Body | ConvertTo-JSON -Depth 6
+
+   $CMDParams = @{
+    "URI"         = $URI
+    "Headers"     = $Headers
+    "Method"      = "PATCH"
+    "ContentType" = $ContentType
+    "Body" = $BodyJSON
+   }
+   # $CMDParams ;  return
+   Invoke-RestMethod @CMDParams
+  } catch {
+   if ($Error[0].ErrorDetails.message) {
+    $ErrorMessage = ($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message
+   } else {
+    $ErrorMessage = $Error[0]
+   }
+   Write-Error "Failed to set Assignement required value on $ServicePrincipalID ($ErrorMessage)"
+   if ($_.Exception.InnerException) {
+    Write-Error "Inner Exception: $($_.Exception.InnerException.Message)"
+   }
+   return $null
+  }
+ } else {
+  az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
+ }
 }
 Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration) - Used to get SAML certificate Expiration
  Param (
@@ -13169,7 +13232,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   } catch {
    $ErrorInfo = $Error[0]
    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
-    Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
+    Start-Sleep -Seconds $Throttle ; write-host "Being throttled waiting $Throttle`s"
    } else {
     Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
    }
