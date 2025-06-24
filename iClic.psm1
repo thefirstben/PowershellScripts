@@ -10108,7 +10108,7 @@ Function Get-AzureADRBACRights { # Get all RBAC Rights (Works with Users, Servic
   Progress -Message "Current step " -Value "Retrieving all Users (remove switch 'Advanced' to ignore this step)" -PrintTime
   $AllUsers = Get-AzureADUsers -Advanced
   Progress -Message "Current step " -Value "Retrieving all Service Principal (remove switch 'Advanced' to ignore this step)" -PrintTime
-  $AllServicePrincipals = Get-AzureServicePrincipal -Fast
+  $AllServicePrincipals = Get-AzureServicePrincipal -ValuesToShow "id,appId,displayName,servicePrincipalType"
  }
 
  # If Subscription name is given, find Subscription ID
@@ -11374,62 +11374,135 @@ Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using RES
  }
 }
 Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
+ [CmdletBinding(DefaultParameterSetName = 'Filter')]
  Param (
+  # These parameters are part of all sets
+  [Parameter(Mandatory = $false, HelpMessage = 'A security token is required.')]
   $Token,
-  [Switch]$Fast, # Get less values
+
+  # --- Specific Get by AppID Set ---
+  [Parameter(ParameterSetName = 'GetByAppID', Mandatory = $true, HelpMessage = 'Specify the Application ID.')]
+  [string]$AppID,
+
+  # --- Specific Get by ID Set ---
+  [Parameter(ParameterSetName = 'GetByID', Mandatory = $true, HelpMessage = 'Specify the Object ID.')]
+  [string]$ID,
+
+  # --- Specific Get by DisplayName Set ---
+  [Parameter(ParameterSetName = 'GetByDisplayName', Mandatory = $true, HelpMessage = 'Specify the Display Name.')]
+  [string]$DisplayName,
+
+  # --- Filter Parameter Set ---
+  [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on URL of Service Principals.')]
   $URLFilter,
-  $NameFilter
+
+  [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on Name of Service Principals.')]
+  $NameFilter,
+
+  [Parameter(Mandatory = $false, HelpMessage = 'A comma-separated list of properties to display.')]
+  $ValuesToShow = "*"
  )
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { write-error "Token is invalid, provide a valid token" ; Return }
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-   'ConsistencyLevel' = "eventual"
+ try {
+  # --- Script Body ---
+  # You can determine which parameter set was used and branch your logic accordingly.
+  Write-Verbose "The active parameter set is: $($PSCmdlet.ParameterSetName)"
+
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+   $headers = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+  } else {
+   $headers = "Content-Type=application/json"
   }
 
-  if ($fast) {
-   $Arguments = "?`$select=id,appId,displayName,servicePrincipalType"
-  } else {
-   $Arguments = ""
-  }
+  switch ($PSCmdlet.ParameterSetName) {
+   'Filter' {
+     Write-Verbose "Running in Filter mode."
+     if ($URLFilter) { Write-Verbose "URLFilter: $URLFilter" }
+     if ($NameFilter) { Write-Verbose "NameFilter: $NameFilter" }
+     Write-Verbose "ValuesToShow: $ValuesToShow"
+     if ($Token) {
+      # Colums to select # For fast : id,appId,displayName,servicePrincipalType
+      $Arguments += "?`$select=$ValuesToShow"
 
-  # Add ? if it was not yet set, otherwise add a & to add values
-  if ($Arguments -like "*?*") {
-   $Arguments += "&"
-  } else {
-   $Arguments += "?"
-  }
+      if ($NameFilter) {
+       $Arguments += "&`$count=true&`$search=`"displayName:$NameFilter`""
+       $headers.Add("ConsistencyLevel","eventual")
+      } else {
+       $Arguments += "&`$top=999"
+      }
+      $Result = @()
+      $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments"
+      $Result += $CurrentResult.value
+      While ($CurrentResult.'@odata.nextLink') {
+       $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 3
+       $Result += $CurrentResult.value
+      }
+     } else { # If using Az Cli
+      $Arguments = '--output', 'json', '--all', '--only-show-errors'
+      $Arguments += '--query'
+      if ($Fast) {
+       $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
+      } else {
+       $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
+      }
+      $Result = az ad sp list @Arguments | ConvertFrom-Json
+     }
+     # Common conversion
+     $ReplyURLColumn = $Result | get-member -MemberType NoteProperty -Name replyUrls
+     if ($ReplyURLColumn) { $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}} }
+     if ($URLFilter) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
 
-  if ($NameFilter) {
-   $Arguments += "$`count=true&`$search=`"displayName:$NameFilter`""
-  } else {
-   $Arguments += "`$top=999"
-  }
-
-  $Result = @()
-  $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments"
-  $Result += $CurrentResult.value
-  While ($CurrentResult.'@odata.nextLink') {
-   $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 3
-   $Result += $CurrentResult.value
-  }
- } else { # If using Az Cli
-  $Arguments = '--output', 'json', '--all', '--only-show-errors'
-  $Arguments += '--query'
-  if ($Fast) {
-   $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
-  } else {
-   $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
-  }
-  $Result = az ad sp list @Arguments | ConvertFrom-Json
+     $Result
+   }
+   'GetByAppID' {
+     Write-Verbose "Running in GetByAppID mode."
+     Write-Verbose "AppID: $AppID"
+     $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'"
+     if ($Token) {
+      $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
+     } else {
+      $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
+     }
+     if (! $RestResultObj) { Throw "$AppID Not found"}
+     $RestResultObj.value
+   }
+   'GetByID' {
+     Write-Verbose "Running in GetByID mode."
+     Write-Verbose "ID: $ID"
+     $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'"
+     if ($Token) {
+      $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
+     } else {
+      $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
+     }
+     if (! $RestResultObj) { Throw "$AppID Not found"}
+     $RestResultObj.value
+   }
+   'GetByDisplayName' {
+     Write-Verbose "Running in GetByDisplayName mode."
+     Write-Verbose "DisplayName: $DisplayName"
+     $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'"
+     if ($Token) {
+      $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
+     } else {
+      $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
+     }
+     if (! $RestResultObj) { Throw "$AppID Not found"}
+     $RestResultObj.value
+   }
+  } # End Switch
+ } catch {
+   if ($Error[0].ErrorDetails.message) {
+    $ErrorMessage = ($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message
+   } else {
+    $ErrorMessage = $Error[0]
+   }
+   Write-Error "Error during lookup : $ErrorMessage"
  }
-
- # Common conversion
- if (! $Fast) { $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}} }
- if ($URLFilter) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
- $Result
 }
 Function Get-AzureServicePrincipalIDFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
  Param (
