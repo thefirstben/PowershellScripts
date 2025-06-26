@@ -9985,12 +9985,17 @@ Function Convert-SourceAnchorToGUID { # Convert Source Anchor to Azure AD Object
 Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all GUID of Object containing App Registration Permission List with GUID to Readable Names
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationObjectWithGUIDPermissions,
-  $IDConversionTable #Send Conversion Table for faster treatment
+  $IDConversionTable, #Send Conversion Table for faster treatment
+  $Token
  )
  # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
  if ( ! $IDConversionTable ) {
   $IDConversionTable = @()
-  $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_ }
+  if ($Token) {
+   $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ -Token $Token }
+  } else {
+   $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ }
+  }
  } else {
   $IDConversionTable = $IDConversionTable | select-object -ExcludeProperty ServicePrincipalName,ServicePrincipalID
  }
@@ -10025,7 +10030,7 @@ Function Convert-AzureServicePrincipalPermissionsGUIDToReadable { #Converts all 
  # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
  if ( ! $IDConversionTable ) {
   $IDConversionTable = @()
-  $ServicePrincipalObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_ }
+  $ServicePrincipalObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ }
  } else {
   $IDConversionTable = $IDConversionTable | select-object -ExcludeProperty ServicePrincipalName,ServicePrincipalID
  }
@@ -10830,7 +10835,7 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
  $IDConversionTable = @()
  $AzureAppRegistrationPermissionGUID | Select-Object -Unique PolicyID | ForEach-Object {
   Write-host "Checking Policy $($_.PolicyID)"
-  $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions $_.PolicyID
+  $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID
  }
 
  # Convert GUID To READABLE (Takes a couple seconds)
@@ -10862,9 +10867,9 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   return
  }
  if ($PermissionType) {
-  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) }
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) }
  } else {
-  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID | Where-Object "Value" -eq $RightName
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID | Where-Object "Value" -eq $RightName
  }
 
  if (! $RightsToAdd) {
@@ -11606,52 +11611,66 @@ Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (
    --headers Content-Type=application/json `
    --body $Body
 }
-Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example). Uses AzCli
+Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to names of Service Principal Permission (Can be used to get ID of Role of a backend API for example). Uses AzCli or Graph
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID
+  [Parameter(Mandatory=$true)]$ServicePrincipalAppID, # Service Principal App ID
+  $Token
  )
+ Try {
+  if ($Token) {
+   $PolicyListJson = Get-AzureServicePrincipal -Token $Token -AppID $ServicePrincipalAppID
+  } else {
+   $PolicyListJson = az ad sp show --id $ServicePrincipalAppID --only-show-errors -o json | ConvertFrom-Json
+  }
 
- $PolicyListJson = az ad sp show --id $ServicePrincipalID --only-show-errors -o json | ConvertFrom-Json
- $PolicyName = $PolicyListJson.displayName
+  $PolicyName = $PolicyListJson.displayName
 
- $PolicyContent = $PolicyListJson | Select-Object @{name="oauth2Permissions";expression={
-  $oauth2Permissions_List=@()
+  $PolicyContent = $PolicyListJson | Select-Object @{name="oauth2Permissions";expression={
+   $oauth2Permissions_List=@()
+   $AppID = $_.appId
+   $_.oauth2PermissionScopes | ForEach-Object {
+    $oauth2Permissions_List+=[pscustomobject]@{
+     PolicyName = $PolicyName
+     PolicyID = $AppID;
+     RuleID = $_.id
+     PermissionType = "Delegated"
+     Type = $_.type;
+     Value = $_.value
+     Description = $_.adminConsentDisplayName
+    }
+   }
+   $oauth2Permissions_List
+ }},@{name="appRoles";expression={
+  $appRoles_List=@()
   $AppID = $_.appId
-  $_.oauth2PermissionScopes | ForEach-Object {
-   $oauth2Permissions_List+=[pscustomobject]@{
+  $_.appRoles | ForEach-Object {
+   if ($_.DisplayName -eq $_.Value) {$Description = $_.Description} else {$Description = $_.DisplayName}
+   $appRoles_List+=[pscustomobject]@{
     PolicyName = $PolicyName
-    PolicyID = $AppID;
-    RuleID = $_.id
-    PermissionType = "Delegated"
-    Type = $_.type;
+    PolicyID=$AppID
+    RuleID=$_.id
+    PermissionType = "Application"
+    Type = $_.allowedMemberTypes
     Value = $_.value
-    Description = $_.adminConsentDisplayName
+    Description = $Description
    }
   }
-  $oauth2Permissions_List
-}},@{name="appRoles";expression={
- $appRoles_List=@()
- $AppID = $_.appId
- $_.appRoles | ForEach-Object {
-  if ($_.DisplayName -eq $_.Value) {$Description = $_.Description} else {$Description = $_.DisplayName}
-  $appRoles_List+=[pscustomobject]@{
-   PolicyName = $PolicyName
-   PolicyID=$AppID
-   RuleID=$_.id
-   PermissionType = "Application"
-   Type = $_.allowedMemberTypes
-   Value = $_.value
-   Description = $Description
-  }
- }
- $appRoles_List
-}}
+  $appRoles_List
+ }}
 
- if ($PolicyContent.oauth2Permissions -and $PolicyContent.appRoles) {
-  @($PolicyContent.appRoles) + @($PolicyContent.oauth2Permissions)
- } elseif ($PolicyContent.oauth2Permissions) { $PolicyContent.oauth2Permissions
- } elseif ($PolicyContent.appRoles) { $PolicyContent.appRoles
- }
+  if ($PolicyContent.oauth2Permissions -and $PolicyContent.appRoles) {
+   @($PolicyContent.appRoles) + @($PolicyContent.oauth2Permissions)
+  } elseif ($PolicyContent.oauth2Permissions) { $PolicyContent.oauth2Permissions
+  } elseif ($PolicyContent.appRoles) { $PolicyContent.appRoles
+  }
+ } catch {
+  if ($Error[0].ErrorDetails.message) {
+   $ErrorMessage = ($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message
+  } else {
+   $ErrorMessage = $Error[0]
+  }
+  Write-Error "Error during lookup : $ErrorMessage"
+}
 }
 Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add or overwrite existing (add no tags to list current tags)
  Param (
@@ -11732,7 +11751,7 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
  }
  $AppAssigments = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty deletedDateTime
  If ($ShowAppRole) {
-  $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $ServicePrincipalID
+  $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID
   $AppAssigments | ForEach-Object {
    if ($AppRole) { $CurrentRole = $AppRole[$AppRole.RuleID.indexof($_.appRoleId)] }
    $_ | Add-Member -MemberType NoteProperty -Name RoleName -Value $CurrentRole.value
@@ -11849,9 +11868,9 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
 
  # Find full information about permission to Add
  if ($PermissionType) {
-  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object {($_.Value -eq $appRoleName) -and ($_.PermissionType -eq $PermissionType) }
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $resourceId | Where-Object {($_.Value -eq $appRoleName) -and ($_.PermissionType -eq $PermissionType) }
  } else {
-  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalID $resourceId | Where-Object "Value" -eq $appRoleName
+  $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $resourceId | Where-Object "Value" -eq $appRoleName
  }
 
  # Final Check
