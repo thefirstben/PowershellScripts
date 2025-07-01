@@ -10249,7 +10249,7 @@ Function Get-AzureADRBACRights { # Get all RBAC Rights (Works with Users, Servic
  if (! $Advanced) { $GlobalStatus = $GlobalStatus | Select-Object -ExcludeProperty "UserMail" }
  $GlobalStatus
 }
-Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph only request
+Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph only request - Gets all permissions set on a Subscription or Resource Group
  Param (
   $Token,
   $Subscription,
