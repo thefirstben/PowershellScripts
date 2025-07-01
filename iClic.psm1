@@ -10249,6 +10249,44 @@ Function Get-AzureADRBACRights { # Get all RBAC Rights (Works with Users, Servic
  if (! $Advanced) { $GlobalStatus = $GlobalStatus | Select-Object -ExcludeProperty "UserMail" }
  $GlobalStatus
 }
+Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph only request
+ Param (
+  $Token,
+  $Subscription,
+  $ResourceGroup,
+  $Resource,
+  $APIVersion = "2022-04-01",
+  [Switch]$HideGUID
+ )
+
+
+ if ($ResourceGroup) {
+  $RequestResultWithGUIDS = (Get-AzureGraph -Token $Token -BaseURL "https://management.azure.com" -GraphRequest "/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Authorization/roleAssignments/?api-version=$APIVersion").value.properties
+ } else {
+  $RequestResultWithGUIDS = (Get-AzureGraph -Token $Token -BaseURL "https://management.azure.com" -GraphRequest "/subscriptions/$Subscription/providers/Microsoft.Authorization/roleAssignments/?api-version=$APIVersion").value.properties
+ }
+
+ write-verbose "Getting Role Definition Information"
+ $RolesConvertedTable = $RequestResultWithGUIDS | Select-Object roleDefinitionId -Unique | ForEach-Object { Get-AzureGraph -Token $tokens.AzureToken -BaseURL https://management.azure.com -GraphRequest "$($_.roleDefinitionId)/?api-version=2015-06-01" }
+ $RolesConvertedTableHash = @{} ; $RolesConvertedTable | ForEach-Object { $RolesConvertedTableHash[$_.ID] = $_ }
+
+ write-verbose "Getting User Information"
+ $PrincipalConvertedTable = $RequestResultWithGUIDS | Select-Object principalId -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_.principalId -Token $tokens.UserToken }
+ $PrincipalConvertedTableHash = @{} ; $PrincipalConvertedTable | ForEach-Object { $PrincipalConvertedTableHash[$_.ID] = $_ }
+
+ $RequestResult = $RequestResultWithGUIDS | Select-Object *,
+  @{name="roleDefinitionObjectInfo";expression={($RolesConvertedTableHash[$_.roleDefinitionId]).properties}},
+  @{name="principalObjectInfo";expression={($PrincipalConvertedTableHash[$_.principalId])}} | Select-Object -ExcludeProperty roleDefinitionObjectInfo,principalObjectInfo *,
+    @{name="principalName";expression={$_.principalObjectInfo.DisplayName}},
+    @{name="roleDefinitionName";expression={$_.roleDefinitionObjectInfo.roleName}},
+    @{name="roleDefinitionType";expression={$_.roleDefinitionObjectInfo.type}}
+
+ if ($HideGUID) {
+  $RequestResult | Select-Object -ExcludeProperty *Id,*On,*By
+ } else {
+  $RequestResult
+ }
+}
 Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
  Param (
   [Parameter(Mandatory=$true)]$UserPrincipalName
@@ -10717,7 +10755,13 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID }
 
  Get-AzureADRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
-  @{Name="PrincipalName";Expression={(Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName}},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
+  @{Name="PrincipalName";Expression={
+   if (Assert-IsGUID $_.PrincipalName) {
+    (Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName
+   } else {
+    $_.PrincipalName
+   }
+  }},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses AzCli or Token
  Param (
