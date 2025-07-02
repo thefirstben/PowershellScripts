@@ -5266,7 +5266,7 @@ Function Get-PartitionInfo {
    if ($_.Freespace) {
     write-colored $sizecolor -NonColoredText " | Total $(Align -Variable $(Format-FileSize($_.Capacity)) 10) / Free $(Align -Variable $(Format-FileSize($_.freespace)) 10) " -ColoredText $(Align -Variable "( $drivefreespace% )" 12) -nonewline
    }
-   Write-Colored -Color $defaultblue -NonColoredText -ColoredText $(Format-FileSize $_.BlockSize)
+   Write-Colored -Color $defaultblue -ColoredText $(Format-FileSize $_.BlockSize)
   }
  }
 
