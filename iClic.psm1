@@ -4322,7 +4322,7 @@ Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements a
   [Switch]$Export
  )
  if (! $UsingToken) {
-  if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
+  if (!((Get-ConnectionInformation).State -eq "Connected")) { Connect-ExchangeOnline }
  }
   $Result = Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList
  if ($Export) {
@@ -12715,9 +12715,8 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
     @{Name="MFA_Method_passKeyDeviceBoundAuthenticator";Expression={$_.methodsRegistered -contains 'passKeyDeviceBoundAuthenticator'}},
     @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
     @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
-    @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
-   # Adding a base sleep to avoid being throttled too many times - Replace with the Maximum Retry Count which uses the Retry-After answer from API, it will wait 30 seconds by default which may add time to the script but remove multiple retry
-   # Start-Sleep -Seconds $Throttle
+    @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}},
+    methodsRegistered # Added to get all methods
   } catch {
    $ErrorInfo = $Error[0]
    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
@@ -13519,7 +13518,7 @@ Function Get-AzureADUserCustomAttributes { # Show user information From O365
   [Parameter(Mandatory)]$UPN
  )
  #Check if a session is already opened otherwise open it
- if (!(Get-PSSession | Where-Object {$_.Name -match 'ExchangeOnline' -and $_.Availability -eq 'Available'})) { Connect-ExchangeOnline }
+ if (!((Get-ConnectionInformation).State -eq "Connected")) { Connect-ExchangeOnline }
 
  Get-EXORecipient -Identity $UPN -PropertySets Custom
 }
@@ -13910,7 +13909,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     access_token = $tokenResponse.access_token
    }
    $ExpirationDateTime = Format-date ($token.expires_on.ToLocalTime().DateTime)
-   Write-Host "API Token successfully acquired from ($Scope). It will expire at: $ExpirationDateTime" -ForegroundColor Cyan
+   Write-Host "API Token successfully acquired from '$Scope'. It will expire at: $ExpirationDateTime" -ForegroundColor Cyan
    return $token
   } else {
    throw "Token acquisition failed for an unknown reason. ($Scope)"
