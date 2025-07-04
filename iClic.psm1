@@ -12715,8 +12715,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
     @{Name="MFA_Method_passKeyDeviceBoundAuthenticator";Expression={$_.methodsRegistered -contains 'passKeyDeviceBoundAuthenticator'}},
     @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
     @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
-    @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}},
-    methodsRegistered # Added to get all methods
+    @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
   } catch {
    $ErrorInfo = $Error[0]
    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
