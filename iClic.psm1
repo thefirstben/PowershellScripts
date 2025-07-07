@@ -12799,14 +12799,19 @@ Function Get-AzureADUserMFADeviceBoundAAGUID {
  Write-host -ForegroundColor Red "Error $StatusCode | $StatusMessage"
 }
 }
-Function Get-AzureADUserMFAPhone {
+Function Get-AzureADUserMFAMethods {
  Param (
   [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
-  [parameter(Mandatory = $true)]$User # can be UPN or GUID
+  [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
+  [ValidateSet("methods","emailMethods","fido2Methods","microsoftAuthenticatorMethods","passwordMethods","phoneMethods","softwareOathMethods",
+  "temporaryAccessPassMethods","windowsHelloForBusinessMethods")]$Method = "methods", # Getting details from a specific Methods is about twice faster than the generic | Methods gets all methods
+  [switch]$SkipTokenValidation # To make request faster
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
+  if (! $SkipTokenValidation) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
   }
 
   $header = @{
@@ -12814,12 +12819,12 @@ Function Get-AzureADUserMFAPhone {
    'Content-type'  = "application/json"
   }
 
-  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/phoneMethods/"
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/$UPNorID/authentication/$Method"
 
-  $Result = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
+  $Result = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL -MaximumRetryCount 2
 
   if (! $Result) {
-   Throw "Error checking phone information for user $User"
+   Throw "Error checking MFA Methods information for user $UPNorID (Method : $Method)"
   } else {
    $Result.Value
   }
@@ -12827,7 +12832,43 @@ Function Get-AzureADUserMFAPhone {
   $Exception = $($Error[0])
   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-  Write-host -ForegroundColor Red "Error check MFA Phone Method of user $User ($StatusCode | $StatusMessage))"
+  Write-Error -Message "Error check MFA Method of user $UPNorID ($StatusCode | $StatusMessage))"
+ }
+}
+Function Remove-AzureADUserMFAMethods {
+ Param (
+  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
+  [parameter(Mandatory = $true)]$MethodID, # can be UPN or GUID
+  [ValidateSet("methods","emailMethods","fido2Methods","microsoftAuthenticatorMethods","passwordMethods","phoneMethods","softwareOathMethods",
+  "temporaryAccessPassMethods","windowsHelloForBusinessMethods")]$Method = "methods", # Getting details from a specific Methods is about twice faster than the generic | Methods gets all methods
+  [switch]$SkipTokenValidation # To make request faster
+ )
+ Try {
+  if (! $SkipTokenValidation) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+    Throw "Token is invalid, provide a valid token"
+   }
+  }
+
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/$UPNorID/authentication/$Method/$MethodID"
+
+  Invoke-RestMethod -Method DELETE -headers $header -Uri $GraphURL
+
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error -Message "Error Deleting MFA Methods information for user $UPNorID ($StatusCode | $StatusMessage))"
+  } else {
+   Write-Error -Message "Error Deleting MFA Methods information for user $UPNorID ($($Error[0])))"
+  }
  }
 }
 # AAD Group Management
@@ -14082,7 +14123,7 @@ Function Get-AzureConditionalAccessPolicies {
   [Switch]$ShowOnlyEnabled,
   $NameFilter
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { write-Error -Message "Token is invalid, provide a valid token" ; Return }
  $headers = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
