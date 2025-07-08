@@ -12824,15 +12824,19 @@ Function Get-AzureADUserMFAMethods {
   $Result = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL -MaximumRetryCount 2
 
   if (! $Result) {
-   Throw "Error checking MFA Methods information for user $UPNorID (Method : $Method)"
+   Throw "No result from Invoke-RestMethod"
   } else {
    $Result.Value
   }
  } catch {
   $Exception = $($Error[0])
-  $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-  $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-  Write-Error -Message "Error check MFA Method of user $UPNorID ($StatusCode | $StatusMessage))"
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error -Message "Error checking MFA Methods information for user $UPNorID (Method : $Method) ($StatusCode | $StatusMessage))"
+  } else {
+   Write-Error -Message "Error checking MFA Methods information for user $UPNorID (Method : $Method) ($Exception))"
+  }
  }
 }
 Function Remove-AzureADUserMFAMethods {
@@ -14099,7 +14103,12 @@ Function Get-AzureGraph { # Send base graph request without any requirements
 
  return $RestResult
  } catch {
-  $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json).error.message
+  if ($($Error[0].ErrorDetails.Message)) {
+   $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json).error.message
+  } else {
+   $ConvertedErrorMessage = $Error[0]
+  }
+
   Write-host -ForegroundColor Red "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
  }
 }
