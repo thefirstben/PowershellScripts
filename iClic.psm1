@@ -12869,12 +12869,85 @@ Function Remove-AzureADUserMFAMethods {
   if ($Exception.ErrorDetails.message) {
    $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
    $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   Write-Error -Message "Error Deleting MFA Methods information for user $UPNorID ($StatusCode | $StatusMessage))"
+   Write-Host -ForegroundColor Red -Message "Error Deleting MFA Methods information for user $UPNorID ($StatusCode | $StatusMessage))"
   } else {
-   Write-Error -Message "Error Deleting MFA Methods information for user $UPNorID ($($Error[0])))"
+   Write-Host -ForegroundColor Red -Message "Error Deleting MFA Methods information for user $UPNorID ($($Error[0])))"
   }
  }
 }
+Function Set-AzureADUserMFADefaultMethod { # Change Default Method for authentication (will work only if method is available in systemPreferredAuthenticationMethod endpoint)
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)][ValidateSet("push", "oath", "voiceMobile", "voiceAlternateMobile", "voiceOffice", "sms", "none", "unknownFutureValue")]$Method,
+  [Parameter(Mandatory)]$Token
+ )
+ Try {
+  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
+  if ($UserGUID) { Write-Verbose "Working with GUID" } else {
+   Write-Verbose "Working with UPN, will be slower"
+   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID -Token $Token).id
+  }
+  if (! $UserGUID) {
+   Write-Host -ForegroundColor Red "User $UPNorID not found" ; Return
+  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+  $params = @{
+   "userPreferredMethodForSecondaryAuthentication" = $Method
+  }
+
+  $ParamJson = $params | convertto-json
+  Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/authentication/signInPreferences" -Body $ParamJson
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error setting default MFA Method for user $UPNorID ($StatusCode | $StatusMessage))"
+ }
+}
+Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authentication
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)]$Token
+ )
+ Try {
+  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
+  if ($UserGUID) { Write-Verbose "Working with GUID" } else {
+   Write-Verbose "Working with UPN, will be slower"
+   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID -Token $Token).id
+  }
+  if (! $UserGUID) {
+   Throw "User $UPNorID not found"
+  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
+   Throw "Token is invalid, provide a valid token"
+  }
+  $header = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
+
+ Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/authentication/signInPreferences" | Select-Object -ExcludeProperty '@odata.context'
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error getting default MFA Method for user $UPNorID ($StatusCode | $StatusMessage))"
+ }
+}
+
 # AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
  Param (
