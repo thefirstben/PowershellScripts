@@ -12799,7 +12799,7 @@ Function Get-AzureADUserMFADeviceBoundAAGUID {
  Write-host -ForegroundColor Red "Error $StatusCode | $StatusMessage"
 }
 }
-Function Get-AzureADUserMFAMethods {
+Function Get-AzureADUserMFAMethods { # Check MFA Methods
  Param (
   [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
@@ -12839,7 +12839,7 @@ Function Get-AzureADUserMFAMethods {
   }
  }
 }
-Function Remove-AzureADUserMFAMethods {
+Function Remove-AzureADUserMFAMethods { # Remove MFA Methods
  Param (
   [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
