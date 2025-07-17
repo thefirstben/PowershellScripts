@@ -10250,28 +10250,72 @@ Function Get-AzureADRBACRights { # Get all RBAC Rights (Works with Users, Servic
  $GlobalStatus
 }
 Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph only request - Gets all permissions set on a Subscription or Resource Group
+ [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
  Param (
-  $Token,
-  $Subscription,
-  $ResourceGroup,
-  $Resource,
-  $APIVersion = "2022-04-01",
-  [Switch]$HideGUID
+  # == Parameters available in ALL sets ==
+  [parameter(Mandatory = $true)]
+  $AzureToken,
+
+  [parameter(Mandatory = $true)]
+  $UserToken,
+
+  [string]$APIVersion = "2022-04-01",
+
+  [string]$APIVersionEligible = "2020-10-01",
+
+  [Switch]$HideGUID,
+
+  # == SCOPE PARAMETERS (Mutually Exclusive Sets) ==
+
+  # Set 1: Management Group Scope
+  [parameter(Mandatory = $true, ParameterSetName = 'ManagementGroupScope')]
+  [string]$ManagementGroupID,
+
+  # Set 2: Subscription Scope (also used by other sets)
+  [parameter(Mandatory = $true, ParameterSetName = 'SubscriptionScope')]
+  [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
+  [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
+  [string]$Subscription,
+
+  # Set 3: Resource Group Scope (also used by Resource set)
+  [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
+  [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
+  [string]$ResourceGroup,
+
+  # Set 4: Resource Scope
+  [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
+  [string]$Resource
  )
 
+ # You can check which parameter set was used inside your script
+ Write-Host "Parameter Set Used: $($PSCmdlet.ParameterSetName)"
 
+
+ $BaseURL = "https://management.azure.com"
+
+ # Get Data from Rest
  if ($ResourceGroup) {
-  $RequestResultWithGUIDS = (Get-AzureGraph -Token $Token -BaseURL "https://management.azure.com" -GraphRequest "/subscriptions/$Subscription/resourceGroups/$ResourceGroup/providers/Microsoft.Authorization/roleAssignments/?api-version=$APIVersion").value.properties
+  $RequestURL = "/subscriptions/$Subscription/resourceGroups/$ResourceGroup"
+ } elseif ($ManagementGroupID) {
+  $RequestURL = "/providers/Microsoft.Management/managementGroups/$ManagementGroupID"
  } else {
-  $RequestResultWithGUIDS = (Get-AzureGraph -Token $Token -BaseURL "https://management.azure.com" -GraphRequest "/subscriptions/$Subscription/providers/Microsoft.Authorization/roleAssignments/?api-version=$APIVersion").value.properties
+  $RequestURL = "/subscriptions/$Subscription"
  }
 
+ # Launch Graph Requests
+ $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion").value.properties
+ if ($PermanentRequestResultWithGUIDS) { $PermanentRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Permanent }
+ $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible").value.properties
+ if ($EligibleRequestResultWithGUIDS) { $EligibleRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Eligible }
+ $RequestResultWithGUIDS = $PermanentRequestResultWithGUIDS + $EligibleRequestResultWithGUIDS
+
+ # Convert Data
  write-verbose "Getting Role Definition Information"
- $RolesConvertedTable = $RequestResultWithGUIDS | Select-Object roleDefinitionId -Unique | ForEach-Object { Get-AzureGraph -Token $tokens.AzureToken -BaseURL https://management.azure.com -GraphRequest "$($_.roleDefinitionId)/?api-version=2015-06-01" }
+ $RolesConvertedTable = $RequestResultWithGUIDS | Select-Object roleDefinitionId -Unique | ForEach-Object { Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$($_.roleDefinitionId)/?api-version=$APIVersion" }
  $RolesConvertedTableHash = @{} ; $RolesConvertedTable | ForEach-Object { $RolesConvertedTableHash[$_.ID] = $_ }
 
  write-verbose "Getting User Information"
- $PrincipalConvertedTable = $RequestResultWithGUIDS | Select-Object principalId -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_.principalId -Token $tokens.UserToken }
+ $PrincipalConvertedTable = $RequestResultWithGUIDS | Select-Object principalId -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_.principalId -Token $UserToken }
  $PrincipalConvertedTableHash = @{} ; $PrincipalConvertedTable | ForEach-Object { $PrincipalConvertedTableHash[$_.ID] = $_ }
 
  $RequestResult = $RequestResultWithGUIDS | Select-Object *,
