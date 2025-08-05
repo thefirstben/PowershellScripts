@@ -9273,7 +9273,7 @@ Function Get-InstalledApps { # List all installed apps with required information
 
  $PathList | ForEach-Object {
   $CurrentPath = $_.Name
-  $Result = Get-ItemProperty $_.Key | Select-Object *,@{Label='Source';Expression={$CurrentPath}}
+  $Result = Get-ItemProperty $_.Key -ErrorAction SilentlyContinue | Select-Object *,@{Label='Source';Expression={$CurrentPath}}
   $GlobalResult += $Result
  }
 
