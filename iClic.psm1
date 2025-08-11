@@ -11922,7 +11922,7 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
  if ($HideDate) { $Result = $Result | Select-Object -ExcludeProperty *DateTime }
  $Result
 }
-Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST
+Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST. Uses AzCli
  Param (
   [parameter(Mandatory=$true,ParameterSetName="SP_ID")]
   [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]
