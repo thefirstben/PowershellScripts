@@ -9876,9 +9876,8 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN ; A
 
  if ($Token) {
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
@@ -9892,9 +9891,14 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN ; A
 
   } catch {
    $Exception = $($Error[0])
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   if (! $HideError ) { Write-host -ForegroundColor Red "Error searching for user $UPN ($StatusCode | $StatusMessage))" }
+   if ($Exception.ErrorDetails.message) {
+    $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+    $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+    $ErrorMessage = "$StatusCode | $StatusMessage"
+   } else {
+    $ErrorMessage = $Exception
+   }
+   if (! $HideError ) { Write-host -ForegroundColor Red "Error searching for user $UPN ($ErrorMessage))" }
   }
  } else {
   if ($Fast) {
@@ -9929,9 +9933,7 @@ Function Get-AzureADUserFromMail { # Find Azure Ad User info from email
  )
  if ($Token) {
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
@@ -10553,7 +10555,7 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
  }
  $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
   $headers = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -10569,7 +10571,7 @@ Function Get-AzureAppRegistrationFromAppID { # Get the App Registration informat
   $Value = "displayName", # or UserPrincipalName
   [Parameter(Mandatory)]$Token
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
  $headers = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
@@ -10593,7 +10595,7 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  )
 
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
   $headers = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -10817,7 +10819,7 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
  )
 
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { write-error "Token is invalid, provide a valid token" ; Return }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $headers = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -10992,10 +10994,7 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
  )
 
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Write-Error "Token is invalid, provide a valid token"
-   return
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -11160,9 +11159,7 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
  )
  try {
   if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
    $headers = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -11219,10 +11216,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
  )
  try {
   if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Write-Error "Token is invalid, provide a valid token"
-    return
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -11324,7 +11318,7 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
  try {
 
   # Check Token status
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
   # Get Param to send them to sub functions
   $AppInfoParam = $PSBoundParameters
@@ -11408,10 +11402,7 @@ Function Add-AzureAppRegistrationAppRoles {
   [parameter(Mandatory=$true)]$Token,
   [ValidateSet("User","Application","Both")]$allowedMemberTypes
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-  Write-Error "Token is invalid, provide a valid token"
-  return
- }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
 
  if ($allowedMemberTypes -eq 'Both') {
   $allowedMemberTypes = "User","Application"
@@ -11502,7 +11493,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   Write-Verbose "The active parameter set is: $($PSCmdlet.ParameterSetName)"
 
   if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
    $headers = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -11624,7 +11615,7 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
   $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'"
  }
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $headers = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -12021,7 +12012,7 @@ Function Remove-AzureServicePrincipalPermissions { # Remove rights on Service Pr
   [parameter(Mandatory = $true)]$Token
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   $headers = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -12052,9 +12043,7 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
  )
  if ($Token) {
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
    $ContentType = "application/json"
 
@@ -12196,7 +12185,7 @@ Function Add-AzureServicePrincipalAssignments {
   [parameter(Mandatory = $true)]$Token
  )
  Try {
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
  $headers = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
@@ -12249,10 +12238,7 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
  # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AzCli with User Authentication. Missing Consent
  # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
 
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-  write-host -foregroundcolor "Red" "Token is invalid, provide a valid token"
-  return
- }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
 
  # Get all role definitions
  Progress -Message "Current Step : " -Value "Get all role definitions" -PrintTime
@@ -12395,7 +12381,7 @@ Function Add-AzureRole {
 
  try {
 
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
  $BearerToken = $Token.access_token
 
@@ -12453,7 +12439,7 @@ Function Get-AzureDeviceObjectIDFromName {
   [parameter(Mandatory=$true)][String]$DeviceName,
   [parameter(Mandatory=$true)]$Token
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
  $headers = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
@@ -12728,7 +12714,7 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
  $ContinueRunning = $True
  $FirstRun=$True
 
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
 
  $header = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
@@ -12781,9 +12767,7 @@ Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
  )
 
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
@@ -12820,9 +12804,7 @@ Function Get-AzureADUserMFADeviceBoundAAGUID {
   [parameter(Mandatory = $true)]$InputFile # Must contain be an output of Get-AzureADUserMFA
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
@@ -12853,9 +12835,7 @@ Function Get-AzureADUserMFAMethods { # Check MFA Methods
  )
  Try {
   if (! $SkipTokenValidation) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   }
 
   $header = @{
@@ -12894,9 +12874,7 @@ Function Remove-AzureADUserMFAMethods { # Remove MFA Methods
  )
  Try {
   if (! $SkipTokenValidation) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   }
 
   $header = @{
@@ -12934,9 +12912,7 @@ Function Set-AzureADUserMFADefaultMethod { # Change Default Method for authentic
   if (! $UserGUID) {
    Write-Host -ForegroundColor Red "User $UPNorID not found" ; Return
   }
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -12972,9 +12948,7 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
   if (! $UserGUID) {
    Throw "User $UPNorID not found"
   }
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -13000,7 +12974,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   $Token
  )
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Write-Error "Token is invalid, provide a valid token" ; return } else {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return } else {
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -13028,10 +13002,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
  )
 
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Write-Error "Token is invalid, provide a valid token"
-   return
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -13120,10 +13091,7 @@ Function Get-AzureADGroupIDFromName {
   $Token
  )
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Write-Error "Token is invalid, provide a valid token"
-   return
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -13147,7 +13115,7 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
  Try {
   if (Assert-IsGUID $GroupName) { Throw "GroupName must be a name not a GUID as this is a search function" }
   if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -13221,9 +13189,7 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
  )
  Try {
   if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -13274,9 +13240,7 @@ Function Remove-AzureADGroupOwner { # Remove Owner from group using Rest
   [Parameter(Mandatory)]$Token
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -13300,10 +13264,7 @@ Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
   $Token
  )
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Write-Error "Token is invalid, provide a valid token"
-   return
-  } else {
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return } else {
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -13403,7 +13364,7 @@ Function New-AzureADGroup { # Create New Group using Graph
  )
  Try {
 
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { Throw "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
   if (! $mailNickname) { $mailNickname = $GroupName }
   if ($Unified) {
@@ -13467,7 +13428,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
  } elseif ($Graph) {
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -13556,7 +13517,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  )
 
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -13718,9 +13679,7 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
 
  if ($Token) {
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -13762,9 +13721,7 @@ Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expir
   [Parameter(Mandatory)]$Token
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -13795,9 +13752,7 @@ Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates
   [Switch]$ShowResult
  )
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-    Throw "Token is invalid, provide a valid token"
-   }
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
    $header = @{
     'Authorization' = "$($Token.token_type) $($Token.access_token)"
     'Content-type'  = "application/json"
@@ -13830,7 +13785,7 @@ Function Get-AzureADRiskyUsers { # Can only get 500 users at the time
  Param (
   [Parameter(Mandatory)]$Token
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
  # Set Header
  $header = @{
@@ -13856,9 +13811,7 @@ Function Confirm-AzureADRiskyUser {
   [Parameter(Mandatory)]$UserList # Array of user Object ID
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-   Throw "Token is invalid, provide a valid token"
-  }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -13902,7 +13855,7 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
  )
 
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
@@ -14157,19 +14110,22 @@ Function Assert-IsTokenLifetimeValid { # Check validity of token
   [parameter(Mandatory = $True)]$Token,
   [switch]$ShowExpiration
  )
- if (! $token.expires_on) {
-  Write-host -ForegroundColor "Red" -Object "Incorrect Token Format"
-  Return
+ try {
+  if (! $token.expires_on) {
+   Throw "Incorrect Token Format"
+  }
+  $ExpirationTimeLocal = $token.expires_on.toLocalTime().DateTime
+  if ($ShowExpiration) {
+   # $ExpirationDate = $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))
+   # $ExpirationDate = $(Format-date (Get-Date $token.expires_on))
+   $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
+   Write-Host "Token will expire at $ExpirationDate"
+  }
+  # return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
+  return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $ExpirationTimeLocal))) -gt 0)
+ } Catch {
+  Write-Error $Error[0]
  }
- $ExpirationTimeLocal = $token.expires_on.toLocalTime().DateTime
- if ($ShowExpiration) {
-  # $ExpirationDate = $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))
-  # $ExpirationDate = $(Format-date (Get-Date $token.expires_on))
-  $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
-  Write-Host "Token will expire at $ExpirationDate"
- }
- # return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
- return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $ExpirationTimeLocal))) -gt 0)
 }
 Function Convert-AccessToken { # Convert Access Token
  Param (
@@ -14200,7 +14156,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  )
 
  try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { throw "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
 
  # Set Header
  $header = @{
@@ -14234,7 +14190,7 @@ Function Get-AzureConditionalAccessLocations {
  Param (
   [Parameter(Mandatory)]$Token
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
  $headers = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
@@ -14249,7 +14205,7 @@ Function Get-AzureConditionalAccessPolicies {
   [Switch]$ShowOnlyEnabled,
   $NameFilter
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { write-Error -Message "Token is invalid, provide a valid token" ; Return }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
  $headers = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
@@ -14433,10 +14389,7 @@ Function Get-AzureLogAnalyticsRequest {
  )
 
  Write-Verbose -Message "Checking Token validity"
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-  Write-Error "Token is invalid, provide a valid token"
-  return
- }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
 
  Write-Verbose -Message "Generating Headers"
  $headers = @{ 'Authorization' = "$($Token.token_type) $($Token.access_token)" ; 'Content-type'  = "application/json" }
@@ -14459,10 +14412,7 @@ Function Get-AzureADUserOwnedDevice {
   [parameter(Mandatory = $true)]$UserID,
   $ValuesToShow = "displayName,deviceOwnership,isCompliant,enrollmentType,enrollmentProfileName,managementType,profileType,trustType,manufacturer,accountEnabled,approximateLastSignInDateTime,createdDateTime"
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) {
-  write-host -ForegroundColor "Red" "Token is invalid, provide a valid token"
-  Return
- }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
  $headers = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
@@ -14493,7 +14443,7 @@ Function Get-AzureObjectSingleValueFromID { # Get Single Value from Group ID, mu
   $Value = "displayName", # or UserPrincipalName
   $Token
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
  $header = @{
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
@@ -14610,7 +14560,7 @@ Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptio
   $Token
  )
  if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token ) ) { return "Token is invalid, provide a valid token" }
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
   $header = @{
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
