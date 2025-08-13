@@ -13906,16 +13906,15 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
 
   # This parameter is mandatory ONLY for the 'ClientSecret' set.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]$ClientKey,
-
   # This parameter is mandatory ONLY for the 'Certificate' set. Thumbprint must be in the local user certificate store
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]$CertificateThumbprint,
-
   # This switch activates the 'Interactive' parameter set.
   [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive,
-
   # Parameter for Managed Identity Set ---
-  [parameter(Mandatory = $True, ParameterSetName="ManagedIdentity")][switch]$ManagedIdentity
+  [parameter(Mandatory = $True, ParameterSetName="ManagedIdentity")][switch]$ManagedIdentity,
 
+  # Dedicated parameter for User-Assigned Managed Identity ---
+  [parameter(Mandatory = $False, ParameterSetName="ManagedIdentity")][string]$UserAssignedClientID
  )
 
  try {
@@ -13935,10 +13934,10 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    # 2. Build the request URI.
    $uri = "$imdsEndpoint`?api-version=$apiVersion&resource=$([System.Web.HttpUtility]::UrlEncode($resource))"
 
-   # If an ApplicationID is provided, it's for a User-Assigned Managed Identity.
-   if ($PSBoundParameters.ContainsKey('ApplicationID') -and $ApplicationID -ne '04b07795-8ddb-461a-bbee-02f9e1bf7b46') {
-    $uri += "&client_id=$ApplicationID"
-    Write-Host "Using User-Assigned Managed Identity with Client ID: $ApplicationID" -ForegroundColor Cyan
+   # Is using the UserAssignedClientID then it is a User Assigned Managed Identity, otherwise it will be the system assigned Identity
+   if ($UserAssignedClientID) {
+    $uri += "&client_id=$UserAssignedClientID"
+    Write-Host "Using User-Assigned Managed Identity with Client ID: $UserAssignedClientID" -ForegroundColor Cyan
    } else {
     Write-Host "Using System-Assigned Managed Identity." -ForegroundColor Cyan
    }
