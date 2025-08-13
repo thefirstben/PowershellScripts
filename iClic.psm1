@@ -13911,15 +13911,43 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]$CertificateThumbprint,
 
   # This switch activates the 'Interactive' parameter set.
-  [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive
+  [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive,
+
+  # Parameter for Managed Identity Set ---
+  [parameter(Mandatory = $True, ParameterSetName="ManagedIdentity")][switch]$ManagedIdentity
+
  )
 
  try {
   # --- Endpoint and Body setup based on Parameter Set ---
   $tokenResponse = $null
-  $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
 
-  if ($PSCmdlet.ParameterSetName -in @("ClientSecret", "Certificate")) {
+  if ($PSCmdlet.ParameterSetName -eq "ManagedIdentity") {
+   # --- MANAGED IDENTITY AUTHENTICATION FLOW ---
+   Write-Host "Attempting to acquire token using Managed Identity..." -ForegroundColor Yellow
+
+   # 1. The IMDS endpoint is a non-routable IP address accessible only from within the Azure resource.
+   $imdsEndpoint = "http://169.254.169.254/metadata/identity/oauth2/token"
+   $apiVersion = "2018-02-01"
+   # For the IMDS endpoint, the 'scope' is passed as the 'resource' parameter.
+   $resource = $Scope.Replace(".default", "") # IMDS doesn't use .default, so we trim it.
+
+   # 2. Build the request URI.
+   $uri = "$imdsEndpoint`?api-version=$apiVersion&resource=$([System.Web.HttpUtility]::UrlEncode($resource))"
+
+   # If an ApplicationID is provided, it's for a User-Assigned Managed Identity.
+   if ($PSBoundParameters.ContainsKey('ApplicationID') -and $ApplicationID -ne '04b07795-8ddb-461a-bbee-02f9e1bf7b46') {
+    $uri += "&client_id=$ApplicationID"
+    Write-Host "Using User-Assigned Managed Identity with Client ID: $ApplicationID" -ForegroundColor Cyan
+   } else {
+    Write-Host "Using System-Assigned Managed Identity." -ForegroundColor Cyan
+   }
+
+   # 3. Call the IMDS endpoint. The 'Metadata:true' header is required for security.
+   $tokenResponse = Invoke-RestMethod -Method Get -Uri $uri -Headers @{ Metadata = 'true' }
+
+  } elseif ($PSCmdlet.ParameterSetName -in @("ClientSecret", "Certificate")) {
+   $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
    # Client Credentials flow for non-interactive methods
    $Body = @{
     grant_type = 'client_credentials'
@@ -13960,6 +13988,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $Body
 
   } elseif ($PSCmdlet.ParameterSetName -eq "Interactive") {
+   $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
    # --- Native Interactive Authentication Flow ---
 
    # 1. Set up a listener on localhost to catch the redirect
@@ -14007,34 +14036,56 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
 
   # --- Process and return the token ---
   if ($tokenResponse) {
-   # If the server response includes a scope (interactive flow), use it.
-   # Otherwise (client credentials flow), use the scope that was originally requested.
-   $finalScope = if ($tokenResponse.PSObject.Properties.Match('scope').Count -gt 0) {
-    $tokenResponse.scope
-   } else {
-    $Scope
-   }
-
+   # If the server response includes a scope (interactive flow), use it. Otherwise (client credentials flow), use the scope that was originally requested.
+    # The MI endpoint returns 'resource', while OAuth2 returns 'scope'. This handles both.
+   $finalScope = if ($tokenResponse.scope) {
+     $tokenResponse.scope
+    } elseif ($tokenResponse.resource) {
+     $tokenResponse.resource
+    } else {
+     $Scope
+    }
    $token = [PSCustomObject]@{
     token_type   = $tokenResponse.token_type
-    # Return a [DateTimeOffset] object. It's timezone-aware and prevents comparison issues.
     expires_on   = ([System.DateTimeOffset]::UtcNow).AddSeconds($tokenResponse.expires_in)
-    scope  = $finalScope
+    scope        = $finalScope
     access_token = $tokenResponse.access_token
    }
-   $ExpirationDateTime = Format-date ($token.expires_on.ToLocalTime().DateTime)
-   Write-Host "API Token successfully acquired from '$Scope'. It will expire at: $ExpirationDateTime" -ForegroundColor Cyan
+   $ExpirationDateTime = $token.expires_on.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+   Write-Host "API Token successfully acquired for '$finalScope'. It will expire at: $ExpirationDateTime" -ForegroundColor Green
    return $token
   } else {
    throw "Token acquisition failed for an unknown reason. ($Scope)"
   }
- } catch {
-  Write-Error "Failed to acquire token. Error: $_"
-  if ($_.Exception.InnerException) {
-   Write-Error "Inner Exception: $($_.Exception.InnerException.Message)"
+} catch {
+  $errorRecord = $Error[0]
+  $finalMessage = ""
+
+  # Try to parse the specific, expected JSON error first.
+  if ($errorRecord.ErrorDetails.Message) {
+   try {
+    # Use -ErrorAction SilentlyContinue in case the message is not valid JSON
+    $jsonError = $errorRecord.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
+    if ($jsonError.error_description) {
+     $finalMessage = $jsonError.error_description
+    }
+   }
+   catch {} # Ignore parsing errors
   }
+
+  # Fallback: If the specific parsing failed, use the general exception message.
+  if (-not $finalMessage) {
+   $finalMessage = $errorRecord.Exception.Message
+  }
+
+  # Final Fallback: If all else fails, use the string representation of the record.
+  if (-not $finalMessage) {
+   $finalMessage = $errorRecord.ToString()
+  }
+  Write-Error "Failed to acquire token. Error: $finalMessage"
   return $null
- }
+}
+
 }
 Function Get-AzureGraphAPITokenMSAL { # Get API Token using base MS Authentication Module : MSAL.PS # May conflict with other MS Modules
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
