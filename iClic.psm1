@@ -51,7 +51,7 @@
 #  To use Current user token for Az : $UserToken = az account get-access-token
 # Re-Use Parameter in subfunction : $PSBoundParameters
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
-# To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate –Subject CERTIFICATENAME -CertStoreLocation Cert:\CurrentUser\My -NotAfter $((get-date).AddMonths(6))
+# To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate -Subject "$($env:username)" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy NonExportable -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -14463,6 +14463,9 @@ Function Get-AzureLogAnalyticsRequest {
  # Using post with Query in the BODY
  $QueryJSON = @{"query" = $Query} | ConvertTo-Json
  $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON
+ if ($Result.Error) {
+  Write-Error "Error Found : $($Result.error.details.innererror)"
+ }
 
  Write-Verbose -Message "Converting result to Object"
  $Result | Convert-AzureLogAnalyticsRequestAnswer
