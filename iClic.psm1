@@ -12452,6 +12452,23 @@ Function Get-AzureDeviceObjectIDFromName {
   Write-host -ForegroundColor Red "Device $DeviceName not found"
  }
 }
+Function Get-AzureDeviceInfo {
+ param(
+  [parameter(Mandatory=$true)][String]$DeviceID,
+  [parameter(Mandatory=$true)]$Token
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ $Result = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceID"
+ if ($Result.Value) {
+  return $Result.Value
+ } else {
+  Write-host -ForegroundColor Red "Device $DeviceID not found"
+ }
+}
 
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
@@ -13880,6 +13897,13 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
   $RestResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments" --headers Content-Type=application/json | ConvertFrom-Json
  }
  $RestResult
+}
+Function Remove-AzureADUser { # Remove Azure AD User
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)]$Token
+ )
+ Get-AzureGraph -Token $Token -GraphRequest "/users/$UPNorID" -Method DELETE
 }
 # Token Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
