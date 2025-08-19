@@ -51,7 +51,7 @@
 #  To use Current user token for Az : $UserToken = az account get-access-token
 # Re-Use Parameter in subfunction : $PSBoundParameters
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
-# To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate –Subject CERTIFICATENAME -CertStoreLocation Cert:\CurrentUser\My -NotAfter $((get-date).AddMonths(6))
+# To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate -Subject "$($env:username)" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy NonExportable -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -12452,6 +12452,23 @@ Function Get-AzureDeviceObjectIDFromName {
   Write-host -ForegroundColor Red "Device $DeviceName not found"
  }
 }
+Function Get-AzureDeviceInfo {
+ param(
+  [parameter(Mandatory=$true)][String]$DeviceID,
+  [parameter(Mandatory=$true)]$Token
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ $Result = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceID"
+ if ($Result.Value) {
+  return $Result.Value
+ } else {
+  Write-host -ForegroundColor Red "Device $DeviceID not found"
+ }
+}
 
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
@@ -13881,8 +13898,15 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
  }
  $RestResult
 }
+Function Remove-AzureADUser { # Remove Azure AD User
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)]$Token
+ )
+ Get-AzureGraph -Token $Token -GraphRequest "/users/$UPNorID" -Method DELETE
+}
 # Token Management
-Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed)
+Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
   # --- Common Parameters for All Sets ---
@@ -13902,24 +13926,69 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   # Optional resource parameter, available to all sets /.default is the modern recommended scope.
   [parameter(Mandatory = $False)]$Scope = "https://graph.microsoft.com/.default",
 
+  [parameter(Mandatory = $False)][Switch]$PrintTokenResponse,
+
   # --- Parameters for Specific Auth Sets ---
 
   # This parameter is mandatory ONLY for the 'ClientSecret' set.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]$ClientKey,
-
   # This parameter is mandatory ONLY for the 'Certificate' set. Thumbprint must be in the local user certificate store
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]$CertificateThumbprint,
-
   # This switch activates the 'Interactive' parameter set.
-  [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive
+  [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive,
+  # Parameter for Managed Identity Set ---
+  [parameter(Mandatory = $True, ParameterSetName="ManagedIdentity")][switch]$ManagedIdentity,
+
+  # Dedicated parameter for User-Assigned Managed Identity ---
+  [parameter(Mandatory = $False, ParameterSetName="ManagedIdentity")][string]$UserAssignedClientID
  )
 
  try {
   # --- Endpoint and Body setup based on Parameter Set ---
   $tokenResponse = $null
-  $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
 
-  if ($PSCmdlet.ParameterSetName -in @("ClientSecret", "Certificate")) {
+  if ($PSCmdlet.ParameterSetName -eq "ManagedIdentity") {
+   # --- MANAGED IDENTITY AUTHENTICATION FLOW ---
+   Write-Host "Attempting to acquire token using Managed Identity..." -ForegroundColor Yellow
+
+   $endpoint = ""
+   $headers = @{}
+
+   if ($env:IDENTITY_ENDPOINT) {
+    # Running in an Azure App Service/Function
+    Write-Host "Azure App Service/Function environment detected. Using environment variables." -ForegroundColor Gray
+    $endpoint = $env:IDENTITY_ENDPOINT
+    $headers = @{ 'secret' = $env:IDENTITY_HEADER }
+    # Use the API version compatible with the /msi/token endpoint
+    $apiVersion = "2017-09-01"
+   }
+   else {
+    # Running in a VM or other IMDS environment
+    Write-Host "Azure VM (IMDS) environment detected." -ForegroundColor Gray
+    $endpoint = "http://169.254.169.254/metadata/identity/oauth2/token"
+    $headers = @{ Metadata = 'true' }
+    # Use a more modern API version for the IMDS endpoint
+    $apiVersion = "2018-02-01"
+   }
+   # For the IMDS endpoint, the 'scope' is passed as the 'resource' parameter.
+   $resource = $Scope.Replace(".default", "") # IMDS doesn't use .default, so we trim it.
+
+   # 2. Build the request URI.
+    $uri = "$endpoint`?api-version=$apiVersion&resource=$([System.Web.HttpUtility]::UrlEncode($resource))"
+
+   # Is using the UserAssignedClientID then it is a User Assigned Managed Identity, otherwise it will be the system assigned Identity
+    if ($UserAssignedClientID) {
+     $uri += "&client_id=$UserAssignedClientID"
+     Write-Host "Using User-Assigned Managed Identity with Client ID: $UserAssignedClientID" -ForegroundColor Cyan
+    } else {
+     Write-Host "Using System-Assigned Managed Identity." -ForegroundColor Cyan
+    }
+
+    # The final call uses the dynamically set $uri and $headers
+    $tokenResponse = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+
+  } elseif ($PSCmdlet.ParameterSetName -in @("ClientSecret", "Certificate")) {
+   $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
    # Client Credentials flow for non-interactive methods
    $Body = @{
     grant_type = 'client_credentials'
@@ -13960,6 +14029,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $Body
 
   } elseif ($PSCmdlet.ParameterSetName -eq "Interactive") {
+   $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
    # --- Native Interactive Authentication Flow ---
 
    # 1. Set up a listener on localhost to catch the redirect
@@ -14007,31 +14077,48 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
 
   # --- Process and return the token ---
   if ($tokenResponse) {
-   # If the server response includes a scope (interactive flow), use it.
-   # Otherwise (client credentials flow), use the scope that was originally requested.
-   $finalScope = if ($tokenResponse.PSObject.Properties.Match('scope').Count -gt 0) {
-    $tokenResponse.scope
-   } else {
-    $Scope
+   if ($PrintTokenResponse) {
+    write-host "Token Response : $tokenResponse"
+   }
+   # If the server response includes a scope (interactive flow), use it. Otherwise (client credentials flow), use the scope that was originally requested.
+    # The MI endpoint returns 'resource', while OAuth2 returns 'scope'. This handles both.
+   $finalScope = if ($tokenResponse.scope) {
+     $tokenResponse.scope
+    } elseif ($tokenResponse.resource) {
+     $tokenResponse.resource
+    } else {
+     $Scope
+    }
+   $expirationTime = $null
+   if ($tokenResponse.expires_on) {
+    # Managed Identity Flow: Parse the date string directly.
+    # Using InvariantCulture is a best practice for machine-readable dates.
+    $expirationTime = [System.DateTimeOffset]::Parse($tokenResponse.expires_on, [System.Globalization.CultureInfo]::InvariantCulture)
+   }
+   else {
+    # Standard OAuth Flow: Calculate the expiration from 'expires_in'.
+    $expirationTime = ([System.DateTimeOffset]::UtcNow).AddSeconds($tokenResponse.expires_in)
    }
 
    $token = [PSCustomObject]@{
     token_type   = $tokenResponse.token_type
-    # Return a [DateTimeOffset] object. It's timezone-aware and prevents comparison issues.
-    expires_on   = ([System.DateTimeOffset]::UtcNow).AddSeconds($tokenResponse.expires_in)
-    scope  = $finalScope
+    expires_on   = $expirationTime
+    scope        = $finalScope
     access_token = $tokenResponse.access_token
    }
-   $ExpirationDateTime = Format-date ($token.expires_on.ToLocalTime().DateTime)
-   Write-Host "API Token successfully acquired from '$Scope'. It will expire at: $ExpirationDateTime" -ForegroundColor Cyan
+   $ExpirationDateTime = $token.expires_on.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+   Write-Host "API Token successfully acquired for '$finalScope'. It will expire at: $ExpirationDateTime" -ForegroundColor Green
    return $token
   } else {
    throw "Token acquisition failed for an unknown reason. ($Scope)"
   }
  } catch {
-  Write-Error "Failed to acquire token. Error: $_"
-  if ($_.Exception.InnerException) {
-   Write-Error "Inner Exception: $($_.Exception.InnerException.Message)"
+  # Use the $_ automatic variable, which reliably contains the current exception.
+  Write-Error "Failed to acquire token. The original error was: $_"
+
+  # Optionally, show more detail from the specific exception object
+  if ($_.Exception) {
+   Write-Error "Underlying Exception Message: $($_.Exception.Message)"
   }
   return $null
  }
@@ -14115,11 +14202,10 @@ Function Assert-IsTokenLifetimeValid { # Check validity of token
    Throw "Incorrect Token Format"
   }
   $ExpirationTimeLocal = $token.expires_on.toLocalTime().DateTime
-  if ($ShowExpiration) {
-   # $ExpirationDate = $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))
-   # $ExpirationDate = $(Format-date (Get-Date $token.expires_on))
+ if ($ShowExpiration) {
    $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
-   Write-Host "Token will expire at $ExpirationDate"
+   $CurrentDate =  $(Format-date (Get-Date))
+   Write-Host "$CurrentDate : Token will expire at $ExpirationDate"
   }
   # return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
   return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $ExpirationTimeLocal))) -gt 0)
@@ -14401,6 +14487,9 @@ Function Get-AzureLogAnalyticsRequest {
  # Using post with Query in the BODY
  $QueryJSON = @{"query" = $Query} | ConvertTo-Json
  $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON
+ if ($Result.Error) {
+  Write-Error "Error Found : $($Result.error.details.innererror)"
+ }
 
  Write-Verbose -Message "Converting result to Object"
  $Result | Convert-AzureLogAnalyticsRequestAnswer
