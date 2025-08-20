@@ -10669,7 +10669,13 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  if ($URLFilter -and (! $Fast)) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
  if ($NameFilter) { $Result = $Result | Where-Object displayName -like "*$NameFilter*" }
  if ($ShowOwners) { $Result = $Result | Select-Object *,@{Name="Owner";Expression={
-  Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ; Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID }}
+  Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ;
+  if ($Token) {
+   Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID -Token $Token
+  } else {
+   Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID
+  }
+ }}
  }
  if ($Verbose) { ProgressClear }
  $Result
@@ -10679,55 +10685,36 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationObjectID,
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
-  [switch]$SearchAppInfo,
   $Token
  )
- if ($AppRegistrationID -and (! $AppRegistrationObjectID)) {
-  $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID
+ Try {
+ if ($Token) {
+  if ($AppRegistrationID) { $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $Token }
+  if ($AppRegistrationName) { $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $Token }
+  if ($AppRegistrationObjectID) { $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -Token $Token }
+ } else {
+  if ($AppRegistrationID) { $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID }
+  if ($AppRegistrationName) { $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName }
+  if ($AppRegistrationObjectID) { $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID }
  }
- if ($AppRegistrationName -and (! $AppRegistrationObjectID)) {
-  $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName
- }
-
- if ((! $AppInfo.ID) -and (! $AppRegistrationObjectID)) {
-  Write-host -ForegroundColor Red -Object "Application not found with AppID : $AppRegistrationID, Object ID : $AppRegistrationObjectID and AppName : $AppRegistrationName"
-  return
- }
-
- if (! $AppRegistrationObjectID) {
-  $AppRegistrationObjectID = $AppInfo.ID
- }
-
- if (($SearchAppInfo -and (! $AppInfo)) -and ((! $AppRegistrationID) -or (! $AppRegistrationName)) ) {
-  $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID
- }
-
- if (! $AppRegistrationID) { $AppRegistrationID = $AppInfo.appId}
- if (! $AppRegistrationName) { $AppRegistrationName = $AppInfo.displayName}
+ if (! $AppInfo.ID) { Throw "Application not found with AppID : $AppRegistrationID, Object ID : $AppRegistrationObjectID and AppName : $AppRegistrationName" }
 
  if ($Token) {
-  $Result = (Get-AzureGraph -Token $Token -GraphRequest /applications/$AppRegistrationObjectID/owners).value
+  $Result = (Get-AzureGraph -Token $Token -GraphRequest /applications/$($AppInfo.ID)/owners).value
  } else {
-  $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$AppRegistrationObjectID/owners | convertfrom-json).value
-  # az ad app owner list --id $AppRegistrationID -o json --only-show-errors | ConvertFrom-Json | Select-Object @{Name="AppID";Expression={$AppRegistrationID}},ID,userPrincipalName,displayName
+  $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$($AppInfo.ID)/owners | convertfrom-json).value
  }
- $Result | Select-Object @{Name="AppObjectID";Expression={$AppRegistrationObjectID}},
- @{Name="AppID";Expression={$AppRegistrationID}},
- @{Name="AppName";Expression={$AppRegistrationName}},id,userPrincipalName,displayName
-}
-Function Get-AzureAppRegistrationOwnerForAllApps { # Get Owner(s) of all App Registration
- Param (
-  $Token
- )
- Get-AzureAppRegistrations -Fast | ForEach-Object {
-  Progress -Message "Checking current App : " -Value $_.DisplayName
-  if ($Token) {
-   Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName -Token $Token
-  } else {
-   Get-AzureAppRegistrationOwner -AppRegistrationID $_.AppID -AppRegistrationObjectID $_.id -AppRegistrationName $_.DisplayName
+ $Result | Select-Object @{Name="AppObjectID";Expression={$($AppInfo.ID)}},
+ @{Name="AppID";Expression={$AppInfo.appId}},
+ @{Name="AppName";Expression={$AppInfo.displayName}},id,userPrincipalName,displayName
+ } catch {
+  Try {
+   Write-Error -Message ($Error[0].ErrorDetails.message | ConvertFrom-Json).Error.message
+  } catch {
+   Write-Error $_
   }
- } | Export-Csv "$iClic_TempPath\AzureAppRegistrationOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
- ProgressClear
+ }
+
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
