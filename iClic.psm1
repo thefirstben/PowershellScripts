@@ -12797,9 +12797,13 @@ Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
   }
  } catch {
   $Exception = $($Error[0])
-  $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-  $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-  Write-host -ForegroundColor Red "Error adding MFA Method $PhoneNumber of user $User ($StatusCode | $StatusMessage))"
+  Try {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error -Message "Error adding MFA Method $PhoneNumber of user $User ($StatusCode | $StatusMessage))"
+  } catch {
+   Write-Error $Exception
+  }
  }
 }
 Function Get-AzureADUserMFADeviceBoundAAGUID {
