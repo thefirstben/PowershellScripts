@@ -9870,7 +9870,6 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN ; A
  Param (
   [Parameter(Mandatory=$true)]$UPN,
   [switch]$HideError,
-  [switch]$Fast,
   $Token
  )
 
@@ -9901,11 +9900,7 @@ Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN ; A
    if (! $HideError ) { Write-host -ForegroundColor Red "Error searching for user $UPN ($ErrorMessage))" }
   }
  } else {
-  if ($Fast) {
-   $Result = az ad user list --output json --filter "userprincipalname  eq '$UPN'" --query '[].{displayName:displayName}' -o tsv
-  } else {
    $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
-  }
  }
  if ($result) {
   return $Result
@@ -13834,26 +13829,52 @@ Function Confirm-AzureADRiskyUser {
   Write-host -ForegroundColor Red "Error during  Azure AD Risky Users Removal ($($Error[0]))"
  }
 }
-Function Disable-AzureADUser { # Set Extension Attribute on Cloud Only Users
+Function Disable-AzureADUser { # Disable Azure Ad User
  Param (
   [Parameter(Mandatory)]$UPNorID,
-  [Switch]$ShowResult
+  $Token
  )
- if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
- if ($UserGUID) { Write-Verbose "Working with GUID" } else {
-  Write-Verbose "Working with UPN, will be slower"
-  $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
+ Try {
+  if ($Token) {
+   $Body = @{
+    accountEnabled = 'false'
+   } | ConvertTo-Json
+   Get-AzureGraph -Token $Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
+  } else {
+   $Body = '{\"accountEnabled\": \"false\"}}'
+   az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UPNorID/" --headers Content-Type=application/json --body $body
+  }
+ } Catch {
+  $ScriptError = $_
+  Try {
+   Write-Error -Message ($Error[0].ErrorDetails.message | ConvertFrom-Json).Error.message
+  } catch {
+   Write-Error $ScriptError
+  }
  }
-
- if (! $UserGUID) {
-  Write-Host -ForegroundColor Red "User $UPNorID not found"
-  Return
- }
-
- $Body = '{\"accountEnabled\": \"false\"}}'
- az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json --body $body
- if ($ShowResult) {
-  (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
+}
+Function Enable-AzureADUser { # Enable Azure Ad User
+ Param (
+  [Parameter(Mandatory)]$UPNorID,
+  $Token
+ )
+ Try {
+  if ($Token) {
+   $Body = @{
+    accountEnabled = 'true'
+   } | ConvertTo-Json
+   Get-AzureGraph -Token $Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
+  } else {
+   $Body = '{\"accountEnabled\": \"true\"}}'
+   az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UPNorID/" --headers Content-Type=application/json --body $body
+  }
+ } Catch {
+  $ScriptError = $_
+  Try {
+   Write-Error -Message ($Error[0].ErrorDetails.message | ConvertFrom-Json).Error.message
+  } catch {
+   Write-Error $ScriptError
+  }
  }
 }
 Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a user in Azure
@@ -14228,7 +14249,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   [parameter(Mandatory = $True)]$Token,
   [parameter(Mandatory = $True)]$GraphRequest,
   $BaseURL = 'https://graph.microsoft.com/beta',
-  [ValidateSet("GET","POST","DELETE")]$Method='GET',
+  [ValidateSet("GET","POST","DELETE","PATCH")]$Method='GET',
   $Body # Json Format Body
  )
 
@@ -14259,7 +14280,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
    $ConvertedErrorMessage = $Error[0]
   }
 
-  Write-host -ForegroundColor Red "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
+  Write-Error -Message "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
  }
 }
 # Conditional Access
