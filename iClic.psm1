@@ -12702,7 +12702,8 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
  Param (
   $Throttle = 10, # Time in Seconds to wait in case of throttle
   $ExportFileName = "$iClic_TempPath\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  [Parameter(Mandatory)]$Token
+  [Parameter(Mandatory)]$Token,
+  [Switch]$NoFileExport
  )
 
  # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
@@ -12754,9 +12755,13 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
    }
   }
  }
- $GlobalResult | Export-CSV $ExportFileName
- Write-Blank
- Return $ExportFileName
+ if ($NoFileExport) {
+  Return $GlobalResult
+ } else {
+  $GlobalResult | Export-CSV $ExportFileName
+  Write-Blank
+  Return $ExportFileName
+ }
 }
 Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
  Param (
