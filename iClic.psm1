@@ -46,6 +46,7 @@
 #  Measure-Command {$AppRegistrationExpiration[$AppRegistrationExpiration.apptags.indexof($ValueToSearch)]} # WARNING INDEXOF RETURN -1 IF NO VALUE FOUND
 #  Best method : Convert to hashTable
 #  $TotoHash = @{} ; $toto | ForEach-Object { $TotoHash[$_.ID] = $_ }
+#  Much better way to convert to Hash :  $TotoHash = $toto | Group-Object -Property ID -AsHashTable
 #  measure-command {$TotoHash[$TotoHash.ContainsKey("$KeyValueToCheck")]}
 # AzCLI Token Management
 #  To use Current user token for Az : $UserToken = az account get-access-token
@@ -11582,44 +11583,128 @@ Function Get-AzureServicePrincipalIDFromAppName { # Get Azure Service Principal 
  )
  ((az ad sp list --filter "displayName eq '$AppRegistrationName'") | convertfrom-json).ID
 }
-Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Name from Object ID
+Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Name from Object ID or App ID
+ [CmdletBinding(DefaultParameterSetName='ID')]
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
-  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
-  $Value = "displayName", # or UserPrincipalName
-  $Token
+  # Parameter Set for Single AppID Lookup
+  [parameter(Mandatory=$true, ParameterSetName="AppID")]
+  [String]$AppID,
+
+  # Parameter Set for Single ObjectID Lookup
+  [parameter(Mandatory=$true, ParameterSetName="ID")]
+  [String]$ID,
+
+  # Parameter Set for Batch AppID Lookup
+  [parameter(Mandatory=$true, ParameterSetName="BatchAppID")]
+  [String[]]$AppIDList,
+
+  # Parameter Set for Batch ObjectID Lookup
+  [parameter(Mandatory=$true, ParameterSetName="BatchID")]
+  [String[]]$IDList,
+
+  # Mandatory switch to activate any Batch operation
+  [parameter(Mandatory=$true, ParameterSetName="BatchAppID")]
+  [parameter(Mandatory=$true, ParameterSetName="BatchID")]
+  [Switch]$Batch,
+
+  # Common Parameters
+  $Value = "displayName", # Property to return for SINGLE lookups
+  [parameter(Mandatory=$true)]$Token
  )
 
- try {
- if ($ID) {
-  $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals/$ID`?`$select=$Value"
- } else {
-  $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'"
+ # Validate token and prepare headers once
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid" ; Return }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
  }
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
+
+ # --- BATCH PROCESSING LOGIC ---
+ if ($Batch) {
+  # Determine which list to process based on the parameter set
+  $itemList = if ($PSCmdlet.ParameterSetName -eq "BatchAppID") { $AppIDList } else { $IDList }
+
+  # Initialize a hashtable to store results, defaulting to the original value for not-found items
+  $resultsHash = @{}
+  $itemList.ForEach({ $resultsHash[$_] = $_ })
+
+  # Graph batch endpoint has a limit of 20 requests per batch
+  $batchSize = 20
+  $itemCount = $itemList.Count
+
+  # Process the item list in chunks of 20
+  for ($i = 0; $i -lt $itemCount; $i += $batchSize) {
+   $chunk = $itemList[$i..($i + $batchSize - 1)]
+
+   # Build the array of individual requests for the batch body
+   $requests = @()
+   foreach ($item in $chunk) {
+    # Always select displayName for batch mode to ensure the output object is consistent.
+    $requestUrl = if ($PSCmdlet.ParameterSetName -eq "BatchAppID") {
+     "/servicePrincipals(appId='$item')?`$select=displayName"
+    } else {
+     "/servicePrincipals/$item`?`$select=displayName"
+    }
+    $requests += @{
+     id = $item # Use the actual ID for easy correlation in the response
+     method = "GET"
+     url = $requestUrl
+    }
+   }
+
+   # Create the final JSON body for the batch request
+   $batchBody = @{ requests = $requests } | ConvertTo-Json -Depth 5
+   $batchUri = "https://graph.microsoft.com/v1.0/`$batch"
+
+   # Make the single POST call to the $batch endpoint
+   $batchResult = Invoke-RestMethod -Method POST -Headers $headers -Uri $batchUri -Body $batchBody
+
+   # Process the responses from the batch
+   foreach ($response in $batchResult.responses) {
+    if ($response.status -eq 200) {
+     # Update the hash table with the successful result
+     $resultsHash[$response.id] = $response.body.displayName
+    }
+   }
   }
-  $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
- } else {
-  $Result = (az rest --method GET --uri $RequestURL --headers Content-Type=application/json | ConvertFrom-Json)
+
+  # Determine the name for the first column based on the parameter set
+  $idColumnName = if ($PSCmdlet.ParameterSetName -eq "BatchAppID") { 'AppID' } else { 'ID' }
+
+  # Return a custom object for each item, creating the two-column output
+  return $itemList | ForEach-Object {
+   [PSCustomObject]@{
+    $idColumnName = $_
+    DisplayName   = $resultsHash[$_]
+   }
+  }
  }
 
- if (! $Result ) {
-  Return "$AppID$ID"
- }
+ # --- SINGLE ITEM PROCESSING LOGIC ---
+ else {
+  # Determine which input value was provided
+  if ($PSCmdlet.ParameterSetName -eq "AppID") { $RequestedValue = $AppID } else { $RequestedValue = $ID }
+  try {
+   # Build the appropriate URL for a single lookup
+   if ($ID) {
+    $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals/$ID`?`$select=$Value"
+   } else {
+    $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals(appId='$AppID')`?`$select=$Value"
+   }
 
- # Result format is different depending on the request
- if ($ID) {
-  $Result.$Value
- } else {
-  $Result.value.$Value
- }
- } catch {
-  Write-Verbose "Application $AppID$ID not found"
-  return "$AppID$ID"
+   $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
+
+   # If a result is found, return the specified property value, otherwise return the original input
+   if (! $Result ) {
+    Return $RequestedValue
+   } else {
+    Return $Result.$Value
+   }
+  } catch {
+   # If the API call fails (e.g., 404 Not Found), return the original input
+   Write-Verbose "Application $RequestedValue not found"
+   return $RequestedValue
+  }
  }
 }
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
@@ -11842,36 +11927,54 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
  }
  az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
 }
-Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. Uses AzCli
+Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. Uses Rest
  Param (
   [Parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalId, # ID of the App to be changed
   [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalName, # Display Name of App Registration
-  [switch]$Readable, # Slower but adds readable Role definition
   [switch]$HideGUID,
-  [switch]$HideDate
+  [switch]$HideDate,
+  [switch]$Readable,
+  [Parameter(Mandatory)]$Token
  )
- if (!$principalId) {$principalId = (Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $principalName)}
- if (!$principalName) {$principalName = $(Get-AzureServicePrincipalNameFromID -ID $principalId)}
 
- $ResultAppRole = (az rest --method get --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" --headers 'Content-Type=application/json' | ConvertFrom-Json).Value
+ # Get Required values to get a full object
+ if (!$principalId) {$principalId = (Get-AzureServicePrincipal -Token $Token -DisplayName $principalName).ID}
+ if (!$principalName) {$principalName = (Get-AzureServicePrincipal -Token $Token -DisplayName $principalId).displayName}
 
- $ResultAppRole | ForEach-Object {
-   $_ | Add-Member -MemberType NoteProperty -Name PermissionType -Value "appRoleAssignments"
+ # Token management
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
  }
 
- $ResultPermissionGrantTMP = (az rest --method get --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants" --headers 'Content-Type=application/json' | ConvertFrom-Json).Value
+ ########## APPLICATION ROLES ##########
+ # Get all App Roles [ Application ]
+ $ResultAppRole = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments").value
+ # Add a column for PermissionType
+ $ResultAppRole | ForEach-Object { $_ | Add-Member -MemberType NoteProperty -Name PermissionType -Value "Application" }
+ $ResultAppRole | ForEach-Object {
+  $AppRoleDisplayName = (Get-AzureServicePrincipal -Token $Token -ID $_.resourceId).appRoles | Where-Object id -eq $_.appRoleId
+  $_ | Add-Member -MemberType NoteProperty -Name appRoleDisplayName -Value $AppRoleDisplayName.displayName
+  $_ | Add-Member -MemberType NoteProperty -Name appRoleValue -Value $AppRoleDisplayName.value
+ }
 
+ ########## DELEGATED ROLES ##########
+ # Get all App Roles [ Delegated ]
+ $ResultPermissionGrantTMP = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants").value
+
+ # Set all the Delegated Permissions as a clean object
  $ResultPermissionGrantTMP | ForEach-Object {
+   $RoleDisplayName =  $(Get-AzureServicePrincipal -Token $Token -ID $_.resourceId).DisplayName
    $_ | Add-Member -MemberType NoteProperty -Name "appRoleId" -Value $_.clientId
    $_ | Add-Member -MemberType NoteProperty -Name "createdDateTime" -Value ""
    $_ | Add-Member -MemberType NoteProperty -Name "deletedDateTime" -Value ""
    $_ | Add-Member -MemberType NoteProperty -Name "principalDisplayName" -Value "$principalName"
    $_ | Add-Member -MemberType NoteProperty -Name "principalType" -Value "ServicePrincipal"
-   $_ | Add-Member -MemberType NoteProperty -Name "appRoleValue" -Value ""
-   $_ | Add-Member -MemberType NoteProperty -Name "resourceDisplayName" -Value $(Get-AzureServicePrincipalNameFromID -ID $_.resourceId)
-   $_ | Add-Member -MemberType NoteProperty -Name "PermissionType" -Value "oauth2PermissionGrants"
+   $_ | Add-Member -MemberType NoteProperty -Name "appRoleValue" -Value $RoleDisplayName
+   $_ | Add-Member -MemberType NoteProperty -Name "resourceDisplayName" -Value $RoleDisplayName
+   $_ | Add-Member -MemberType NoteProperty -Name "PermissionType" -Value "Delegated"
  }
-
  $ResultPermissionGrant = $ResultPermissionGrantTMP | ForEach-Object {
   $CurrentObject = $_
   ($_.scope -split " ") | ForEach-Object {
@@ -11883,16 +11986,8 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
 
  $Result = $ResultAppRole + $ResultPermissionGrant
 
- If ($Readable) {
-   $Result | ForEach-Object {
-    if ($_.PermissionType -eq "oauth2PermissionGrants") {return}
-    $AppRoleDisplayName = (Get-AzureServicePrincipalInfo -ID $_.resourceId -ValuesToShow appRoles).appRoles | Where-Object id -eq $_.appRoleId
-    $_ | Add-Member -MemberType NoteProperty -Name appRoleDisplayName -Value $AppRoleDisplayName.displayName
-    $_ | Add-Member -MemberType NoteProperty -Name appRoleValue -Value $AppRoleDisplayName.value
-   }
- }
- if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
- if ($HideDate) { $Result = $Result | Select-Object -ExcludeProperty *DateTime }
+ if ($HideGUID -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *ID }
+ if ($HideDate -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *DateTime }
  $Result
 }
 Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST. Uses AzCli
@@ -14306,6 +14401,7 @@ Function Get-AzureConditionalAccessPolicies {
  Param (
   [Parameter(Mandatory)]$Token,
   [Switch]$ShowOnlyEnabled,
+  [Switch]$ShowJSON,
   $NameFilter
  )
  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
@@ -14313,17 +14409,40 @@ Function Get-AzureConditionalAccessPolicies {
   'Authorization' = "$($Token.token_type) $($Token.access_token)"
   'Content-type'  = "application/json"
  }
+ Write-Verbose "Getting all Conditional Access Policies"
  $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies").value
 
+ Write-Verbose "Getting all NamedLocations"
  $NamedLocations = Get-AzureConditionalAccessLocations -Token $Token
+
+ Write-Verbose "Getting all Role Definitions"
  $RoleNames = Get-AzureRoleDefinitions -Token $token
  $RoleNamesHash = @{} ; $RoleNames | ForEach-Object { $RoleNamesHash[$_.ID] = $_ }
 
- if ($NameFilter) { $Result = $Result | Where-Object displayName -like $NameFilter }
+ if ($NameFilter) {
+  Write-Verbose "Filter on only named values"
+  $Result = $Result | Where-Object displayName -like $NameFilter
+ }
 
- if ($ShowOnlyEnabled) { $Result = $Result | Where-Object state -eq enabled }
+ if ($ShowOnlyEnabled) {
+  Write-Verbose "Filter on enabled values"
+  $Result = $Result | Where-Object state -eq enabled
+ }
 
- $Result | Select-Object `
+ # To allow parsing to get only GUID we need a "Template"
+ $dummyGuid = [guid]::Empty
+
+ Write-Verbose "Get details of all individual IDs [Users/Groups]"
+ $UsersToConvertList = $Result.conditions.users.includeUsers + $Result.conditions.users.excludeUsers + $Result.conditions.users.includeGroups + $Result.conditions.users.excludeGroups | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
+ $UsersList = Get-AzureADObjectInfo -token $Token -ObjectIDList $UsersToConvertList
+ $UsersListHash = $UsersList | Group-Object -Property ID -AsHashTable
+ Write-Verbose "Get details of all individual IDs [Apps]"
+ $AppToConvertList = $Result.conditions.applications.includeApplications + $Result.conditions.applications.excludeApplications | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
+ $AppList = Get-AzureServicePrincipalNameFromID -Token $Token -Batch -AppIDList $AppToConvertList
+ $AppListHash = $AppList | Group-Object -Property AppID -AsHashTable
+
+ Write-Verbose "Convert result"
+ $ResultConverted = $Result | Select-Object `
  id,displayName,createdDateTime,modifiedDateTime,state,
  @{name="Access_Control";expression={
   $Controls = @()
@@ -14345,33 +14464,30 @@ Function Get-AzureConditionalAccessPolicies {
   } else {
    "False"
   }
-
  }},
  @{name="IncludedUsers";expression={
   if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
-   ($_.conditions.users.includeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
+   ($_.conditions.users.includeUsers | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
   } else {
    $_.conditions.users.includeUsers
   }
  }},
  @{name="includeGroups";expression={
   if ($_.conditions.users.includeGroups) {
-   ($_.conditions.users.includeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
+   ($_.conditions.users.includeGroups | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
   } else {
    $_.conditions.users.includeGroups
   }
  }},
  @{name="includeRoles";expression={
-  ($_.conditions.users.includeRoles | ForEach-Object {
-   $RoleNamesHash[$_].displayName
-  }) -join(";")
+  ($_.conditions.users.includeRoles | ForEach-Object { $RoleNamesHash[$_].displayName }) -join(";")
  }},
  @{name="includeGuestsOrExternalUsers";expression={($_.conditions.users.includeGuestsOrExternalUsers.guestOrExternalUserTypes -replace ",",";") -join(";")}},
  @{name="excludeUsers";expression={
-  ($_.conditions.users.excludeUsers | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Users -Token $Token -ID $_ } ) -Join(";")
+  ($_.conditions.users.excludeUsers | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
  }},
  @{name="excludeGroups";expression={
-  ($_.conditions.users.excludeGroups | ForEach-Object { Get-AzureObjectSingleValueFromID -Type Groups -Token $Token -ID $_ } ) -Join(";")
+  ($_.conditions.users.excludeGroups | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
  }},
  @{name="excludeRoles";expression={
   ($_.conditions.users.excludeRoles | ForEach-Object {
@@ -14379,15 +14495,13 @@ Function Get-AzureConditionalAccessPolicies {
   }) -join(";")
  }},
  @{name="excludeGuestsOrExternalUsers";expression={
-  # $ExternalGuestUsers = $_.conditions.users.excludeGuestsOrExternalUsers
-  # $ExternalGuestUsers | Select-Object @{name="ExternalUsers";expression={"$($_.guestOrExternalUserTypes) [$($_.externalTenants.members)]"}}
   $_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes -replace ",",";" -join(";")
  }},
  @{name="includeApplications";expression={
-  ($_.conditions.applications.includeApplications | ForEach-Object { Get-AzureServicePrincipalNameFromID -AppID  $_ -Token $Token }) -Join(";")
+  ($_.conditions.applications.includeApplications | ForEach-Object { $AppListHash[$AppListHash.AppID.IndexOf($_)] }) -Join(";")
  }},
  @{name="excludeApplications";expression={
-  ($_.conditions.applications.excludeApplications | ForEach-Object { Get-AzureServicePrincipalNameFromID -AppID  $_ -Token $Token }) -Join(";")
+  ($_.conditions.applications.excludeApplications | ForEach-Object { $AppListHash[$AppListHash.AppID.IndexOf($_)] }) -Join(";")
  }},
  @{name="applicationFilter_Include";expression={
   ($_.conditions.applications.applicationFilter | Where-Object mode -eq include).Rule
@@ -14432,6 +14546,12 @@ Function Get-AzureConditionalAccessPolicies {
   @{name="Full_JSON";expression={
    $_ | ConvertTo-Json -Depth 6
   }}
+  if ($ShowJSON) {
+   $ResultConverted
+  } else {
+   Write-Verbose "Exclude JSON Data"
+   $ResultConverted | Select-Object -ExcludeProperty Full_JSON
+  }
 }
 # Log Analytics
 Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
@@ -14542,7 +14662,7 @@ Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell usi
  $SASToken = "SharedAccessSignature sr=" + [System.Web.HttpUtility]::UrlEncode($URI) + "&sig=" + [System.Web.HttpUtility]::UrlEncode($Signature) + "&se=" + $Expires + "&skn=" + $Access_Policy_Name
  $SASToken
 }
-Function Get-AzureObjectSingleValueFromID { # Get Single Value from Group ID, must faster and simpler that Get-AzureAdGroup*
+Function Get-AzureObjectSingleValueFromID { # Get Single Value from Object ID, must faster
  Param (
   [Parameter(Mandatory)]$ID,
   [ValidateSet("Users","","Groups","Applications","servicePrincipals")]$Type,
@@ -14558,21 +14678,65 @@ Function Get-AzureObjectSingleValueFromID { # Get Single Value from Group ID, mu
 }
 Function Get-AzureADObjectInfo { # Get Object GUID Info
  Param (
-  [Parameter(Mandatory)][GUID]$ObjectID,
+  # Parameter for the 'SingleID' set
+  [Parameter(Mandatory=$true, ParameterSetName='SingleID')]
+  [GUID]$ObjectID,
+
+  # Parameter for the 'MultipleIDs' set, accepts an array of GUIDs
+  [Parameter(Mandatory=$true, ParameterSetName='MultipleIDs')]
+  [GUID[]]$ObjectIDList,
+
+  # Common
   [Switch]$PrintError,
   [Switch]$ShowAll,
   $Token
  )
  if ($Token) {
-  $Result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID"
-  if ($ShowAll) {
-   $Result
-  } else {
-   $Result | Select-Object `
-    @{name="ID";expression={$_.id}},
-    @{name="Type";expression={$_.'@odata.type' -replace "#microsoft.graph.",""}},
-    @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName,description
+   # This block will hold the final objects to be processed, regardless of the method used
+   $objectsToProcess = $null
+ try {
+  # --- Logic for SINGLE ID lookup ---
+  if ($PSCmdlet.ParameterSetName -eq 'SingleID') {
+   Write-Verbose "Getting single object: $ObjectID"
+   # Your original Graph call
+   $objectsToProcess = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID"
   }
+
+  # --- Logic for MULTIPLE ID lookup ---
+  if ($PSCmdlet.ParameterSetName -eq 'MultipleIDs') {
+   Write-Verbose "Getting multiple objects via POST request."
+
+   $body = @{
+    ids = $ObjectIDList
+    # Use "directoryObject" to get any type (user, group, app, etc.)
+    type = "directoryObject"
+   } | ConvertTo-Json
+
+   # Use Invoke-RestMethod for the POST call
+   $result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/getByIds" -Method POST -Body $Body
+   $objectsToProcess = $result.value
+  }
+
+  # --- Unified Output Processing ---
+  if ($objectsToProcess) {
+   if ($ShowAll) {
+    $objectsToProcess
+   } else {
+    # This formatting is now applied to both single and multiple results
+    $objectsToProcess | Select-Object `
+     @{name="ID";expression={$_.id}},
+     @{name="Type";expression={$_.'@odata.type' -replace "#microsoft.graph.",""}},
+     @{name="DisplayName";expression={$_.displayName}},
+     mail,
+     userPrincipalName,
+     description
+   }
+  }
+ }
+ catch {
+  # Error handling can be added here
+  Write-Error "An error occurred while calling the Graph API: $_"
+ }
  } else {
   $ResultJson = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json 2>&1
   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
@@ -14679,6 +14843,43 @@ Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptio
 Function Get-TOR_IP_List { # Will not work with Zscaler
  $response = Invoke-WebRequest -Uri "https://check.torproject.org/torbulkexitlist" -UseBasicParsing
  $response.RawContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }
+}
+Function Add-ToStorageAccount { # Used to send file to a storage account (not finished - Works with Managed Identity for now in a Function App)
+ Param (
+  $storageAccountName = "stglprodgwcentraid",
+  $containerName      = "mfa-status",
+  $blobName           = "Global_AzureAD_UserAndMFA_Status-$(Get-Date -Format 'yyyyMMdd').csv",
+  $PsObject # Will be the file sent to the Storage Account
+ )
+ # GET THE MANAGED IDENTITY TOKEN
+ $identityEndpoint = $env:IDENTITY_ENDPOINT
+ $identityHeader   = $env:IDENTITY_HEADER
+ $resourceURI      = "https://storage.azure.com/"
+
+  # Convert to CSV the Powershell Object
+ $PsObjectArray = $PsObject | ConvertTo-CSV -NoTypeInformation
+ # Convert to proper CSV content
+ $CSVContent = ($PsObjectArray -join "`r`n") + "`r`n"
+ # Convert to ByteArray to avoid issues with encoding
+ $byteArray = [System.Text.Encoding]::UTF8.GetBytes($CSVContent)
+
+ # GET STORAGE ACCOUNT ACCESS TOKEN
+ $tokenResponse = Invoke-RestMethod -Method Get -Headers @{ "X-IDENTITY-HEADER" = $identityHeader } -Uri "$identityEndpoint`?resource=$resourceURI&api-version=2019-08-01"
+ $accessToken = $tokenResponse.access_token
+ Write-Host "Successfully acquired an access token for Storage Account $storageAccountName"
+
+ # 3. PREPARE AND EXECUTE THE UPLOAD REQUEST
+ $blobUri = "https://$storageAccountName.blob.core.windows.net/$containerName/$blobName"
+ $headers = @{
+    "Authorization"  = "Bearer $accessToken"
+    "x-ms-version"   = "2023-11-03"
+    "x-ms-blob-type" = "BlockBlob"
+    "Content-Type"   = "text/csv"
+}
+
+ # Perform the upload using the Put Blob operation.
+ Invoke-RestMethod -Method Put -Uri $blobUri -Headers $headers -Body $byteArray
+ Write-Host "File '$blobName' uploaded successfully to container '$containerName'."
 }
 
 #Alias
