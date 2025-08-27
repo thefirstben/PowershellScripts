@@ -4319,17 +4319,17 @@ Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements a
   $RecipientTypeDetailsToCheck = @("MailUser","DiscoveryMailbox","EquipmentMailbox","RoomMailbox","SchedulingMailbox","SharedMailbox","TeamMailbox","UserMailbox"),
   $ExportFileName = "$iClic_TempPath\Global_ExchangeUserDetails_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   [Switch]$UsingToken,
-  [Switch]$Export
+  [Switch]$NoFileExport
  )
  if (! $UsingToken) {
   if (!((Get-ConnectionInformation).State -eq "Connected")) { Connect-ExchangeOnline }
  }
   $Result = Get-Recipient -Properties $PropertyList -RecipientType $RecipientTypeToCheck -RecipientTypeDetails $RecipientTypeDetailsToCheck -ResultSize unlimited | Select-Object $PropertyList
- if ($Export) {
+ if ($NoFileExport) {
+  $Result
+ } else {
   $Result | Export-Csv $ExportFileName
   return $ExportFileName
- } else {
-  $Result
  }
 }
 # Checks
