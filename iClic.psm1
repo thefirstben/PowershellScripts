@@ -11558,7 +11558,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
      }
-     if (! $RestResultObj) { Throw "$AppID Not found"}
+     if (! $RestResultObj) { Throw "$DisplayName Not found"}
      $RestResultObj.value
    }
   } # End Switch
@@ -11890,24 +11890,57 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   [parameter(Mandatory=$true,ParameterSetName="SP_ID")]$ServicePrincipalID,
   [parameter(Mandatory=$true,ParameterSetName="SP_Name")]$ServicePrincipalName,
   [switch]$ShowAppRole,
-  [switch]$Readable
+  [switch]$Readable,
+  $Token
  )
- if ($ServicePrincipalName) {
-  $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName
- }
- $AppAssigments = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo" --header Content-Type=application/json | ConvertFrom-Json).Value | Select-Object -ExcludeProperty deletedDateTime
- If ($ShowAppRole) {
-  $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID
-  $AppAssigments | ForEach-Object {
-   if ($AppRole) { $CurrentRole = $AppRole[$AppRole.RuleID.indexof($_.appRoleId)] }
-   $_ | Add-Member -MemberType NoteProperty -Name RoleName -Value $CurrentRole.value
-   $_ | Add-Member -MemberType NoteProperty -Name RoleDescription -Value $CurrentRole.Description
+ Try {
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+   $headers = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
   }
- }
- If ($Readable) {
-  $AppAssigments | Select-Object -ExcludeProperty appRoleId,id,principalId,resourceId
- } else {
-  $AppAssigments
+  # Get Principal Name if not provided
+  if ($ServicePrincipalName) {
+   if ($Token) {
+    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName -Token $Token).ID
+   } else {
+    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName).ID
+   }
+   if (! $ServicePrincipalID) {Throw "App $ServicePrincipalName not found"}
+  }
+
+  # Get App Assignements
+  $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
+
+  if ($Token) {
+   $AppAssigments = (Invoke-RestMethod -Method GET -headers $headers -Uri $URI).Value
+  } else {
+   $AppAssigments = (az rest --method GET --uri $URI --header Content-Type=application/json | ConvertFrom-Json).Value
+  }
+  # If App Roles is selected add the information to the result
+  If ($ShowAppRole) {
+   if ($token) {
+    $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $Token
+   } else {
+    $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID
+   }
+
+   $AppAssigments | ForEach-Object {
+    if ($AppRole) { $CurrentRole = $AppRole[$AppRole.RuleID.indexof($_.appRoleId)] }
+    $_ | Add-Member -MemberType NoteProperty -Name RoleName -Value $CurrentRole.value
+    $_ | Add-Member -MemberType NoteProperty -Name RoleDescription -Value $CurrentRole.Description
+   }
+  }
+  # Remove ID information for Reading purpose
+  If ($Readable) {
+   $AppAssigments | Select-Object -ExcludeProperty *id,deletedDateTime
+  } else {
+   $AppAssigments
+  }
+ } Catch {
+  Write-Error $_
  }
 }
 Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assignement IDs are recommended, but UserName is possible but will be a lot slower
@@ -14438,8 +14471,10 @@ Function Get-AzureConditionalAccessPolicies {
  $UsersListHash = $UsersList | Group-Object -Property ID -AsHashTable
  Write-Verbose "Get details of all individual IDs [Apps]"
  $AppToConvertList = $Result.conditions.applications.includeApplications + $Result.conditions.applications.excludeApplications | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
- $AppList = Get-AzureServicePrincipalNameFromID -Token $Token -Batch -AppIDList $AppToConvertList
- $AppListHash = $AppList | Group-Object -Property AppID -AsHashTable
+ if ($AppList) {
+  $AppList = Get-AzureServicePrincipalNameFromID -Token $Token -Batch -AppIDList $AppToConvertList
+  $AppListHash = $AppList | Group-Object -Property AppID -AsHashTable
+ }
 
  Write-Verbose "Convert result"
  $ResultConverted = $Result | Select-Object `
