@@ -11947,18 +11947,31 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
  Param (
   [Parameter(Mandatory=$true)]$ServicePrincipalID,
   [Parameter(Mandatory=$true, ParameterSetName="Direct")]$AssignmentID, # Strongly Recommended and a lot faster
-  [Parameter(Mandatory=$true, ParameterSetName="Search")]$UserDisplayName
+  [Parameter(Mandatory=$true, ParameterSetName="Search")]$UserDisplayName,
+  $Token
  )
- if ( ! $AssignmentID) {
-  $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID | Where-Object principalDisplayName -eq $UserDisplayName
-  if ( ! $PermissionInfo) {
-   Write-Host -ForegroundColor Red -Object "$UserDisplayName was not found"
-   Return
+  Try {
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+   $headers = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   if ( ! $AssignmentID) {
+    $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID -Token $Token | Where-Object principalDisplayName -eq $UserDisplayName
+    if ( ! $PermissionInfo) { Throw "$UserDisplayName was not found" } else { $AssignmentID = $PermissionInfo.id }
+   }
+   Invoke-RestMethod -Method DELETE -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
   } else {
-   $AssignmentID = $PermissionInfo.id
+   if ( ! $AssignmentID) {
+    $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID | Where-Object principalDisplayName -eq $UserDisplayName
+    if ( ! $PermissionInfo) { Throw "$UserDisplayName was not found" } else { $AssignmentID = $PermissionInfo.id }
+   }
+   az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
   }
+ } Catch {
+  Write-Error $_
  }
- az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
 }
 Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. Uses Rest
  Param (
