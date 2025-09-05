@@ -10269,11 +10269,11 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
   [parameter(Mandatory = $true, ParameterSetName = 'ManagementGroupScope')]
   [string]$ManagementGroupID,
 
-  # Set 2: Subscription Scope (also used by other sets)
+  # Set 2: Subscription Scope (also used by other sets) - MUST BE GUID
   [parameter(Mandatory = $true, ParameterSetName = 'SubscriptionScope')]
   [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
   [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
-  [string]$Subscription,
+  [GUID]$Subscription,
 
   # Set 3: Resource Group Scope (also used by Resource set)
   [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
@@ -10288,7 +10288,6 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  # You can check which parameter set was used inside your script
  Write-Host "Parameter Set Used: $($PSCmdlet.ParameterSetName)"
 
-
  $BaseURL = "https://management.azure.com"
 
  # Get Data from Rest
@@ -10299,34 +10298,37 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  } else {
   $RequestURL = "/subscriptions/$Subscription"
  }
+ Try {
+  # Launch Graph Requests
+  $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion").value.properties
+  if ($PermanentRequestResultWithGUIDS) { $PermanentRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Permanent }
+  $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible").value.properties
+  if ($EligibleRequestResultWithGUIDS) { $EligibleRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Eligible }
+  $RequestResultWithGUIDS = $PermanentRequestResultWithGUIDS + $EligibleRequestResultWithGUIDS
 
- # Launch Graph Requests
- $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion").value.properties
- if ($PermanentRequestResultWithGUIDS) { $PermanentRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Permanent }
- $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible").value.properties
- if ($EligibleRequestResultWithGUIDS) { $EligibleRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Eligible }
- $RequestResultWithGUIDS = $PermanentRequestResultWithGUIDS + $EligibleRequestResultWithGUIDS
+  # Convert Data
+  write-verbose "Getting Role Definition Information"
+  $RolesConvertedTable = $RequestResultWithGUIDS | Select-Object roleDefinitionId -Unique | ForEach-Object { Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$($_.roleDefinitionId)/?api-version=$APIVersion" }
+  $RolesConvertedTableHash = @{} ; $RolesConvertedTable | ForEach-Object { $RolesConvertedTableHash[$_.ID] = $_ }
 
- # Convert Data
- write-verbose "Getting Role Definition Information"
- $RolesConvertedTable = $RequestResultWithGUIDS | Select-Object roleDefinitionId -Unique | ForEach-Object { Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$($_.roleDefinitionId)/?api-version=$APIVersion" }
- $RolesConvertedTableHash = @{} ; $RolesConvertedTable | ForEach-Object { $RolesConvertedTableHash[$_.ID] = $_ }
+  write-verbose "Getting User Information"
+  $PrincipalConvertedTable = $RequestResultWithGUIDS | Select-Object principalId -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_.principalId -Token $UserToken }
+  $PrincipalConvertedTableHash = @{} ; $PrincipalConvertedTable | ForEach-Object { $PrincipalConvertedTableHash[$_.ID] = $_ }
 
- write-verbose "Getting User Information"
- $PrincipalConvertedTable = $RequestResultWithGUIDS | Select-Object principalId -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_.principalId -Token $UserToken }
- $PrincipalConvertedTableHash = @{} ; $PrincipalConvertedTable | ForEach-Object { $PrincipalConvertedTableHash[$_.ID] = $_ }
+  $RequestResult = $RequestResultWithGUIDS | Select-Object *,
+   @{name="roleDefinitionObjectInfo";expression={($RolesConvertedTableHash[$_.roleDefinitionId]).properties}},
+   @{name="principalObjectInfo";expression={($PrincipalConvertedTableHash[$_.principalId])}} | Select-Object -ExcludeProperty roleDefinitionObjectInfo,principalObjectInfo *,
+     @{name="principalName";expression={$_.principalObjectInfo.DisplayName}},
+     @{name="roleDefinitionName";expression={$_.roleDefinitionObjectInfo.roleName}},
+     @{name="roleDefinitionType";expression={$_.roleDefinitionObjectInfo.type}}
 
- $RequestResult = $RequestResultWithGUIDS | Select-Object *,
-  @{name="roleDefinitionObjectInfo";expression={($RolesConvertedTableHash[$_.roleDefinitionId]).properties}},
-  @{name="principalObjectInfo";expression={($PrincipalConvertedTableHash[$_.principalId])}} | Select-Object -ExcludeProperty roleDefinitionObjectInfo,principalObjectInfo *,
-    @{name="principalName";expression={$_.principalObjectInfo.DisplayName}},
-    @{name="roleDefinitionName";expression={$_.roleDefinitionObjectInfo.roleName}},
-    @{name="roleDefinitionType";expression={$_.roleDefinitionObjectInfo.type}}
-
- if ($HideGUID) {
-  $RequestResult | Select-Object -ExcludeProperty *Id,*On,*By
- } else {
-  $RequestResult
+  if ($HideGUID) {
+   $RequestResult | Select-Object -ExcludeProperty *Id,*On,*By
+  } else {
+   $RequestResult
+  }
+ } Catch {
+  Write-Error $_
  }
 }
 Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
@@ -14425,7 +14427,6 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   } else {
    $ConvertedErrorMessage = $Error[0]
   }
-
   Write-Error -Message "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
  }
 }
@@ -14460,6 +14461,7 @@ Function Get-AzureConditionalAccessPolicies {
 
  Write-Verbose "Getting all NamedLocations"
  $NamedLocations = Get-AzureConditionalAccessLocations -Token $Token
+ $NamedLocationsHash = $NamedLocations | Group-Object -Property ID -AsHashTable
 
  Write-Verbose "Getting all Role Definitions"
  $RoleNames = Get-AzureRoleDefinitions -Token $token
@@ -14515,14 +14517,14 @@ Function Get-AzureConditionalAccessPolicies {
  }},
  @{name="IncludedUsers";expression={
   if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
-   ($_.conditions.users.includeUsers | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
+   ($_.conditions.users.includeUsers | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
   } else {
    $_.conditions.users.includeUsers
   }
  }},
  @{name="includeGroups";expression={
   if ($_.conditions.users.includeGroups) {
-   ($_.conditions.users.includeGroups | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
+   ($_.conditions.users.includeGroups | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
   } else {
    $_.conditions.users.includeGroups
   }
@@ -14532,10 +14534,10 @@ Function Get-AzureConditionalAccessPolicies {
  }},
  @{name="includeGuestsOrExternalUsers";expression={($_.conditions.users.includeGuestsOrExternalUsers.guestOrExternalUserTypes -replace ",",";") -join(";")}},
  @{name="excludeUsers";expression={
-  ($_.conditions.users.excludeUsers | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
+  ($_.conditions.users.excludeUsers | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
  }},
  @{name="excludeGroups";expression={
-  ($_.conditions.users.excludeGroups | ForEach-Object { $UsersListHash[$UsersListHash.id.IndexOf($_)] } ) -Join(";")
+  ($_.conditions.users.excludeGroups | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
  }},
  @{name="excludeRoles";expression={
   ($_.conditions.users.excludeRoles | ForEach-Object {
@@ -14546,10 +14548,10 @@ Function Get-AzureConditionalAccessPolicies {
   $_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes -replace ",",";" -join(";")
  }},
  @{name="includeApplications";expression={
-  ($_.conditions.applications.includeApplications | ForEach-Object { $AppListHash[$AppListHash.AppID.IndexOf($_)] }) -Join(";")
+  ($_.conditions.applications.includeApplications | ForEach-Object { $AppListHash[$_].DisplayName }) -Join(";")
  }},
  @{name="excludeApplications";expression={
-  ($_.conditions.applications.excludeApplications | ForEach-Object { $AppListHash[$AppListHash.AppID.IndexOf($_)] }) -Join(";")
+  ($_.conditions.applications.excludeApplications | ForEach-Object { $AppListHash[$_].DisplayName }) -Join(";")
  }},
  @{name="applicationFilter_Include";expression={
   ($_.conditions.applications.applicationFilter | Where-Object mode -eq include).Rule
@@ -14580,14 +14582,14 @@ Function Get-AzureConditionalAccessPolicies {
  }},
  @{name="includeLocations";expression={
   if (($_.conditions.locations.includeLocations ) -and ($_.conditions.locations.includeLocations -ne "All")) {
-   ($_.conditions.locations.includeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
+   ($_.conditions.locations.includeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName } ) -Join(";")
   } else {
    $_.conditions.locations.includeLocations
   }
  }},
  @{name="excludeLocations";expression={
   if (($_.conditions.locations.excludeLocations ) -and ($_.conditions.locations.excludeLocations  -ne "All")) {
-   ($_.conditions.locations.excludeLocations | ForEach-Object { $NamedLocations[$NamedLocations.id.IndexOf($_)].displayName } ) -Join(";")
+   ($_.conditions.locations.excludeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName } ) -Join(";")
   } else {
    $_.conditions.locations.excludeLocations
   }}},
@@ -14611,7 +14613,7 @@ Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Reques
 
    # First, check if the result has the expected structure and contains any rows.
    # The '?.' null-conditional operator safely checks for the 'rows' property.
-   if (-not $LogAnalyticsResult.tables?.rows) {
+   if (-not $LogAnalyticsResult.tables.rows) {
     Write-Host "No results found for the query."
     # Exit the function, returning nothing ($null).
     return $False
