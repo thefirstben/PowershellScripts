@@ -53,14 +53,17 @@
 # Re-Use Parameter in subfunction : $PSBoundParameters
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
 # To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate -Subject "$($env:username)" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy NonExportable -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
+# Default Catch : Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+# Catch with Graph : $_.ErrorDetails.Message
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
 # For Azure : Azure CLI or Microsoft.Graph
 # For Exchange Management : ExchangeOnlineManagement
+# For SQL Management : SqlServer
 # To store secure data in Credential Manager : TUN.CredentialManager
-# To decode JWT Tokens : JWT
-# For Azure Certificat Authentication to avoid recoding every JWT Assertion Token : MSAL.PS - Will avoid this module if possible as this generates conflicts with other MS Modules
+
+# Not used for authentication : MSAL.PS - Avoid using this module as this generates conflicts with other MS Modules (example : ExchangeOnlineManagement)
 
 # ToDo : add measure-command function to time functions whenever possible
 
@@ -762,7 +765,27 @@ function ConvertTo-Base64Url {
   $base64 = [System.Convert]::ToBase64String($InputObject)
   return $base64.Replace('+', '-').Replace('/', '_').TrimEnd('=')
 }
+Function ConvertFrom-EncodedCommand { # Allows to decode data from PowerShell 'EncodedCommand'
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true, ValueFromPipeline = $true)][string]$EncodedString
+ )
+ process {
+  try {
+   # Decode the Base64 string
+   $decodedBytes = [System.Convert]::FromBase64String($EncodedString)
 
+   # PowerShell's -EncodedCommand uses UTF-16LE, which is [System.Text.Encoding]::Unicode
+   $decodedString = [System.Text.Encoding]::Unicode.GetString($decodedBytes)
+
+   # Output the decoded string to the pipeline
+   $decodedString
+  }
+  catch {
+   Write-Error "Failed to decode string. Ensure it is a valid Base64-encoded string."
+  }
+ }
+}
 # Linux equivalent
 Function Watch { # 'watch' equivalent
  Param (
@@ -10251,16 +10274,8 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
  Param (
   # == Parameters available in ALL sets ==
-  [parameter(Mandatory = $true)]
-  $AzureToken,
-
-  [parameter(Mandatory = $true)]
-  $UserToken,
-
-  [string]$APIVersion = "2022-04-01",
-
-  [string]$APIVersionEligible = "2020-10-01",
-
+  [parameter(Mandatory = $true)]$AzureToken,
+  [parameter(Mandatory = $true)]$UserToken,
   [Switch]$HideGUID,
 
   # == SCOPE PARAMETERS (Mutually Exclusive Sets) ==
@@ -10282,7 +10297,11 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
 
   # Set 4: Resource Scope
   [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
-  [string]$Resource
+  [string]$Resource,
+
+  # API Version which may be changed at some point by Microsoft
+  [string]$APIVersion = "2022-04-01",
+  [string]$APIVersionEligible = "2020-10-01"
  )
 
  # You can check which parameter set was used inside your script
@@ -10300,24 +10319,39 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  }
  Try {
   # Launch Graph Requests
+  write-host -ForegroundColor Cyan -Message "Getting Assignements [Permanent]"
   $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion").value.properties
   if ($PermanentRequestResultWithGUIDS) { $PermanentRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Permanent }
+  write-host -ForegroundColor Cyan -Message "Getting Assignements [Eligible]"
   $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible").value.properties
   if ($EligibleRequestResultWithGUIDS) { $EligibleRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Eligible }
   $RequestResultWithGUIDS = $PermanentRequestResultWithGUIDS + $EligibleRequestResultWithGUIDS
 
-  # Convert Data
-  write-verbose "Getting Role Definition Information"
-  $RolesConvertedTable = $RequestResultWithGUIDS | Select-Object roleDefinitionId -Unique | ForEach-Object { Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$($_.roleDefinitionId)/?api-version=$APIVersion" }
-  $RolesConvertedTableHash = @{} ; $RolesConvertedTable | ForEach-Object { $RolesConvertedTableHash[$_.ID] = $_ }
+  # Add Role GUID
+  $RequestResultWithGUIDS = $RequestResultWithGUIDS | Select-Object *,@{name="roleDefinitionGUID";expression={$_.roleDefinitionId.split('/')[-1]}}
 
-  write-verbose "Getting User Information"
-  $PrincipalConvertedTable = $RequestResultWithGUIDS | Select-Object principalId -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_.principalId -Token $UserToken }
-  $PrincipalConvertedTableHash = @{} ; $PrincipalConvertedTable | ForEach-Object { $PrincipalConvertedTableHash[$_.ID] = $_ }
+  write-host -ForegroundColor Cyan -Message "Getting Role Definition Information"
+  # Get All Tenant Level Role Definitions
+  $RoleDefinitions = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "/providers/Microsoft.Authorization/roleDefinitions/?api-version=$APIVersion").Value
+  $RolesConvertedTableHash = $RoleDefinitions | Group-Object -Property Name -AsHashTable
 
+  write-host -ForegroundColor Cyan -Message "Getting User Information"
+  $PrincipalList = $($RequestResultWithGUIDS | Select-Object principalId -Unique).principalId
+  $PrincipalConvertedTable = Get-AzureADObjectInfo -ObjectIDList $PrincipalList -Token $UserToken
+  $PrincipalConvertedTableHash = $PrincipalConvertedTable | Group-Object -Property ID -AsHashTable
+
+  write-host -ForegroundColor Cyan -Message "Merging Data"
   $RequestResult = $RequestResultWithGUIDS | Select-Object *,
-   @{name="roleDefinitionObjectInfo";expression={($RolesConvertedTableHash[$_.roleDefinitionId]).properties}},
-   @{name="principalObjectInfo";expression={($PrincipalConvertedTableHash[$_.principalId])}} | Select-Object -ExcludeProperty roleDefinitionObjectInfo,principalObjectInfo *,
+   @{name="roleDefinitionObjectInfo";expression={
+    $RoleInformation = $RolesConvertedTableHash[$_.roleDefinitionGUID].Properties
+    if ($RoleInformation) {
+     $RoleInformation
+    } else {
+     # Adds check to get details on Role if role is not defined on Tenant Level
+     (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$($_.roleDefinitionId)/?api-version=$APIVersion").Properties
+    }
+   }},
+   @{name="principalObjectInfo";expression={$PrincipalConvertedTableHash[$_.principalId]}} | Select-Object -ExcludeProperty roleDefinitionObjectInfo,principalObjectInfo *,
      @{name="principalName";expression={$_.principalObjectInfo.DisplayName}},
      @{name="roleDefinitionName";expression={$_.roleDefinitionObjectInfo.roleName}},
      @{name="roleDefinitionType";expression={$_.roleDefinitionObjectInfo.type}}
@@ -10443,7 +10477,7 @@ Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions f
    Write-Host -ForegroundColor Green "No OAuth2Permissions found on App Registration $AppID"
   }
 }
-Function New-AzureAppRegistrationBlank { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
+Function New-AzureAppRegistrationBlank_OLD { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
  Param (
   [Parameter(Mandatory=$true)]$AppRegistrationName,
   [Switch]$CreateAssociatedServicePrincipal
@@ -10463,7 +10497,7 @@ Function New-AzureAppRegistrationBlank { # Create a single App Registration comp
    Write-Host -ForegroundColor Green "Created clean AppRegistration `"$AppRegistrationName`" with ID : $AppID"
   }
  } Catch {
-  Write-Host -ForegroundColor Red "Error creating App Registration $AppRegistrationName : $($Error[0])"
+  Write-Error "Error creating App Registration $AppRegistrationName : $($Error[0])"
  }
  Try {
   if ($CreateAssociatedServicePrincipal) {
@@ -10472,15 +10506,125 @@ Function New-AzureAppRegistrationBlank { # Create a single App Registration comp
    Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID $(($ServicePrincipalCreation | ConvertFrom-JSON).ID)"
   }
  } Catch {
-  Write-Host -ForegroundColor Red "Error creating Associated Service Principal $AppRegistrationName : $($Error[0])"
+  Write-Error "Error creating Associated Service Principal $AppRegistrationName : $($Error[0])"
  }
  return $AppID
 }
-Function New-AzureServicePrincipal { # Create an Enterprise App linked to existing App Registration
+Function New-AzureAppRegistrationBlank {
+ [CmdletBinding()]
  Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationName
+  [Parameter(Mandatory = $true)]
+  [string]$AppRegistrationName,
+
+  [Switch]$CreateAssociatedServicePrincipal,
+
+  # New optional parameter for the Graph API token
+  $Token
  )
- New-AzureAppRegistrationBlank -CreateAssociatedServicePrincipal -AppRegistrationName $AppRegistrationName
+
+ # --- MAIN LOGIC ---
+ # If a token is provided, use the Graph API path.
+ # Otherwise, use the original Az CLI path.
+ if ($PSBoundParameters.ContainsKey('Token')) {
+
+  # --- GRAPH API PATH ---
+  Write-Host "Using Microsoft Graph API..."
+  $graphUri = "https://graph.microsoft.com/v1.0"
+  $Headers = @{
+   'Authorization' = "Bearer $($Token.Access_Token)"
+   'Content-Type'  = 'application/json'
+  }
+
+  $AppID = $null
+
+  # 1. CHECK FOR/CREATE APP REGISTRATION
+  try {
+   # Check if an app with the same name already exists
+   $checkAppUri = "$graphUri/applications?`$filter=displayName eq '$AppRegistrationName'"
+   $existingApp = Invoke-RestMethod -Uri $checkAppUri -Headers $Headers -Method Get
+
+   if ($existingApp.value.Count -gt 0) {
+    $AppID = $existingApp.value[0].appId
+    Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID: $AppID"
+   } else {
+    # Create a new, clean App Registration
+    $createAppUri = "$graphUri/applications"
+    $appBody = @{
+     displayName          = $AppRegistrationName
+     signInAudience       = "AzureADMyOrg"
+     requiredResourceAccess = @() # Ensures no default permissions are added
+    } | ConvertTo-Json
+
+    $newApp = Invoke-RestMethod -Uri $createAppUri -Headers $Headers -Method Post -Body $appBody
+    $AppID = $newApp.appId
+    Write-Host -ForegroundColor Green "Created clean App Registration `"$AppRegistrationName`" with ID: $AppID"
+   }
+  }
+  catch {
+   Write-Error "Error during Graph API App Registration operation for '$AppRegistrationName': $_"
+   return
+  }
+
+  # 2. CREATE ASSOCIATED SERVICE PRINCIPAL (IF REQUESTED)
+  if ($AppID -and $CreateAssociatedServicePrincipal) {
+   try {
+    # Check if the SP already exists to avoid errors
+    $checkSpUri = "$graphUri/servicePrincipals?`$filter=appId eq '$AppID'"
+    $existingSp = Invoke-RestMethod -Uri $checkSpUri -Headers $Headers -Method Get
+
+    if ($existingSp.value.Count -gt 0) {
+     Write-Host -ForegroundColor Green "Associated Service Principal already exists with Object ID: $($existingSp.value[0].id)"
+    } else {
+     Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with App ID: $AppID"
+     $createSpUri = "$graphUri/servicePrincipals"
+     $spBody = @{
+      appId = $AppID
+     } | ConvertTo-Json
+
+     $newSp = Invoke-RestMethod -Uri $createSpUri -Headers $Headers -Method Post -Body $spBody
+     Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id)"
+     Set-AzureServicePrincipalAssignementRequired -ServicePrincipalID $($newSp.id) -Token $Token
+     Write-Host -ForegroundColor Green "Set Assignement Required to True for Service Principal $($newSp.id)"
+    }
+   }
+   catch {
+    Write-Error "Error creating Associated Service Principal for '$AppRegistrationName': $_"
+   }
+  }
+ }
+ else {
+
+  # --- AZ CLI PATH (Your original code) ---
+  Write-Host "Using Azure CLI..."
+  Try {
+   $AppID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID
+   if ($AppID) {
+    Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID : $AppID"
+   } else {
+    #Create App Registration
+    $AppReg = az ad app create --only-show-errors --display-name $AppRegistrationName --sign-in-audience 'AzureADMyOrg'
+    #Get App Registration ID
+    $AppID = ($AppReg | ConvertFrom-Json).AppID
+    #Remove default Oauth2 Permissions if any
+    Remove-AppRegistrationOAuth2Permissions -AppID $AppID
+    #Print Result
+    Write-Host -ForegroundColor Green "Created clean AppRegistration `"$AppRegistrationName`" with ID : $AppID"
+   }
+  } Catch {
+   Write-Error "Error creating App Registration $AppRegistrationName : $($Error[0])"
+  }
+  Try {
+   if ($CreateAssociatedServicePrincipal) {
+    Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with ID : $AppID"
+    $ServicePrincipalCreation = az ad sp create --id $AppID --only-show-errors
+    Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID $(($ServicePrincipalCreation | ConvertFrom-JSON).ID)"
+   }
+  } Catch {
+   Write-Error "Error creating Associated Service Principal $AppRegistrationName : $($Error[0])"
+  }
+ }
+
+ return $AppID
 }
 Function New-AzureAppSP_NONSSO { # Create App Registration with all required info : Associated SP, Permission, Owners etc. (Check function for more info)
  Param (
@@ -11064,7 +11208,7 @@ Function Get-AzureAppRegistrationAudience { # Check All App registration Audienc
  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
  @{Name="AppAudience";Expression={$_.signInAudience}}
 }
-Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add or overwrite existing (add no tags to list current tags)
+Function Set-AzureAppRegistrationTags_OLD { # Set Tag on App Registration, can add or overwrite existing (add no tags to list current tags)
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
@@ -11133,6 +11277,132 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
   write-host -foregroundcolor "Red" -Object $Error[0]
  }
 
+}
+Function Set-AzureAppRegistrationTags {
+ [CmdletBinding(DefaultParameterSetName = "ID")]
+ Param (
+  [parameter(Mandatory = $true, ParameterSetName = "AppID")][string]$AppID,
+  [parameter(Mandatory = $true, ParameterSetName = "ID")][string]$ID, # This is the Application Object ID
+  [parameter(Mandatory = $true, ParameterSetName = "NAME")][string]$DisplayName,
+  [string[]]$Tags, # Not mandatory to print tags if no tags are specified
+  [switch]$Overwrite,
+  [switch]$ShowResult,
+  $Token
+ )
+
+ if ($PSBoundParameters.ContainsKey('Token')) {
+
+  Write-Host "Using Microsoft Graph API..."
+  $graphUri = "https://graph.microsoft.com/v1.0"
+  $Headers = @{
+   'Authorization' = "Bearer $($Token.Access_Token)"
+   'Content-Type'  = 'application/json'
+  }
+
+  try {
+   $application = $null
+   $getAppUri = ""
+
+   switch ($PSCmdlet.ParameterSetName) {
+    "ID"        { $getAppUri = "$graphUri/applications/$ID" }
+    "AppID"     {
+     $filter = [System.Web.HttpUtility]::UrlEncode("appId eq '$AppID'")
+     $getAppUri = "$graphUri/applications?`$filter=$filter"
+    }
+    "NAME"      {
+     $filter = [System.Web.HttpUtility]::UrlEncode("displayName eq '$DisplayName'")
+     $getAppUri = "$graphUri/applications?`$filter=$filter"
+    }
+   }
+
+   $appResponse = Invoke-RestMethod -Uri $getAppUri -Headers $Headers -Method Get
+   $application = if ($appResponse.value) { $appResponse.value[0] } else { $appResponse }
+
+   if (-not $application) {
+    Write-Error "Could not find an Application Registration with the specified identifier."
+    return
+   }
+
+   $currentTags = $application.tags
+   $hadTagsInitially = $true
+   if ($currentTags -isnot [array]) {
+    $currentTags = @()
+    $hadTagsInitially = $false
+   }
+
+   Write-Host -ForegroundColor Cyan "Current Tags on `"$($application.displayName)`' (App Reg): $($currentTags -join ', ')"
+
+   if (-not $PSBoundParameters.ContainsKey('Tags')) { return }
+
+   $newTags = @()
+   if (-not $Overwrite) {
+    $newTags += $currentTags
+   }
+   $newTags += $Tags
+
+   # Wrap the command in @() to ensure the result is always an array
+   $newTags = @($newTags | Select-Object -Unique)
+
+   $updateNeeded = $false
+   if (-not $hadTagsInitially) {
+    $updateNeeded = $true
+   } else {
+    $currentTagsSortedString = ($currentTags | Sort-Object) -join ','
+    $newTagsSortedString = ($newTags | Sort-Object) -join ','
+    if ($currentTagsSortedString -ne $newTagsSortedString) {
+     $updateNeeded = $true
+    }
+   }
+
+   if (-not $updateNeeded) {
+    Write-Host -ForegroundColor Magenta "Tags are already up to date."
+    return
+   }
+
+   Write-Host -ForegroundColor Cyan "Setting new tags to: $($newTags -join ', ')"
+   $updateUri = "$graphUri/applications/$($application.id)"
+   $updateBody = @{ tags = $newTags } | ConvertTo-Json
+   Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Patch -Body $updateBody
+   Write-Host -ForegroundColor Green "Tags updated successfully."
+
+   if ($ShowResult) {
+    $finalApp = Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Get
+    Write-Host -ForegroundColor Cyan "New Tags: $($finalApp.tags -join ', ')"
+   }
+  }
+  catch {
+   # This will now properly catch the error and display the JSON content
+   $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
+   Write-Error "An error occurred during the Graph API operation: $($errorDetail.error.message)"
+  }
+ } else {
+  # --- AZ CLI PATH ---
+  Write-Host "Using Azure CLI..."
+  Try {
+   $FunctionParams = $PSBoundParameters
+   $FunctionParams.Remove('Tags') | Out-Null
+   $FunctionParams.Remove('Overwrite') | Out-Null
+   $FunctionParams.Remove('ShowResult') | Out-Null
+   $FunctionParams.Remove('Token') | Out-Null
+   $App_Info = Get-AzureAppRegistration @FunctionParams
+   Write-Host -ForegroundColor Cyan "Current Tags on App Registration `'$($App_Info.displayName)`' : $($App_Info.Tags -join ',')"
+   if (! $Tags ) { Return }
+   $TagsToAdd = if ($Overwrite) { @($Tags) } else { @($App_Info.Tags) + @($Tags) }
+   $TagsToAddUnique = $TagsToAdd | Select-Object -Unique
+   $body = @{ tags = $TagsToAddUnique } | ConvertTo-Json -Compress
+   Write-Host -ForegroundColor Cyan "Tags that will be added: $($TagsToAddUnique -Join ', ')"
+   az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($App_Info.ID)" `
+    --headers "Content-Type=application/json" `
+    --body $body
+   Write-Host -ForegroundColor Green "Tags updated successfully."
+   If ($ShowResult) {
+    $App_Info_New = Get-AzureAppRegistration @FunctionParams
+    Write-Host -ForegroundColor Cyan "New Tags on App Registration `'$($App_Info_New.displayName)`' : $($App_Info_New.Tags -join ',')"
+   }
+  } catch {
+   write-host -foregroundcolor "Red" -Object $Error[0]
+  }
+ }
 }
 Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
  Param (
@@ -11258,7 +11528,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
    $Result | Select-Object ApplicationDisplayName,ApplicationID,displayName,secretText,startDateTime,endDateTime
   }
  } catch {
-  write-host -foregroundcolor "Red" -Object "Error adding secret |$AppRegistrationID|$AppRegistrationName| : $($Error[0])"
+  write-Error "Error adding secret |$AppRegistrationID|$AppRegistrationName| : $($Error[0])"
  }
 }
 Function Remove-AzureAppRegistrationSecret { # Remove Secret to App (uses Rest API / Removal) - Not working for Certificate because of requirement for 'Proof'
@@ -14260,14 +14530,31 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     $expirationTime = ([System.DateTimeOffset]::UtcNow).AddSeconds($tokenResponse.expires_in)
    }
 
-   $token = [PSCustomObject]@{
-    token_type   = $tokenResponse.token_type
-    expires_on   = $expirationTime
-    scope        = $finalScope
-    access_token = $tokenResponse.access_token
+   # Get App Source :
+   $TokenInfo = $tokenResponse | Convert-AccessToken
+   if ($TokenInfo.app_displayname) {
+    $App_Source = $TokenInfo.app_displayname
+   } else {
+    $App_Source = $TokenInfo.appid
    }
+
+   $token = [PSCustomObject]@{
+    token_source        = $PSCmdlet.ParameterSetName
+    token_type          = $tokenResponse.token_type
+    access_token        = $tokenResponse.access_token
+    token_response      = $tokenResponse
+    token_converted     = $TokenInfo
+    expires_on          = $expirationTime
+    scope               = $finalScope
+    source_application  = $App_Source
+    token_role          = $TokenInfo.roles
+   }
+
+   # Token Date Check
    $ExpirationDateTime = $token.expires_on.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-   Write-Host "API Token successfully acquired for '$finalScope'. It will expire at: $ExpirationDateTime" -ForegroundColor Green
+   $ExpiresIn = [math]::Round(($(get-date $ExpirationDateTime) - $(get-date)).TotalMinutes)
+
+   Write-Host "API Token acquired from $Scope using $($token.token_source) from App $($token.source_application). It will expire at $ExpirationDateTime [$ExpiresIn mins]" -ForegroundColor Green
    return $token
   } else {
    throw "Token acquisition failed for an unknown reason. ($Scope)"
@@ -14373,23 +14660,48 @@ Function Assert-IsTokenLifetimeValid { # Check validity of token
   Write-Error $Error[0]
  }
 }
-Function Convert-AccessToken { # Convert Access Token
+Function Convert-AccessToken { # Convert Access Token from a token
  Param (
   [Parameter(Mandatory=$true, ValueFromPipeline=$true)]$Token
  )
  process {
   # This code will now run FOR EACH $Token object piped in
   try {
-   if (! $(Assert-IsCommandAvailable -commandname Get-JwtPayload)) {Throw "Get-JwtPayload (Module JWT) not available" }
-   # Assumes Get-JwtPayload is a function/cmdlet you have that decodes JWTs
-   $Token.access_token | Get-JwtPayload -ErrorAction Stop | ConvertFrom-Json
+   $Token.access_token | ConvertFrom-Jwt
   } catch {
    Write-Error "Failed to get token: $($_.Exception.Message)"
   }
  }
 }
-Function Get-AzureGraphJWTToken { # Requires module : JWT (Install-Module JWT)
- (az account get-access-token --scope https://graph.microsoft.com/.default | ConvertFrom-Json).accessToken | Get-JwtPayload | ConvertFrom-Json
+Function Get-AzureCLIJWTToken { # Get Token information from Az CLI
+ (az account get-access-token --scope "https://graph.microsoft.com/.default" | ConvertFrom-Json).accessToken | ConvertFrom-Jwt
+}
+function ConvertFrom-Jwt { # Convert Token to Powershell Object
+ [CmdletBinding()]
+ param(
+  [Parameter(Mandatory, ValueFromPipeline)][string]$JwtToken
+ )
+
+ process {
+  # 1. Split the token and get the payload (the second part).
+  $payloadB64Url = ($JwtToken -split '\.')[1]
+
+  # 2. Convert Base64Url to standard Base64.
+  #    - Replace URL-safe characters ('-', '_') with standard Base64 characters ('+', '/').
+  #    - Add padding ('=') so the string length is a multiple of 4.
+  $payloadB64 = $payloadB64Url.Replace('-', '+').Replace('_', '/')
+  switch ($payloadB64.Length % 4) {
+   2 { $payloadB64 += '==' }
+   3 { $payloadB64 += '=' }
+  }
+
+  # 3. Decode the Base64 string into bytes, then convert bytes to a UTF8 string.
+  $payloadBytes = [System.Convert]::FromBase64String($payloadB64)
+  $payloadJson = [System.Text.Encoding]::UTF8.GetString($payloadBytes)
+
+  # 4. Convert the JSON string into a PowerShell object and output it.
+  $payloadJson | ConvertFrom-Json
+ }
 }
 # Graph Management
 Function Get-AzureGraph { # Send base graph request without any requirements
