@@ -10624,6 +10624,7 @@ Function New-AzureAppRegistrationBlank {
   }
  }
 
+ # In both cases return AppID
  return $AppID
 }
 Function New-AzureAppSP_NONSSO { # Create App Registration with all required info : Associated SP, Permission, Owners etc. (Check function for more info)
@@ -10687,9 +10688,10 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
   [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
+  $Token,
   [Switch]$ShowOwner,
-  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient",
-  $Token
+  [Switch]$HideGUID,
+  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signI0nAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
  )
  if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
  } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
@@ -10702,9 +10704,14 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
    'Authorization' = "$($Token.token_type) $($Token.access_token)"
    'Content-type'  = "application/json"
   }
-  (Invoke-RestMethod -Method GET -headers $headers -Uri $GraphURI).value
+  $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $GraphURI).value
  } else {
-  (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
+  $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
+ }
+ if ($HideGUID) {
+  $Result | Select-Object -ExcludeProperty *ID
+ } else {
+  $Result
  }
 }
 Function Get-AzureAppRegistrationFromAppID { # Get the App Registration information from AppID | Uses Token
@@ -11632,20 +11639,16 @@ Param (
 }
 Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration
  Param (
- [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
- [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
- [switch]$HideGUID
+ [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppID,
+ [parameter(Mandatory=$true,ParameterSetName="DisplayName")]$DisplayName,
+ [switch]$HideGUID,
+ $Token
 )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
- if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).DisplayName}
 
- $Result = Get-AzureAppRegistration -AppID $AppRegistrationID | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
+ $Result = Get-AzureAppRegistration @PSBoundParameters | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
+ $Result = $Result | Select-Object -Property AppName,AppID,* -ExcludeProperty AppName,AppID
 
- $Result | Add-Member -MemberType NoteProperty -Name AppName -Value $AppRegistrationName
- $Result | Add-Member -MemberType NoteProperty -Name AppID -Value $AppRegistrationID
-
- if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
- $Result
+ if ($HideGUID) { $Result | Select-Object -ExcludeProperty *ID } else { $Result }
 }
 Function Add-AzureAppRegistrationAppRoles {
  Param (
@@ -12036,7 +12039,13 @@ Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to na
  )
  Try {
   if ($Token) {
-   $PolicyListJson = Get-AzureServicePrincipal -Token $Token -AppID $ServicePrincipalAppID
+    # Search for ID
+    $PolicyListJson = Get-AzureServicePrincipal -Token $Token -ID $ServicePrincipalAppID -ErrorAction SilentlyContinue
+    # If not found search for AppID instead
+    if (! $PolicyListJson) {
+     Write-Verbose "Not found using ID, searching with AppID"
+     $PolicyListJson = Get-AzureServicePrincipal -Token $Token -AppID $ServicePrincipalAppID
+    }
   } else {
    $PolicyListJson = az ad sp show --id $ServicePrincipalAppID --only-show-errors -o json | ConvertFrom-Json
   }
