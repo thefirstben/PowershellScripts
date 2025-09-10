@@ -13421,7 +13421,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   }
  }
 }
-Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using AzCli) - Before beta it did not list Service principals
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using AzCli or Token) - Before beta it did not list Service principals
  Param (
   [Parameter(Mandatory)]$Group,
   [Switch]$Recurse,
@@ -13439,7 +13439,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   }
  } else {
   if (! $(Assert-IsCommandAvailable "Az")) {
-   Write-Error "Missing Az Module"
+   Write-Error "Missing Az CLI"
    Return
   }
  }
@@ -15153,7 +15153,7 @@ Function Send-MailMGGraph {  # To make automated Email, it requires an account w
  }
  Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
 }
-Function Send-Mail {
+Function Send-Mail { # Send Email using Azure Graph without any external modules
  Param (
   [Parameter(Mandatory)]$Recipient,
   [Parameter(Mandatory)]$SenderUPN,
