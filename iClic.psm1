@@ -13280,7 +13280,14 @@ Function Get-AzureADUserMFAMethods { # Check MFA Methods
   if (! $Result) {
    Throw "No result from Invoke-RestMethod"
   } else {
-   $Result.Value
+   $Result.Value | Select-Object @{Name="UPNorID";Expression={$UPNorID}},
+   @{Name="Method";Expression={
+    if ($Method -eq 'methods') {
+     $_.'@odata.type'.split('.')[-1] -replace "AuthenticationMethod","Methods" # The replace is to get a standardized answer same as the methods
+    } else {
+     $Method # If method is requested then it is shown here. Value will be a bit different than the type, but the proper value is not in the graph result
+    }
+   }},* -ExcludeProperty '@odata.type'
   }
  } catch {
   $Exception = $($Error[0])
