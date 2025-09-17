@@ -53,6 +53,7 @@
 # Re-Use Parameter in subfunction : $PSBoundParameters
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
 # To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate -Subject "$($env:username)" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy NonExportable -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
+# To generate Self Signed Certificate for App Registration : $Certificate=New-SelfSignedCertificate -Subject "$AppName" -CertStoreLocation "Cert:\CurrentUser\My" -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
 # Default Catch : Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
 # Catch with Graph : $_.ErrorDetails.Message
 
@@ -9833,7 +9834,7 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
    @{N="Scope";E={($_.id.Split("/providers/Microsoft.Authorization/"))[0]}},
    @{N="Sys_createdAt";E={$_.systemData.createdAt}},
    @{N="Sys_createdBy";E={$_.systemData.createdBy}},
-   @{N="Sys_createdByDisplay";E={Get-AzureADUserFromUPN $_.systemData.createdBy -Fast}},
+   @{N="Sys_createdByDisplay";E={Get-AzureUserStartingWith -SearchValue $_.systemData.createdBy -Type userPrincipalName}},
    @{N="Sys_createdByType";E={$_.systemData.createdByType}},
    @{N="Sys_lastModifiedAt";E={$_.systemData.lastModifiedAt}},
    @{N="Sys_lastModifiedBy";E={$_.systemData.lastModifiedBy}},
@@ -9890,91 +9891,6 @@ Function Get-AzureApplicationGateway {
  }
 }
 # Convert Methods
-Function Get-AzureADUserFromUPN { # Find Azure Ad User info from part of UPN ; Added Token possibility which will be a lot faster
- Param (
-  [Parameter(Mandatory=$true)]$UPN,
-  [switch]$HideError,
-  $Token
- )
-
- if ($Token) {
-  Try {
-
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-
-   $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
-
-   $GraphURL = "https://graph.microsoft.com/beta/users?`$filter=startswith(userprincipalname,'$UPN')"
-
-   $ResultJSON = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
-   $Result = $ResultJSON.Value
-
-  } catch {
-   $Exception = $($Error[0])
-   if ($Exception.ErrorDetails.message) {
-    $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-    $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-    $ErrorMessage = "$StatusCode | $StatusMessage"
-   } else {
-    $ErrorMessage = $Exception
-   }
-   if (! $HideError ) { Write-host -ForegroundColor Red "Error searching for user $UPN ($ErrorMessage))" }
-  }
- } else {
-   $Result = az ad user list --output json --filter "startswith(userprincipalname, '$UPN')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
- }
- if ($result) {
-  return $Result
- } else {
-  if (! $HideError ) {write-host -ForegroundColor Red "No user found starting with $UPN" }
- }
-}
-Function Get-AzureADUserFromDisplayName { # Find Azure Ad User info from part of displayname
- Param (
-  [Parameter(Mandatory=$true)]$DisplayName,
-  [switch]$Fast
- )
- if ($Fast) {
-  $Result = az ad user list --output json --filter "displayName  eq '$DisplayName'" --query '[].{objectId:id}' -o tsv
- } else {
-  $Result = az ad user list --output json --filter "startswith(displayName, '$DisplayName')" --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,objectId:id,mail:mail}' | ConvertFrom-Json
- }
- if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found starting with $DisplayName" }
-}
-Function Get-AzureADUserFromMail { # Find Azure Ad User info from email
- Param (
-  [Parameter(Mandatory=$true)]$Mail,
-  $Token
-
- )
- if ($Token) {
-  Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-
-   $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
-
-   $GraphURL = "https://graph.microsoft.com/v1.0/users?`$filter=mail eq '$Mail'"
-
-   $ResultJSON = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
-   $ResultJSON.Value
-
-  } catch {
-   $Exception = $($Error[0])
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   if (! $HideError ) { Write-host -ForegroundColor Red "Error searching for user $UPN ($StatusCode | $StatusMessage))" }
-  }
- } else {
-  $Result = az ad user list --output json --filter "mail eq '$Mail'" --query '[].{userPrincipalName:userPrincipalName,mail:mail,displayName:displayName,objectId:id}' | ConvertFrom-Json
-  if ($result) { return $Result } else { write-host -ForegroundColor Red "No user found with email $Mail" }
- }
-}
 Function Get-AzureSubscriptionNameFromID { #Retrieve name of Subscription from the ID
  Param (
   [Parameter(Mandatory=$true)]$SubscriptionID
@@ -12256,8 +12172,8 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
 }
 Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. Uses Rest
  Param (
-  [Parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalId, # ID of the App to be changed
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$principalName, # Display Name of App Registration
+  [Parameter(Mandatory=$true,ParameterSetName="principalId")]$principalId, # ID of the App to be changed
+  [parameter(Mandatory=$true,ParameterSetName="principalName")]$principalName, # Display Name of App Registration
   [switch]$HideGUID,
   [switch]$HideDate,
   [switch]$Readable,
@@ -14065,12 +13981,51 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  $Result
 }
-Function Get-AzureUserStartingWith { # Get all AAD Users starting with something
+Function Get-AzureUserStartingWith { # Get all AAD Users starting with something [Token or Az Cli] - Can search for exact value or start with values
  param (
   [Parameter(Mandatory=$true)]$SearchValue,
-  [ValidateSet("displayName","userPrincipalName")]$Type = "displayName"
+  [ValidateSet("displayName","userPrincipalName","mail")]$Type = "displayName",
+  [switch]$Exact, # Search for exact value
+  [switch]$Beta, # Gives much more details
+  [switch]$HideError,
+  $Token
  )
- az ad user list --query '[].{objectId:id,displayName:displayName,userPrincipalName:userPrincipalName}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
+ Try {
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+   $header = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   if ( $Beta ) { $EndpointType = "beta" } else { $EndpointType = "v1.0" }
+   if ($Exact) {
+    $GraphURL = "https://graph.microsoft.com/$EndpointType/users?`$filter=$Type eq '$SearchValue'"
+   } else {
+    $GraphURL = "https://graph.microsoft.com/$EndpointType/users?`$filter=startswith($Type,'$SearchValue')"
+   }
+   $ResultJSON = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
+   if (! $ResultJSON.value) {
+    if ($Exact) {
+     Throw "No user with $Type equals to $SearchValue"
+    } else {
+     Throw "No user with $Type starting with $SearchValue"
+    }
+   }
+   Return $ResultJSON.value
+   } else {
+    az ad user list --query '[].{objectId:id,displayName:displayName,userPrincipalName:userPrincipalName,mail:mail}' --filter "startswith($Type, `'$SearchValue`')" -o json --only-show-errors | ConvertFrom-Json
+   }
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   $ErrorMessage = "$StatusCode | $StatusMessage"
+  } else {
+   $ErrorMessage = $Exception
+  }
+  if (! $HideError ) { Write-Error -Message "Error searching for user $UPN ($ErrorMessage))" }
+ }
 }
 Function Get-AzureADUserCustomAttributes { # Show user information From O365
  Param (
