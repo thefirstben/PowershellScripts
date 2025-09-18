@@ -11655,7 +11655,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   $URLFilter,
 
   [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on Name of Service Principals.')]
-  $NameFilter,
+  $NameFilter, # Filter must not contain wildcards, it will search value automatically
 
   [Parameter(Mandatory = $false, HelpMessage = 'A comma-separated list of properties to display.')]
   $ValuesToShow = "*"
