@@ -14674,6 +14674,56 @@ function ConvertFrom-Jwt { # Convert Token to Powershell Object
   $payloadJson | ConvertFrom-Json
  }
 }
+Function Test-MsGraphDelegated { # Function to test MS Graph Delegated Access with ClientID/UserName/Password
+ Param (
+  [parameter(Mandatory = $True)]$tenantId,
+  [parameter(Mandatory = $True)]$clientId,
+  [parameter(Mandatory = $True)]$username,
+  $Scope = "https://graph.microsoft.com/Mail.Read", # Scope to test
+  $GraphRequest = "https://graph.microsoft.com/v1.0/me/messages?`$top=5" # Graph Request to test
+ )
+
+ # Prompt for password
+ $Credentials = get-credential -Credential $username
+
+ # Construct the URI and the request body
+ $tokenUri = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+ $tokenBody = @{
+  client_id  = $clientId
+  scope      = $Scope
+  username   = $username
+  password   = $($credentials.GetNetworkCredential().Password)
+  grant_type = "password"
+ }
+
+ # Request the token
+ try {
+  $tokenResponse = Invoke-RestMethod -Uri $tokenUri -Method Post -Body $tokenBody
+  $accessToken = $tokenResponse.access_token
+  Write-Host -ForegroundColor Green "Successfully retrieved access token."
+ }
+ catch {
+  if ($_.ErrorDetails.Message) {
+   $ErrorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+   Write-Error "$($ErrorDetails.error) [$($ErrorDetails.suberror)] : $($ErrorDetails.error_description)"
+  } else {
+   Write-Error $_
+  }
+  return
+ }
+
+ # Construct the headers for the Graph API call
+ $headers = @{
+  Authorization = "Bearer $accessToken"
+ }
+
+ try {
+  $Result = Invoke-RestMethod -Uri $GraphRequest -Headers $headers -Method Get
+  $Result.Value
+ } catch {
+  Write-Error "Error reading mail: $($_.Exception.Message)"
+ }
+}
 # Graph Management
 Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
