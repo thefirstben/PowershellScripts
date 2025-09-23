@@ -12179,59 +12179,69 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
   [switch]$Readable,
   [Parameter(Mandatory)]$Token
  )
+ Try {
+  # Get Required values to get a full object
+  if (!$principalId) {$CheckedValue = $principalName ; $principalId = (Get-AzureServicePrincipal -Token $Token -DisplayName $principalName).ID}
+  if (!$principalName) {$CheckedValue = $principalId ; $principalName = (Get-AzureServicePrincipal -Token $Token -DisplayName $principalId).displayName}
 
- # Get Required values to get a full object
- if (!$principalId) {$principalId = (Get-AzureServicePrincipal -Token $Token -DisplayName $principalName).ID}
- if (!$principalName) {$principalName = (Get-AzureServicePrincipal -Token $Token -DisplayName $principalId).displayName}
+  # Token management
+  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+  $headers = @{
+   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Content-type'  = "application/json"
+  }
 
- # Token management
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
+  ########## APPLICATION ROLES ##########
+  # Get all App Roles [ Application ]
+  $ResultAppRole = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments").value
+  # Add a column for PermissionType
+  $ResultAppRole | ForEach-Object { $_ | Add-Member -MemberType NoteProperty -Name PermissionType -Value "Application" }
+  $ResultAppRole | ForEach-Object {
+   $AppRoleDisplayName = (Get-AzureServicePrincipal -Token $Token -ID $_.resourceId).appRoles | Where-Object id -eq $_.appRoleId
+   $_ | Add-Member -MemberType NoteProperty -Name appRoleDisplayName -Value $AppRoleDisplayName.displayName
+   $_ | Add-Member -MemberType NoteProperty -Name appRoleValue -Value $AppRoleDisplayName.value
+  }
+
+  ########## DELEGATED ROLES ##########
+  # Get all App Roles [ Delegated ]
+  $ResultPermissionGrantTMP = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants").value
+
+  # Set all the Delegated Permissions as a clean object
+  $ResultPermissionGrantTMP | ForEach-Object {
+    $RoleDisplayName =  $(Get-AzureServicePrincipal -Token $Token -ID $_.resourceId).DisplayName
+    $_ | Add-Member -MemberType NoteProperty -Name "appRoleId" -Value $_.clientId
+    $_ | Add-Member -MemberType NoteProperty -Name "createdDateTime" -Value ""
+    $_ | Add-Member -MemberType NoteProperty -Name "deletedDateTime" -Value ""
+    $_ | Add-Member -MemberType NoteProperty -Name "principalDisplayName" -Value "$principalName"
+    $_ | Add-Member -MemberType NoteProperty -Name "principalType" -Value "ServicePrincipal"
+    $_ | Add-Member -MemberType NoteProperty -Name "appRoleValue" -Value $RoleDisplayName
+    $_ | Add-Member -MemberType NoteProperty -Name "resourceDisplayName" -Value $RoleDisplayName
+    $_ | Add-Member -MemberType NoteProperty -Name "PermissionType" -Value "Delegated"
+  }
+  $ResultPermissionGrant = $ResultPermissionGrantTMP | ForEach-Object {
+   $CurrentObject = $_
+   ($_.scope -split " ") | ForEach-Object {
+    $Scope = $_
+    if (! $Scope ) { Return }
+    $CurrentObject | Select-Object -ExcludeProperty scope,appRoleDisplayName,clientId,consentType *,@{name="appRoleDisplayName";expression={$Scope}}
+    }
+  }
+
+  $Result = $ResultAppRole + $ResultPermissionGrant
+
+  if ($HideGUID -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *ID }
+  if ($HideDate -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *DateTime }
+  $Result
+ } Catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) checking $CheckedValue : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
  }
-
- ########## APPLICATION ROLES ##########
- # Get all App Roles [ Application ]
- $ResultAppRole = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments").value
- # Add a column for PermissionType
- $ResultAppRole | ForEach-Object { $_ | Add-Member -MemberType NoteProperty -Name PermissionType -Value "Application" }
- $ResultAppRole | ForEach-Object {
-  $AppRoleDisplayName = (Get-AzureServicePrincipal -Token $Token -ID $_.resourceId).appRoles | Where-Object id -eq $_.appRoleId
-  $_ | Add-Member -MemberType NoteProperty -Name appRoleDisplayName -Value $AppRoleDisplayName.displayName
-  $_ | Add-Member -MemberType NoteProperty -Name appRoleValue -Value $AppRoleDisplayName.value
- }
-
- ########## DELEGATED ROLES ##########
- # Get all App Roles [ Delegated ]
- $ResultPermissionGrantTMP = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants").value
-
- # Set all the Delegated Permissions as a clean object
- $ResultPermissionGrantTMP | ForEach-Object {
-   $RoleDisplayName =  $(Get-AzureServicePrincipal -Token $Token -ID $_.resourceId).DisplayName
-   $_ | Add-Member -MemberType NoteProperty -Name "appRoleId" -Value $_.clientId
-   $_ | Add-Member -MemberType NoteProperty -Name "createdDateTime" -Value ""
-   $_ | Add-Member -MemberType NoteProperty -Name "deletedDateTime" -Value ""
-   $_ | Add-Member -MemberType NoteProperty -Name "principalDisplayName" -Value "$principalName"
-   $_ | Add-Member -MemberType NoteProperty -Name "principalType" -Value "ServicePrincipal"
-   $_ | Add-Member -MemberType NoteProperty -Name "appRoleValue" -Value $RoleDisplayName
-   $_ | Add-Member -MemberType NoteProperty -Name "resourceDisplayName" -Value $RoleDisplayName
-   $_ | Add-Member -MemberType NoteProperty -Name "PermissionType" -Value "Delegated"
- }
- $ResultPermissionGrant = $ResultPermissionGrantTMP | ForEach-Object {
-  $CurrentObject = $_
-  ($_.scope -split " ") | ForEach-Object {
-   $Scope = $_
-   if (! $Scope ) { Return }
-   $CurrentObject | Select-Object -ExcludeProperty scope,appRoleDisplayName,clientId,consentType *,@{name="appRoleDisplayName";expression={$Scope}}
-   }
- }
-
- $Result = $ResultAppRole + $ResultPermissionGrant
-
- if ($HideGUID -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *ID }
- if ($HideDate -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *DateTime }
- $Result
 }
 Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST. Uses AzCli
  Param (
@@ -12787,6 +12797,31 @@ Function Get-AzureDeviceInfo {
   return $Result.Value
  } else {
   Write-host -ForegroundColor Red "Device $DeviceID not found"
+ }
+}
+Function Get-AzureDevices {
+ param(
+  [parameter(Mandatory=$true)][String]$DeviceName,
+  [parameter(Mandatory=$true)]$Token
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ $RequestURL = "https://graph.microsoft.com/v1.0/devices?`$filter=startswith(displayname,'$DeviceName')"
+
+ $FullResult = @()
+ $CurrentResult = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
+ $FullResult += $CurrentResult.value
+ While ($CurrentResult.'@odata.nextLink') {
+  $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink'
+  $FullResult += $CurrentResult.value
+ }
+ if ($FullResult) {
+  return $FullResult
+ } else {
+  Write-host -ForegroundColor Red "Device $DeviceName not found"
  }
 }
 
