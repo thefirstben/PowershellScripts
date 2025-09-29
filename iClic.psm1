@@ -654,10 +654,13 @@ Function Convert-StringToBase64UTF8 {
  [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($ValueToEncode))
 }
 Function Convert-Base64UTF8ToString {
- Param (
-  $ValueToDecode
+ [CmdletBinding()]
+ param(
+  [Parameter(Mandatory, ValueFromPipeline)][string]$ValueToDecode
  )
- [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($ValueToDecode))
+ process {
+  [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($ValueToDecode)) | ConvertFrom-Json
+ }
 }
 Function Convert-BytesToHex {
  Param (
@@ -1451,20 +1454,15 @@ Function Test-Group {
  try {Get-ADGroup $Group | Out-Null ; return $true}
  catch {return $false}
 }
-Function Test-AccountPassword {
+Function Test-AccountPasswordRunAs {
  Param (
   [Parameter(Mandatory=$true)]$User,
-  [SecureString]$Password,
+  [Parameter(Mandatory=$true)][SecureString]$Password,
   [switch]$printerror,
   [switch]$printcredentials
  )
  # Example : test-accountpassword DOMAIN\username password $false $true
  # WARNING : if the password contains "$" then it cannot be passed directly in the command line except if protected by `
-
- while (! $Password) {$Password=read-host -AsSecureString "Password"}
-
- #When passed through command line the password is not cypted
- if ($Password.GetType().Name -ne "SecureString") {$Password=ConvertTo-SecureString -string "$Password" -AsPlainText -force}
 
  try {
   # $Credential = Get-Credential -Credential "${User}"
@@ -1481,10 +1479,30 @@ Function Test-AccountPassword {
 
   Start-Process -FilePath cmd.exe /c -Credential $Credential
  } catch {
-  if ($printerror) {Write-Colored -Color "red" -NonColoredText  "" $error[0] } ; return $false
+  if ($printerror) {Write-Error $error[0] } ; return $false
  }
 
  return $true
+}
+function Test-AccountPassword { # Not Working - Should be recreated
+ Param(
+  [Parameter(Mandatory)][string]$User,
+  [Parameter(Mandatory)][SecureString]$Password,
+  [Parameter(Mandatory = $false)]$Server,
+  [Parameter(Mandatory = $false)][string]$Domain = $env:USERDOMAIN
+ )
+ Add-Type -AssemblyName System.DirectoryServices.AccountManagement
+ $contextType = [System.DirectoryServices.AccountManagement.ContextType]::Domain
+ $argumentList = New-Object -TypeName "System.Collections.ArrayList"
+ $null = $argumentList.Add($contextType)
+ $null = $argumentList.Add($Domain)
+ if($null -ne $Server){ $argumentList.Add($Server)}
+
+ $principalContext = New-Object System.DirectoryServices.AccountManagement.PrincipalContext -ArgumentList $argumentList -ErrorAction SilentlyContinue
+
+ if ($null -eq $principalContext) { Write-Warning "$Domain\$User - AD Authentication failed" }
+ if ($principalContext.ValidateCredentials($User, $Password)) { Write-Host -ForegroundColor green "$Domain\$User - AD Authentication OK" }
+ else { Write-Warning "$Domain\$User - AD Authentication failed" }
 }
 Function Test-AccountPasswordList {
  Param (
@@ -9834,7 +9852,7 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
    @{N="Scope";E={($_.id.Split("/providers/Microsoft.Authorization/"))[0]}},
    @{N="Sys_createdAt";E={$_.systemData.createdAt}},
    @{N="Sys_createdBy";E={$_.systemData.createdBy}},
-   @{N="Sys_createdByDisplay";E={Get-AzureUserStartingWith -SearchValue $_.systemData.createdBy -Type userPrincipalName}},
+   @{N="Sys_createdByDisplay";E={Get-AzureADUserStartingWith -SearchValue $_.systemData.createdBy -Type userPrincipalName}},
    @{N="Sys_createdByType";E={$_.systemData.createdByType}},
    @{N="Sys_lastModifiedAt";E={$_.systemData.lastModifiedAt}},
    @{N="Sys_lastModifiedBy";E={$_.systemData.lastModifiedBy}},
@@ -10607,7 +10625,7 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   $Token,
   [Switch]$ShowOwner,
   [Switch]$HideGUID,
-  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signI0nAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
+  $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
  )
  if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
  } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
@@ -10624,6 +10642,14 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
  } else {
   $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
  }
+
+ # Add Generic Redirect URLs with all the different redirect URLs
+ $RedirectURLS = @()
+ $RedirectURLS += [pscustomobject]@{Type="SPA";URLs=$Result.SPA.redirectUris}
+ $RedirectURLS += [pscustomobject]@{Type="WEB";URLs=$Result.WEB.redirectUris}
+ $RedirectURLS += [pscustomobject]@{Type="publicClient";URLs=$Result.publicClient.redirectUris}
+ $Result | Add-Member -MemberType NoteProperty -Name "RedirectURLS" -Value $RedirectURLS
+
  if ($HideGUID) {
   $Result | Select-Object -ExcludeProperty *ID
  } else {
@@ -11371,6 +11397,13 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
   # Merge Data
   $AppInfo | Add-Member -Name FederatedCredential -Value $FederatedCredential -MemberType NoteProperty
 
+  # Add Unique Column with the secrets
+  $FullSecrets = @()
+  $FullSecrets += [pscustomobject]@{Type="Certificates";Value=$AppInfo.keyCredentials}
+  $FullSecrets += [pscustomobject]@{Type="Client secrets";Value=$AppInfo.passwordCredentials}
+  $FullSecrets += [pscustomobject]@{Type="Federated credentials";Value=$AppInfo.FederatedCredential}
+  $AppInfo | Add-Member -MemberType NoteProperty -Name "Secrets" -Value $FullSecrets
+
   if ($Count) {
    $KeyCount = $AppInfo.keyCredentials.Count + $AppInfo.passwordCredentials.Count + $AppInfo.FederatedCredential.Count
    return $KeyCount
@@ -11566,16 +11599,28 @@ Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App R
 
  if ($HideGUID) { $Result | Select-Object -ExcludeProperty *ID } else { $Result }
 }
-Function Add-AzureAppRegistrationAppRoles {
+Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles, careful, by default it will overwrite existing
+ [CmdletBinding(DefaultParameterSetName="IndividualRole")]
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
-  [parameter(Mandatory=$true)]$Description,
-  [parameter(Mandatory=$true)]$DisplayName,
-  [parameter(Mandatory=$true)]$Value,
-  $AppRoleList,
-  [parameter(Mandatory=$true)]$Token,
-  [ValidateSet("User","Application","Both")]$allowedMemberTypes
+  # Parameters mandatory in ALL sets
+  [parameter(Mandatory = $true)][GUID]$AppRegistrationID,
+
+  [parameter(Mandatory = $true)]$Token,
+
+  # --- Parameter Set 1: IndividualRole ---
+  [parameter(Mandatory = $true, ParameterSetName = "IndividualRole")][string]$Description,
+  [parameter(Mandatory = $true, ParameterSetName = "IndividualRole")][string]$DisplayName,
+  [parameter(Mandatory = $true, ParameterSetName = "IndividualRole")][string]$Value,
+
+  [parameter(ParameterSetName = "IndividualRole")][ValidateSet("User", "Application", "Both")][string]$allowedMemberTypes = "User",
+
+  # --- Parameter Set 2: RoleList ---
+  [parameter(Mandatory = $true, ParameterSetName = "RoleList")][object[]]$AppRoleList
  )
+
+ # You can check which parameter set was used inside your function like this:
+ Write-Output "The active parameter set is: $($PSCmdlet.ParameterSetName)"
+
  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
 
  if ($allowedMemberTypes -eq 'Both') {
@@ -11587,33 +11632,29 @@ Function Add-AzureAppRegistrationAppRoles {
   'Content-type'  = "application/json"
  }
 
-if ($AppRoleList) {
- $body = @{
-  appRoles = @(
-     $AppRoleList
-  )
+ if ($AppRoleList) {
+  $body = @{
+   appRoles = @(
+      $AppRoleList
+   )
   }| ConvertTo-Json -Depth 10
+ } else {
+  $body = @{
+   appRoles = @(
+     @{
+       allowedMemberTypes = @($allowedMemberTypes)
+       description         = $Description
+       displayName         = $DisplayName
+       id                  = [guid]::NewGuid()
+       isEnabled           = $true
+       value               = $Value
+     }
+   )
+  } | ConvertTo-Json -Depth 10
 
-} else {
- $body = @{
-  appRoles = @(
-    @{
-      allowedMemberTypes = @($allowedMemberTypes)
-      description         = $Description
-      displayName         = $DisplayName
-      id                  = [guid]::NewGuid()
-      isEnabled           = $true
-      value               = $Value
-    }
-  )
-} | ConvertTo-Json -Depth 10
+ }
 
-}
-
-Invoke-RestMethod -Method Patch `
-  -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" `
-  -Headers $header `
-  -Body $body
+ Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" -Headers $header -Body $body
 }
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AzCli AzAD Cmdlet are 5 times slower than AzRest
@@ -13375,7 +13416,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   if (Assert-IsGUID $Group) {
    (az ad group member check --group $Group --member-id $UserName -o json --only-show-errors | ConvertFrom-Json).Value
   } else {
-   (az ad group member check --group $Group --member-id (Get-AzureUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
+   (az ad group member check --group $Group --member-id (Get-AzureADUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
   }
  }
 }
@@ -14016,7 +14057,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  $Result
 }
-Function Get-AzureUserStartingWith { # Get all AAD Users starting with something [Token or Az Cli] - Can search for exact value or start with values
+Function Get-AzureADUserStartingWith { # Get all AAD Users starting with something [Token or Az Cli] - Can search for exact value or start with values
  param (
   [Parameter(Mandatory=$true)]$SearchValue,
   [ValidateSet("displayName","userPrincipalName","mail")]$Type = "displayName",
