@@ -9515,29 +9515,57 @@ Function Get-AzureSubscriptions { # Get all subscription of a Tenant, a lot fast
  Param (
   [Switch]$ShowAll,
   [parameter(Mandatory = $false, ParameterSetName="Name")][String]$Name,
-  [parameter(Mandatory = $false, ParameterSetName="Id")][GUID]$Id
+  [parameter(Mandatory = $false, ParameterSetName="Id")][GUID]$Id,
+  $Token
  )
+ try {
 
- # Default Value
- $Arguments = '--output', 'json'
+  if ($Token) {
+   $URL = "/subscriptions"
+   if ($ID) {$URL+="/$ID"}
+   $APIVersion = "2023-07-01"
+   $Result = Get-AzureGraph -Token $Token -BaseURL "https://management.azure.com" -GraphRequest "$($URL)?api-version=$APIVersion"
+   if (! $Result) { Throw "No Result Found"} else { if ($Result.Value) {$ReturnValue = $Result.Value} else {$ReturnValue = $Result}}
+   if ($Name) { $ReturnValue = $ReturnValue | Where-Object DisplayName -like $Name }
+   if (! $ReturnValue) { Throw "No Result Found"}
+   if ($ShowAll) {
+    $ReturnValue
+   } else {
+    # Update columns to match Az CLI return
+    $ReturnValue | Select-Object @{Label="id";expression={$_.subscriptionId}},@{Label="name";expression={$_.displayName}},State
+   }
+  } else {
+   # Default Value
+   $Arguments = '--output', 'json'
 
- if ( $ShowAll ) {
-  $Arguments += '--all'
- } else {
-  $Arguments += '--only-show-errors' # Ignore warnings when not set to Display All, otherwise this will appear each time
+   if ( $ShowAll ) {
+    $Arguments += '--all'
+   } else {
+    $Arguments += '--only-show-errors' # Ignore warnings when not set to Display All, otherwise this will appear each time
+   }
+
+   # Add Query
+   $Arguments += '--query'
+
+   if ($Name) {
+    $Arguments += '"[?name==' + "'" + $Name + "'" + '].{id:id, name:name, state:state}"'
+   } elseif ($Id) {
+    $Arguments += '"[?id==' + "'" + $Id + "'" + '].{id:id, name:name, state:state}"'
+   } else {
+    $Arguments += '"[].{id:id, name:name, state:state}"'
+   }
+   az account list @Arguments | convertfrom-json | select-object id,name,state
+  }
+ } Catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
  }
-
- # Add Query
- $Arguments += '--query'
-
- if ($Name) {
-  $Arguments += '"[?name==' + "'" + $Name + "'" + '].{id:id, name:name, state:state}"'
- } elseif ($Id) {
-  $Arguments += '"[?id==' + "'" + $Id + "'" + '].{id:id, name:name, state:state}"'
- } else {
-  $Arguments += '"[].{id:id, name:name, state:state}"'
- }
- az account list @Arguments | convertfrom-json | select-object id,name,state
 }
 Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups Using AzCli
  $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
@@ -10027,7 +10055,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret
 }
 # User Rights Management
-Function Get-AzureADRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
+Function Get-AzureRBACRights { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
  [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
   [parameter(Mandatory = $true, ParameterSetName="UserAndSubID")]
@@ -10303,7 +10331,7 @@ Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one 
  Param (
   [Parameter(Mandatory=$true)]$UserPrincipalName
  )
- $CurrentRights = Get-AzureADRBACRights -UserPrincipalName $UserPrincipalName
+ $CurrentRights = Get-AzureRBACRights -UserPrincipalName $UserPrincipalName
  $CurrentRights | Where-Object Type -eq User | ForEach-Object {
   Progress -Message "Removing permission " -Value "$($_.roleDefinitionName) from user $($UserPrincipalName) from scope $($_.scope)"
   Remove-AzureADRBACRights -AssignmentID $_.AssignmentID
@@ -10627,33 +10655,37 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   [Switch]$HideGUID,
   $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
  )
- if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
- } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
- } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
- }
- $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
+ try {
+  if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
+  } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
+  } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
   }
-  $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $GraphURI).value
- } else {
-  $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
- }
+  $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
+  if ($Token) {
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+   $headers = @{
+    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Content-type'  = "application/json"
+   }
+   $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $GraphURI).value
+  } else {
+   $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
+  }
 
- # Add Generic Redirect URLs with all the different redirect URLs
- $RedirectURLS = @()
- $RedirectURLS += [pscustomobject]@{Type="SPA";URLs=$Result.SPA.redirectUris}
- $RedirectURLS += [pscustomobject]@{Type="WEB";URLs=$Result.WEB.redirectUris}
- $RedirectURLS += [pscustomobject]@{Type="publicClient";URLs=$Result.publicClient.redirectUris}
- $Result | Add-Member -MemberType NoteProperty -Name "RedirectURLS" -Value $RedirectURLS
+  # Add Generic Redirect URLs with all the different redirect URLs
+  $RedirectURLS = @()
+  $RedirectURLS += [pscustomobject]@{Type="SPA";URLs=$Result.SPA.redirectUris}
+  $RedirectURLS += [pscustomobject]@{Type="WEB";URLs=$Result.WEB.redirectUris}
+  $RedirectURLS += [pscustomobject]@{Type="publicClient";URLs=$Result.publicClient.redirectUris}
+  $Result | Add-Member -MemberType NoteProperty -Name "RedirectURLS" -Value $RedirectURLS
 
- if ($HideGUID) {
-  $Result | Select-Object -ExcludeProperty *ID
- } else {
-  $Result
+  if ($HideGUID) {
+   $Result | Select-Object -ExcludeProperty *ID
+  } else {
+   $Result
+  }
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureAppRegistrationFromAppID { # Get the App Registration information from AppID | Uses Token
@@ -10866,7 +10898,7 @@ Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Ri
   $CurrentSubscriptionName = $_.name
   $AppRegistration | ForEach-Object {
    Progress -Message "Currently checking App Registration " -Value "`'$($_.appDisplayName)`' on subscription `'$CurrentSubscriptionName`'" -PrintTime
-   Get-AzureADRBACRights -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserPrincipalName $_.appId -UserDisplayName $_.appDisplayName
+   Get-AzureRBACRights -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserPrincipalName $_.appId -UserDisplayName $_.appDisplayName
   }
  }
 }
@@ -10878,7 +10910,7 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  )
  if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID }
 
- Get-AzureADRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
+ Get-AzureRBACRights -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
   @{Name="PrincipalName";Expression={
    if (Assert-IsGUID $_.PrincipalName) {
     (Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName
