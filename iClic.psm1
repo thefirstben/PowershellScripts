@@ -12857,7 +12857,7 @@ Function Get-AzureDeviceObjectIDFromName {
 }
 Function Get-AzureDeviceInfo {
  param(
-  [parameter(Mandatory=$true)][String]$DeviceID,
+  [parameter(Mandatory=$true)][GUID]$DeviceID,
   [parameter(Mandatory=$true)]$Token
  )
  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
