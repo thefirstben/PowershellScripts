@@ -9504,6 +9504,74 @@ Function Open-MgGraphConnection {
   }
  }
 }
+Function Get-AuthMethod { # Used to replace in all scripts a standard method check to see if Az CLI / Global Token / Token variable
+ <#
+ .SYNOPSIS
+  Determines and validates the correct authentication method based on a prioritized order.
+ .DESCRIPTION
+  This function checks for a passed token, a global token, and the Az CLI.
+  If a token is found, it is validated using Assert-IsTokenLifetimeValid.
+  It returns an object with the determined method and the associated token.
+ #>
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory)]
+  [System.Collections.IDictionary]$BoundParameters,
+
+  $PassedToken,
+  [Switch]$TokenOnly # Used to force Token Only
+ )
+
+ # This variable will hold the token we find
+ $foundToken = $null
+
+ # Priority 1: Check if -Token parameter was explicitly used.
+ if ($BoundParameters.ContainsKey('Token')) {
+  Write-Verbose "Auth Method: Found token provided via parameter."
+  $foundToken = $PassedToken
+
+  # VALIDATE THE TOKEN
+  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
+  Write-Verbose "Token lifetime is valid."
+
+  # Return a custom object
+  return [PSCustomObject]@{
+   Method = 'Token'
+   Token  = $foundToken
+  }
+ }
+
+ # Priority 2: Check if a global token variable exists.
+ elseif ($global:token) {
+  Write-Verbose "Auth Method: Found token in `$global:token."
+  $foundToken = $global:token
+
+  # VALIDATE THE TOKEN
+  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
+  Write-Verbose "Token lifetime is valid."
+
+  return [PSCustomObject]@{
+   Method = 'Token'
+   Token  = $foundToken
+  }
+ }
+
+ if ($TokenOnly) {
+  # The switch was used, so we must fail immediately.
+  Throw "The -TokenOnly switch was specified, but no token was provided (via parameter or `$global:token)."
+ } else {  # Priority 3: Fallback to Az CLI (no token to validate here).
+  Write-Verbose "Auth Method: No token found, attempting to use Az CLI."
+  if (Get-Command az -ErrorAction SilentlyContinue) {
+   return [PSCustomObject]@{
+    Method = 'AzCLI'
+    Token  = $null
+   }
+  }
+  else {
+   Throw "Authentication failed: A token was not provided or was invalid, and the Az CLI is not available."
+  }
+ }
+}
 # AzCli Env Management
 Function Get-AzureEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
@@ -10716,14 +10784,8 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
   [switch]$Verbose,
   $Token
  )
-
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
- }
+ try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
  $FastColumns = "DisplayName,appId,id"
  $DefaultColumns = "DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,keyCredentials,
@@ -10734,7 +10796,11 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
   $Columns = $DefaultColumns
  }
 
- if ($token) {
+if ($authDetails.Method -eq "Token") {
+  $headers = @{
+   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
+   'Content-type'  = "application/json"
+  }
   $CmdLine = "https://graph.microsoft.com/beta/applications?`$top=999"
   if (! $ShowAllColumns) { $CmdLine += "&`$select=$Columns" }
  } else {
@@ -10748,8 +10814,8 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  $FirstRun=$True
  While ($ContinueRunning -eq $True) {
   if ($Verbose) { Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime }
-  if ($FirstRun) {
-   if ($token) {
+  if ($FirstRun) { # First Loop
+   if ($authDetails.Method -eq "Token") {
     $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CmdLine
     $NextRequest = $CurrentResult.'@odata.nextLink'
    } else {
@@ -10757,11 +10823,11 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
     $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
    }
    $FirstRun=$False
-  } else {
-   if ($Token) {
+  } else { # If not the first loop
+   if ($authDetails.Method -eq "Token") {
     $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $NextRequest
     $NextRequest = $CurrentResult.'@odata.nextLink'
-   } else {
+   } else { # If using Az Cli
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
     $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
     If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
@@ -10783,18 +10849,16 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  # Convert Tag to proper format :
  $Result = $Result | Select-Object -ExcludeProperty Tags *,@{Name="Tags";Expression={
   $TagList = [PSCustomObject]@{}
-  $_.Tags | ForEach-Object {
-    $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1]
-   }
-   $TagList
+  $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] }
+  $TagList
  }}
 
  if ($URLFilter -and (! $Fast)) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
  if ($NameFilter) { $Result = $Result | Where-Object displayName -like "*$NameFilter*" }
  if ($ShowOwners) { $Result = $Result | Select-Object *,@{Name="Owner";Expression={
   Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ;
-  if ($Token) {
-   Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID -Token $Token
+  if ($authDetails.Method -eq "Token") {
+   Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID -Token $authDetails.Token
   } else {
    Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID
   }
@@ -10802,6 +10866,9 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  }
  if ($Verbose) { ProgressClear }
  $Result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
@@ -11618,7 +11685,7 @@ Param (
  if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
  $Result
 }
-Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration
+Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration - Uses Get-AzureAppRegistration
  Param (
  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppID,
  [parameter(Mandatory=$true,ParameterSetName="DisplayName")]$DisplayName,
@@ -12164,17 +12231,18 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   $Token
  )
  Try {
-  if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -ErrorAction Stop
+
+  if ($authDetails.Method -eq "Token") {
    $headers = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
     'Content-type'  = "application/json"
    }
   }
   # Get Principal Name if not provided
   if ($ServicePrincipalName) {
-   if ($Token) {
-    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName -Token $Token).ID
+   if ($authDetails.Method -eq "Token") {
+    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName -Token $authDetails.Token).ID
    } else {
     $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName).ID
    }
@@ -12184,15 +12252,15 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   # Get App Assignements
   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
 
-  if ($Token) {
+  if ($authDetails.Method -eq "Token") {
    $AppAssigments = (Invoke-RestMethod -Method GET -headers $headers -Uri $URI).Value
   } else {
    $AppAssigments = (az rest --method GET --uri $URI --header Content-Type=application/json | ConvertFrom-Json).Value
   }
   # If App Roles is selected add the information to the result
   If ($ShowAppRole) {
-   if ($token) {
-    $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $Token
+   if ($authDetails.Method -eq "Token") {
+    $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token
    } else {
     $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID
    }
@@ -12585,12 +12653,12 @@ Function Add-AzureServicePrincipalAssignments {
   [parameter(Mandatory = $true)]$ServicePrincipalID, # Service Principal To Update
   [parameter(Mandatory = $true)]$ObjectToAddID, # User or group or object to add
   $AppRole, # AppRole to add (default : User)
-  [parameter(Mandatory = $true)]$Token
+  $Token
  )
  Try {
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
  $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
   'Content-type'  = "application/json"
  }
 
@@ -12599,7 +12667,8 @@ Function Add-AzureServicePrincipalAssignments {
    $AppRoleID = $AppRole
   } else {
   $AppID = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID`?`$select=AppID").appId
-  $AppRoleID = ((Get-AzureAppRegistration -AppID $AppID -Token $Token).appRoles | Where-Object displayName -eq "$AppRole").id
+  $AppRoleID = ((Get-AzureAppRegistration -AppID $AppID -Token $authDetails.Token).appRoles | Where-Object displayName -eq "$AppRole").id
+  if (! $AppRoleID ) { throw "AppRole not found : $AppRole"}
   }
  }
 
@@ -12661,7 +12730,8 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
 
  # Convert all user ID
  Progress -Message "Current Step : " -Value "Convert all user ID" -PrintTime
- $PrincipalInfo = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique | ForEach-Object { Get-AzureADObjectInfo -ObjectID $_ -Token $Token }
+ $AllUniquePrincipals = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique
+ $PrincipalInfo = Get-AzureADObjectInfo -Token $Token -ObjectIDList $AllUniquePrincipals
 
  Progress -Message "Current Step : " -Value "Check Roles" -PrintTime
  $Result = $DirectMembersGUID + $DirectMembersEligibleGUID | Select-Object *,
@@ -12687,7 +12757,13 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
     }
    }
   }},
-  @{name="PrincipalInfo";expression={($PrincipalInfo[$PrincipalInfo.id.indexof($_.principalId)])} } | Select-Object -ExcludeProperty directoryScopeInfo,PrincipalInfo *,
+  @{name="PrincipalInfo";expression={
+   if ($PrincipalInfo.id.contains($_.principalId)) { # Added check to ensure that a Principal was found otherwise it will just print the Principal ID
+    $PrincipalInfo[$PrincipalInfo.id.indexof($_.principalId)]
+   } else {
+    $_.principalId
+   }
+  } } | Select-Object -ExcludeProperty directoryScopeInfo,PrincipalInfo *,
   @{name="directoryScopeName";expression={$_.directoryScopeInfo.Name}},
   @{name="directoryScopeType";expression={$_.directoryScopeInfo.Type}},
   @{name="principalName";expression={$_.PrincipalInfo.DisplayName}},
@@ -13455,59 +13531,67 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
 Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using AzCli or Token) - Before beta it did not list Service principals
  Param (
   [Parameter(Mandatory)]$Group,
-  [Switch]$Recurse,
-  [Switch]$ForceName,
+  $Token,
+  [Switch]$Recurse, # Get all users in the group, even in subgroups
+  [Switch]$ForceName, # Used to get the Name as in Az CLI it only gives GUID otherwise
   [Switch]$RecurseHideGroups, # Using recursive still shows groups by default, but using this switch they will be hidden
-  [Switch]$Fast,
-  $Token
+  [Switch]$Fast, # Restrict the amounts of columns to make faster response time
+  [Switch]$Readable # Removes all GUID information in the result
  )
+ Write-Verbose "Start $($($MyInvocation.MyCommand.Name))"
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+ if ($authDetails.Method -eq "Token") {
+  Write-Verbose "Preparing the header"
   $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
    'Content-type'  = "application/json"
-  }
- } else {
-  if (! $(Assert-IsCommandAvailable "Az")) {
-   Write-Error "Missing Az CLI"
-   Return
   }
  }
 
+ # Check if parameter was a GUID or the Name, and if it was a GUID, check if ForceName parameter is set to get the GroupName
  if (Assert-IsGUID $Group) {
   $GroupGUID = $Group
   if ($ForceName) {
-   if ($Token) {
+   Write-Verbose "Search Using GUID - Using ForceName - Getting GroupName"
+
+   if ($authDetails.Method -eq "Token") {
     $GroupName = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$Group").displayName
    } else {
     $GroupName = (az ad group show -g $Group | convertfrom-json).displayname
    }
-  } else {
+
+  } else { # If name is not used then set the Group Name as the GUID
+   Write-Verbose "Search Using GUID"
    $GroupName = $Group
   }
- } else {
-
-  if ($Token) {
+ } else { # If the Group name was sent we need to find the GUID
+  Write-Verbose "Search Using Name - Searching for GUID"
+  if ($authDetails.Method -eq "Token") {
    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$Group')").value.id
   } else {
    $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
   }
-  $GroupName = $Group
+  $GroupName = $Group # In this case the Group Name is the parameter sent to the function
  }
 
+ # If Recurse Parameter is set get all users for any subgroups
  if ($Recurse) {
-  $SearchType = "transitiveMembers"
- } else {
-  $SearchType = "members"
+  Write-Verbose "Using Recursive Search"
+  $SearchType = "transitiveMembers" } else { $SearchType = "members"
  }
 
+ # Initialize Variables
  $FirstRun = $True
  $ContinueRunning = $True
+
  While ($ContinueRunning) { # Run until there are results
   if ($FirstRun) {
-   if ($Token) {
+   Write-Verbose "API Call : First Call"
+   if ($authDetails.Method -eq "Token") {
     if ($Fast) {
+     Write-Verbose "Search Using Fast Parameter - Will only search for UPN & ID"
      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
     } else {
      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
@@ -13519,11 +13603,11 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
    }
    $FirstRun=$False
   } else {
-   if ($Token) {
+   if ($authDetails.Method -eq "Token") {
     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
    } else {
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-    # Add error management for API limitation of Azure
+    # Add error management for API limitation of Azure when using Az Rest
     $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
     $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
     If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
@@ -13533,33 +13617,49 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
     }
    }
   }
-  if ($RecurseHideGroups) {
-    $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group'
-  }
-  if ($Token) {
-   $NextRequest = $CurrentResult.'@odata.nextLink'
+
+  # To avoid having groups in group when using Resurse Mode
+  if ($RecurseHideGroups) { $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
+
+  # Request format is different between Token and Az Cli
+  if ($authDetails.Method -eq "Token") { $NextRequest = $CurrentResult.'@odata.nextLink' } else { $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`"" }
+
+  # If nextLink is available will continue
+  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True ;  Write-Verbose "API Call : Next Link Found - Will Loop Again"} else {$ContinueRunning = $False ;  Write-Verbose "API Call : End Loop"}
+
+  # Filter data and return current value (meaning the values will appear over time instead of at the end - better for memory usage)
+  if ($Fast) {
+   Write-Verbose "Printing data with Fast Tag"
+   $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName,id,
+   @{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
   } else {
-   $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+   $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
+    accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
   }
-  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-  $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
-   accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
- }
+  if ($Readable) {$ReturnValue | Select-Object -ExcludeProperty *id ;  Write-Verbose "Using Readable Tag : Remove *id parameters"} else { $ReturnValue }
+ } # End While Loop
+ Write-Verbose "Finished $($($MyInvocation.MyCommand.Name))"
 }
 Function Get-AzureADGroupIDFromName {
  Param (
   [Parameter(Mandatory)]$GroupName,
   $Token
  )
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ try {
+
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+ if ($authDetails.Method -eq "Token") {
   $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
    'Content-type'  = "application/json"
   }
   (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'").value.id
  } else {
   (az rest --method GET --uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.id
+ }
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using AzCli)
@@ -13812,7 +13912,7 @@ Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Gr
 }
 Function New-AzureADGroup { # Create New Group using Graph
  Param (
-  [Parameter(Mandatory)]$Token,
+  $Token,
   [Parameter(Mandatory)]$GroupName,
   [Parameter(Mandatory)]$GroupDescription,
   [Switch]$SecurityEnabled,
@@ -13825,7 +13925,12 @@ Function New-AzureADGroup { # Create New Group using Graph
  )
  Try {
 
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  $headers = @{
+   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
+   'Content-type'  = "application/json"
+  }
 
   if (! $mailNickname) { $mailNickname = $GroupName }
   if ($Unified) {
@@ -13859,12 +13964,6 @@ Function New-AzureADGroup { # Create New Group using Graph
   }
 
   $ParamJSON = $params | ConvertTo-Json
-
-
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
 
   $GraphURL = 'https://graph.microsoft.com/v1.0/groups/'
 
@@ -13977,33 +14076,38 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Token
  )
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ try {
+
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+ if ($authDetails.Method -eq "Token") {
   $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
+   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
    'Content-type'  = "application/json"
   }
  }
 
  if (Assert-IsGUID $UPNorID) {
+  Write-Verbose "Using GUID"
   $UserGUID = $UPNorID
  } else {
-  if ($Token) {
+  Write-Verbose "Using UPN, will have to get GUID"
+ if ($authDetails.Method -eq "Token") {
    $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").value.id
   } else {
    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
   }
  }
- if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
+ if (! $UserGUID) { Throw "User $UPNorID was not found" }
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
-  if ($Token) {
+ if ($authDetails.Method -eq "Token") {
    $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID" -MaximumRetryCount 2
   } else {
    $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
   }
  } else {
   $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,mail,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
-  if ($Token) {
+ if ($authDetails.Method -eq "Token") {
    $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -MaximumRetryCount 2
   } else {
    $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
@@ -14015,7 +14119,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},lastPasswordChangeDateTime
  }
  if ($ShowManager) {
-  if ($Token) {
+  if ($authDetails.Method -eq "Token") {
    $ManagerJson = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/manager"
   } else {
    $ManagerJson = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json
@@ -14029,7 +14133,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
  }
  if ($ShowOwnedObjects) {
-  if ($Token) { # This my limit to the first 100 objects
+  if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
    $OwnedObjects = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects"
   } else {
    $OwnedObjects = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects" --headers Content-Type=application/json | ConvertFrom-Json
@@ -14037,7 +14141,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName OwnedObjects -NotePropertyValue $OwnedObjects
  }
  if ($ShowOwnedDevices) {
-  if ($Token) { # This my limit to the first 100 objects
+  if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
    $OwnedDevices = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices"
   } else {
    $OwnedDevices = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices" --headers Content-Type=application/json | ConvertFrom-Json
@@ -14046,7 +14150,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  if ($ShowMemberOf) {
   $MemberOf=@()
-  if ($Token) { # This my limit to the first 100 objects
+  if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
    $MemberOfTmp = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/memberOf"
    $MemberOf += $MemberOfTmp.Value
    While ($MemberOfTmp.'@odata.nextLink') {
@@ -14088,6 +14192,9 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName MemberOf -NotePropertyValue $MemberOfFinal
  }
  $Result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Get-AzureADUserStartingWith { # Get all AAD Users starting with something [Token or Az Cli] - Can search for exact value or start with values
  param (
@@ -14162,57 +14269,58 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
   [Switch]$ShowResult,
   $Token
  )
- if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
- if ($UserGUID) { Write-Verbose "Working with GUID" } else {
-  Write-Verbose "Working with UPN, will be slower"
-  if ($Token) {
-   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID -Token $Token).id
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+  if (Assert-IsGUID $UPNorID) {
+   Write-Verbose "Working with GUID"
+   $UserGUID = $UPNorID
   } else {
-   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
-  }
- }
-
- if (! $UserGUID) {
-  Write-Host -ForegroundColor Red "User $UPNorID not found"
-  Return
- }
-
- if ($Token) {
-  Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
+   Write-Verbose "Working with UPN, will be slower"
+   if ($authDetails.Method -eq "Token") {
+    $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID -Token $authDetails.Token).id
+   } else {
+    $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID).id
    }
+  }
 
-   $params = @{
-    "onPremisesExtensionAttributes" = @{
-     $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
+ if (! $UserGUID) { throw "User $UPNorID not found" }
+
+ if ($authDetails.Method -eq "Token") {
+    $header = @{
+     'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
+     'Content-type'  = "application/json"
     }
-   }
 
-   $ParamJson = $params | convertto-json
-   Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID"  -Body $ParamJson | Out-Null
+    $params = @{
+     "onPremisesExtensionAttributes" = @{
+      $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
+     }
+    }
+
+    $ParamJson = $params | convertto-json
+    Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID"  -Body $ParamJson | Out-Null
+    if ($ShowResult) {
+     $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
+     Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID" | Select-Object displayName,userPrincipalName,
+      @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
+    }
+
+  } else { # If using Az CLI
+   $Body = '{\"onPremisesExtensionAttributes\": {\"extensionAttribute'+$ExtensionAttributeNumber+'\": \"'+$Value+'\"}}'
+   az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json --body $body
    if ($ShowResult) {
-    $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
-    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID" | Select-Object displayName,userPrincipalName,
-     @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
+    (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
    }
-  } catch {
-   $Exception = $($Error[0])
-   $StatusCodeJson = $Exception.ErrorDetails.message
-   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-   $StatusMessageJson = $Exception.ErrorDetails.message
-   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-   Write-host -ForegroundColor Red "Error setting extension attribute $ExtensionAttributeNumber for user $UPNorID ($StatusCode | $StatusMessage))"
   }
- } else {
-  $Body = '{\"onPremisesExtensionAttributes\": {\"extensionAttribute'+$ExtensionAttributeNumber+'\": \"'+$Value+'\"}}'
-  az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json --body $body
-  if ($ShowResult) {
-   (az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/" --headers Content-Type=application/json | ConvertFrom-Json).onPremisesExtensionAttributes
-  }
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-Error "Error setting extension attribute $ExtensionAttributeNumber for user $UPNorID ($StatusCode | $StatusMessage))"
  }
 }
 Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expiration on Azure AD Account
@@ -14720,21 +14828,25 @@ Function Get-AzureGraphAPITokenMSAL { # Get API Token using base MS Authenticati
 }
 Function Assert-IsTokenLifetimeValid { # Check validity of token
  Param (
-  [parameter(Mandatory = $True)]$Token,
+  [parameter(Mandatory = $True)][psobject]$Token,
   [switch]$ShowExpiration
  )
  try {
-  if (! $token.expires_on) {
-   Throw "Incorrect Token Format"
+  if (-not $Token.PSObject.Properties.Name.Contains('expires_on')) {
+   Throw "The provided token object does not have an 'expires_on' property."
   }
   $ExpirationTimeLocal = $token.expires_on.toLocalTime().DateTime
- if ($ShowExpiration) {
-   $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
-   $CurrentDate =  $(Format-date (Get-Date))
-   Write-Host "$CurrentDate : Token will expire at $ExpirationDate"
+  $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
+  $CurrentDate =  $(Format-date (Get-Date))
+
+  if ($ShowExpiration) { Write-Host "$CurrentDate : Token will expire at $ExpirationDate" }
+
+  $Result = $((NEW-TIMESPAN -Start $(Get-Date) -End $ExpirationDate) -gt 0)
+  if ($Result) {
+   return $true
+  } else {
+   throw "Token expired on $ExpirationDate."
   }
-  # return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date -UnixTimeSeconds $token.expires_on))) -gt 0)
-  return $((NEW-TIMESPAN -Start $(Get-Date) -End $(Format-date (Get-Date $ExpirationTimeLocal))) -gt 0)
  } Catch {
   Write-Error $Error[0]
  }
