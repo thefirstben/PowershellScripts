@@ -11525,18 +11525,18 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
   $Token
  )
  try {
-  if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($authDetails.Method -eq "Token") {
    $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
     'Content-type'  = "application/json"
    }
    if ($AppRegistrationName) {
-    $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $Token
+    $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $authDetails.Token
    } else {
-    $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $Token
+    $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $authDetails.Token
    }
-   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $Token) -gt 1) {
+   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $authDetails.Token) -gt 1) {
     write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
     if (! $Force) { return }
    }
@@ -11558,7 +11558,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
 
   $GraphURL = "https://graph.microsoft.com/v1.0/applications/$AppObjectId/addPassword"
 
-  if ($Token) {
+  if ($authDetails.Method -eq "Token") {
    $params = @{
     passwordCredential = @{
      "displayName" = $SecretDescription
