@@ -245,8 +245,8 @@ Function prompt { # Used to have a "pretty" Powershell prompt showing important 
  write-colored $promptcolor -ColoredText $P_UserDomain -nonewline
  write-colored $ColorGray -ColoredText "|" -nonewline
  write-colored $promptcolor -ColoredText $P_ComputerName -nonewline
- # write-colored $ColorGray -ColoredText "] " -nonewline
- write-colored $ColorGray -ColoredText "] "
+ write-colored $ColorGray -ColoredText "] " -nonewline
+ # write-colored $ColorGray -ColoredText "] "
 
  $CurrentPath = "$($executionContext.SessionState.Path.CurrentLocation)" -replace "Microsoft.PowerShell.Core\\FileSystem::",""
 
@@ -267,8 +267,10 @@ Function prompt { # Used to have a "pretty" Powershell prompt showing important 
   "${backspaces}${CurrentPath}${tail} $EndChar "
  } else {
   # Backspace last \ and write >
-  write-colored $promptcolor -NonColoredText ${CurrentPath} -ColoredText " >" -nonewline
-  return " "
+  # write-colored $promptcolor -NonColoredText ${CurrentPath} -ColoredText " >" -nonewline ; return " "
+  # Added cariage return (need to add backspace to avoid PS>)
+  write-colored $promptcolor -NonColoredText ${CurrentPath} -ColoredText " >" ; return "`b"
+
  }
 
  # Title $($myinvocation.Line)
@@ -9515,9 +9517,7 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
  #>
  [CmdletBinding()]
  Param (
-  [Parameter(Mandatory)]
-  [System.Collections.IDictionary]$BoundParameters,
-
+  [Parameter(Mandatory)][System.Collections.IDictionary]$BoundParameters,
   $PassedToken,
   [Switch]$TokenOnly # Used to force Token Only
  )
@@ -9527,33 +9527,32 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
 
  # Priority 1: Check if -Token parameter was explicitly used.
  if ($BoundParameters.ContainsKey('Token')) {
-  Write-Verbose "Auth Method: Found token provided via parameter."
-  $foundToken = $PassedToken
+   Write-Verbose "Auth Method: Found token provided via parameter."
+   $foundToken = $PassedToken
+  } elseif ($global:token) { # Priority 2: Check if a global token variable exists.
+   Write-Verbose "Auth Method: Found token in `$global:token."
+   $foundToken = $global:token
+  }
 
+ # If a token was found, validate it and construct the return object
+ if ($null -ne $foundToken) {
   # VALIDATE THE TOKEN
   Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
   Write-Verbose "Token lifetime is valid."
+
+  # Assumes your token object has .token_type and .access_token properties
+  $apiHeader = @{
+   'Authorization' = "$($foundToken.token_type) $($foundToken.access_token)"
+   'Content-type'  = 'application/json'
+  }
 
   # Return a custom object
   return [PSCustomObject]@{
    Method = 'Token'
    Token  = $foundToken
+   Header = $apiHeader # create a base Header Property as it is often used
   }
- }
 
- # Priority 2: Check if a global token variable exists.
- elseif ($global:token) {
-  Write-Verbose "Auth Method: Found token in `$global:token."
-  $foundToken = $global:token
-
-  # VALIDATE THE TOKEN
-  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
-  Write-Verbose "Token lifetime is valid."
-
-  return [PSCustomObject]@{
-   Method = 'Token'
-   Token  = $foundToken
-  }
  }
 
  if ($TokenOnly) {
@@ -9562,9 +9561,10 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
  } else {  # Priority 3: Fallback to Az CLI (no token to validate here).
   Write-Verbose "Auth Method: No token found, attempting to use Az CLI."
   if (Get-Command az -ErrorAction SilentlyContinue) {
-   return [PSCustomObject]@{
+   return [PSCustomObject]@{ # Keep the object shape consistent
     Method = 'AzCLI'
     Token  = $null
+    Header = $null
    }
   }
   else {
@@ -10052,14 +10052,13 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
  }
 
  $AppRegistrationObjectWithGUIDPermissions | ForEach-Object {
+
   $CurrentPolicy = $_.PolicyID ;
   $CurrentRule = $_.RuleID  ;
-  $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule)}
-  # Some policies have multiple of the same set of PolicyID and RuleID .... If there are multiple result, will take the admin result or the first result
-  if ($Policy.Count -gt 1) {
-   Write-Host -Foregroundcolor "Magenta" "WARNING : PolicyID $CurrentPolicy with RuleID $CurrentRule contains multiple result"
-   if ($Policy | Where-Object Type -eq "Admin") {$Policy = $Policy | Where-Object Type -eq "Admin" } else {$Policy = $Policy[0]}
-  }
+  if ($_.RuleType -eq 'Scope') {$CurrentType = 'Delegated'} else {$CurrentType = 'Application'}
+
+  $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule) -and ($_.PermissionType -eq $CurrentType)}
+
   [pscustomobject]@{
    AppRegistrationName=$_.AppRegistrationName
    AppRegistrationID=$_.AppRegistrationID
@@ -10069,7 +10068,6 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
    ValueID=$Policy.RuleID
    PermissionType=$Policy.PermissionType
    Description=$Policy.Description
-   # Type=$Policy.Type => This value is empty
   }
  }
 }
@@ -10724,18 +10722,15 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
  )
  try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
   if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
   } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
   } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
   }
   $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
-  if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $headers = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
-   $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $GraphURI).value
+  if ($authDetails.Method -eq "Token") {
+   $Result = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $GraphURI).value
   } else {
    $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
   }
@@ -10797,10 +10792,7 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
  }
 
 if ($authDetails.Method -eq "Token") {
-  $headers = @{
-   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $header = $authDetails.Header
   $CmdLine = "https://graph.microsoft.com/beta/applications?`$top=999"
   if (! $ShowAllColumns) { $CmdLine += "&`$select=$Columns" }
  } else {
@@ -10816,7 +10808,7 @@ if ($authDetails.Method -eq "Token") {
   if ($Verbose) { Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime }
   if ($FirstRun) { # First Loop
    if ($authDetails.Method -eq "Token") {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CmdLine
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CmdLine
     $NextRequest = $CurrentResult.'@odata.nextLink'
    } else {
     $CurrentResult = az rest --method get --uri $CmdLine --header Content-Type="application/json" -o json | convertfrom-json
@@ -10825,7 +10817,7 @@ if ($authDetails.Method -eq "Token") {
    $FirstRun=$False
   } else { # If not the first loop
    if ($authDetails.Method -eq "Token") {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $NextRequest
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
     $NextRequest = $CurrentResult.'@odata.nextLink'
    } else { # If using Az Cli
     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
@@ -10994,58 +10986,60 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
   [switch]$HideGUID,
   $Token
  )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
-  if ($AppRegistrationName) {
-   $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$AppRegistrationName'&`$select=id,appId,displayName,requiredResourceAccess" | Select-Object * -ExpandProperty value -ExcludeProperty Value
-  } else {
-   $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications(appId='$AppRegistrationID')?`$select=id,appId,displayName,requiredResourceAccess"
-  }
-  $AppRegistrationName = $CurrentResult.displayName
-  $AppRegistrationID = $CurrentResult.appId
-  $PermissionListJson = $CurrentResult.requiredResourceAccess
- } else {
-  if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).displayName}
-  if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
-  $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
- }
+  if ($authDetails.Method -eq "Token") {
 
- $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
-   $Rules_List=@()
-   $PolicyID = $_.resourceAppId
-   # $PolicyExpiration = $_.expiryTime
-   $_.resourceAccess | ForEach-Object {
-    $Rules_List+=[pscustomobject]@{
-     AppRegistrationName=$AppRegistrationName;
-     AppRegistrationID=$AppRegistrationID;
-     PolicyID=$PolicyID;
-     RuleID=$_.ID;
-     RuleType=$_.Type}
+   $header = $authDetails.Header
+   if ($AppRegistrationName) {
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$AppRegistrationName'&`$select=id,appId,displayName,requiredResourceAccess" | Select-Object * -ExpandProperty value -ExcludeProperty Value
+   } else {
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/applications(appId='$AppRegistrationID')?`$select=id,appId,displayName,requiredResourceAccess"
    }
-   $Rules_List
-  }
- }
- If ($Readable -and $Result.Rules) {
-  if ($Token) {
-   $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules -Token $Token
+   $AppRegistrationName = $CurrentResult.displayName
+   $AppRegistrationID = $CurrentResult.appId
+   $PermissionListJson = $CurrentResult.requiredResourceAccess
   } else {
-   $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules
+   if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).displayName}
+   if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
+   $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
   }
-  if ($HideGUID) {
-   $ReadablePermissionList | Select-Object -ExcludeProperty *ID
+
+  $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
+    $Rules_List=@()
+    $PolicyID = $_.resourceAppId
+    # $PolicyExpiration = $_.expiryTime
+    $_.resourceAccess | ForEach-Object {
+     $Rules_List+=[pscustomobject]@{
+      AppRegistrationName=$AppRegistrationName;
+      AppRegistrationID=$AppRegistrationID;
+      PolicyID=$PolicyID;
+      RuleID=$_.ID;
+      RuleType=$_.Type}
+    }
+    $Rules_List
+   }
+  }
+  If ($Readable -and $Result.Rules) {
+  if ($authDetails.Method -eq "Token") {
+    $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules -Token $authDetails.Token
+   } else {
+    $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules
+   }
+   if ($HideGUID) {
+    $ReadablePermissionList | Select-Object -ExcludeProperty *ID
+   } else {
+    $ReadablePermissionList
+   }
   } else {
-   $ReadablePermissionList
+   $Result.Rules
   }
- } else {
-  $Result.Rules
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App Registration of a Tenant | Uses Get-AzureAppRegistrationPermissions
+Function Get-AzureAppRegistrationPermissionsGlobal { # Check Permission for All App Registration of a Tenant | Uses Get-AzureAppRegistrationPermissions
  Param (
   $ExportFile = "$iClic_TempPath\AppRegistrationPermissionsGUIDOnly_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $FinalFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
@@ -11068,12 +11062,12 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
  $AppRegistrationListCount = 0
  $AppRegistrationList | Sort-Object DisplayName | ForEach-Object {
   $AppRegistrationListCount++
-  Write-Colored -Color "Cyan" -FilePath $LogFile -NonColoredText "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -ColoredText $_.DisplayName
+  Progress -Message "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -Value $_.DisplayName -PrintTime
   Try {
    if ($Token) {
-    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName -Token $Token
+    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -Token $Token
    } else {
-    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -AppRegistrationName $_.DisplayName
+    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID
    }
 
    #Added this otherwise Export-CSV sends an error if the app registration has no rights
@@ -11084,26 +11078,33 @@ Function Get-AzureAppRegistrationAPIPermissions { # Check Permission for All App
      Write-Colored -Color "Green" -FilePath $LogFile -ColoredText "No permission found for $($_.DisplayName)"
     }
    }
+
   } catch {
    Write-Colored -Color "Red" -FilePath $LogFile -ColoredText "Error checking permission of $($_.DisplayName) ($($_.AppID)) : $($Error[0])"
   }
  }
+ ProgressClear ; Write-Blank
 
  #Convert File to PS Object
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 4 | " -ColoredText "Convert File to PS Object"
  $AzureAppRegistrationPermissionGUID = import-csv $ExportFile
 
  # [Stats]
- $UniqueAppRegistrationWithPermissions = ($AzureAppRegistrationPermissionGUID | Select-Object ServicePrincipalID -Unique).Count
+ $UniqueAppRegistrationWithPermissions = ($AzureAppRegistrationPermissionGUID | Select-Object AppRegistrationID -Unique).Count
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 5 | " -ColoredText "Found $UniqueAppRegistrationWithPermissions unique App Registration with permissions (Total permissions $($AzureAppRegistrationPermissionGUID.count))"
 
  # Generate conversion Table (Takes a minute or 2)
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 6 | " -ColoredText "Generate conversion Table - Will take a couple minutes"
  $IDConversionTable = @()
  $AzureAppRegistrationPermissionGUID | Select-Object -Unique PolicyID | ForEach-Object {
-  Write-host "Checking Policy $($_.PolicyID)"
-  $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID
+  Progress -Message "Checking Policy : " -Value $($_.PolicyID) -PrintTime
+  if ($Token) {
+   $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID -Token $Token
+  } else {
+   $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID
+  }
  }
+ ProgressClear ; Write-Blank
 
  # Convert GUID To READABLE (Takes a couple seconds)
  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
@@ -11129,10 +11130,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
  # Find Rights ID depending on backend_API_ID
  if ($AppName) { $AppID = (Get-AzureAppRegistration -DisplayName $AppName).AppID }
  if ($ServicePrincipalName) { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName }
- if (! $ServicePrincipalID) {
-  write-host -ForegroundColor Red "Service Principal `'$ServicePrincipalName`' was not found"
-  return
- }
+ if (! $ServicePrincipalID) { write-host -ForegroundColor Red "Service Principal `'$ServicePrincipalName`' was not found" ; return }
  if ($PermissionType) {
   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) }
  } else {
@@ -11527,10 +11525,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   if ($authDetails.Method -eq "Token") {
-   $header = @{
-    'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-    'Content-type'  = "application/json"
-   }
+   $header = $authDetails.Header
    if ($AppRegistrationName) {
     $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $authDetails.Token
    } else {
@@ -12102,6 +12097,13 @@ Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to na
      Write-Verbose "Not found using ID, searching with AppID"
      $PolicyListJson = Get-AzureServicePrincipal -Token $Token -AppID $ServicePrincipalAppID
     }
+    if (! $PolicyListJson) {
+     Write-Verbose "Not found using ID and AppID, searching with App Registration Instead Of Service Principal (Happens for App Registration with Service Principals)"
+     $PolicyListJson = get-azureappregistration -Token $Token -AppID $ServicePrincipalAppID -ValuesToShow "createdDateTime,displayName,appId,id,description,notes,
+      tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient,
+      api" | Select-Object * -ExpandProperty api
+    }
+    if (! $PolicyListJson) { Throw "Api Was not Found for $ServicePrincipalAppID" }
   } else {
    $PolicyListJson = az ad sp show --id $ServicePrincipalAppID --only-show-errors -o json | ConvertFrom-Json
   }
@@ -12233,12 +12235,6 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -ErrorAction Stop
 
-  if ($authDetails.Method -eq "Token") {
-   $headers = @{
-    'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-    'Content-type'  = "application/json"
-   }
-  }
   # Get Principal Name if not provided
   if ($ServicePrincipalName) {
    if ($authDetails.Method -eq "Token") {
@@ -12253,7 +12249,7 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
 
   if ($authDetails.Method -eq "Token") {
-   $AppAssigments = (Invoke-RestMethod -Method GET -headers $headers -Uri $URI).Value
+   $AppAssigments = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $URI).Value
   } else {
    $AppAssigments = (az rest --method GET --uri $URI --header Content-Type=application/json | ConvertFrom-Json).Value
   }
@@ -13542,13 +13538,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
 
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
- if ($authDetails.Method -eq "Token") {
-  Write-Verbose "Preparing the header"
-  $header = @{
-   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-   'Content-type'  = "application/json"
-  }
- }
+ if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
 
  # Check if parameter was a GUID or the Name, and if it was a GUID, check if ForceName parameter is set to get the GroupName
  if (Assert-IsGUID $Group) {
@@ -13650,11 +13640,7 @@ Function Get-AzureADGroupIDFromName {
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
  if ($authDetails.Method -eq "Token") {
-  $header = @{
-   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-   'Content-type'  = "application/json"
-  }
-  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'").value.id
+  (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'").value.id
  } else {
   (az rest --method GET --uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.id
  }
@@ -13988,13 +13974,13 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
  } elseif ($Graph) {
   Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
    $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
+    'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
     'Content-type'  = "application/json"
    }
    # To Add License check
-   $SKUList = Get-AzureSKUs -Token $Token
+   $SKUList = Get-AzureSKUs -Token $authDetails.Token
 
    # Init Variables
    $Count=0
@@ -14051,7 +14037,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
     Start-Sleep -Seconds $Throttle ; write-host "Being throttled waiting $Throttle`s"
    } else {
-    Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
+    Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
    }
   }
   if ($NoFileExport) {
@@ -14080,12 +14066,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
 
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
- if ($authDetails.Method -eq "Token") {
-  $header = @{
-   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-   'Content-type'  = "application/json"
-  }
- }
+ if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
 
  if (Assert-IsGUID $UPNorID) {
   Write-Verbose "Using GUID"
@@ -14287,10 +14268,7 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
  if (! $UserGUID) { throw "User $UPNorID not found" }
 
  if ($authDetails.Method -eq "Token") {
-    $header = @{
-     'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-     'Content-type'  = "application/json"
-    }
+    $header = $authDetails.Header
 
     $params = @{
      "onPremisesExtensionAttributes" = @{
@@ -15294,15 +15272,19 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
   [Switch]$ShowAll,
   $Token
  )
- if ($Token) {
+
+ try {
+
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+ if ($authDetails.Method -eq "Token") {
    # This block will hold the final objects to be processed, regardless of the method used
    $objectsToProcess = $null
- try {
   # --- Logic for SINGLE ID lookup ---
   if ($PSCmdlet.ParameterSetName -eq 'SingleID') {
    Write-Verbose "Getting single object: $ObjectID"
    # Your original Graph call
-   $objectsToProcess = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/$ObjectID"
+   $objectsToProcess = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directoryObjects/$ObjectID" -ErrorAction Stop
   }
 
   # --- Logic for MULTIPLE ID lookup ---
@@ -15316,7 +15298,7 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
    } | ConvertTo-Json
 
    # Use Invoke-RestMethod for the POST call
-   $result = Get-AzureGraph -Token $Token -GraphRequest "/directoryObjects/getByIds" -Method POST -Body $Body
+   $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directoryObjects/getByIds" -Method POST -Body $Body -ErrorAction Stop
    $objectsToProcess = $result.value
   }
 
@@ -15335,11 +15317,6 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
      description
    }
   }
- }
- catch {
-  # Error handling can be added here
-  Write-Error "An error occurred while calling the Graph API: $_"
- }
  } else {
   $ResultJson = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json 2>&1
   $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
@@ -15358,6 +15335,10 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
      @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
    }
   }
+ }
+ } catch {
+  # Error handling can be added here
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Send-MailMGGraph {  # To make automated Email, it requires an account with a mailbox | Should add a "From" Option | Requires MG Graph
