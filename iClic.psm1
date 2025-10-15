@@ -10302,58 +10302,158 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
  Param (
   # == Parameters available in ALL sets ==
-  [parameter(Mandatory = $true)]$AzureToken,
-  [parameter(Mandatory = $true)]$UserToken,
-  [Switch]$HideGUID,
+  [parameter(Mandatory = $true)]$AzureToken,# Management.Azure.com token => Can be the same app, but it's a different Endpoint
+  [parameter(Mandatory = $true)]$UserToken, # Graph Token
+  [Switch]$Readable, # Remove IDs
+  [Switch]$ExactScope,
 
   # == SCOPE PARAMETERS (Mutually Exclusive Sets) ==
 
-  # Set 1: Management Group Scope
-  [parameter(Mandatory = $true, ParameterSetName = 'ManagementGroupScope')]
-  [string]$ManagementGroupID,
+ # Set 1: Management Group Scope
+ [parameter(Mandatory = $true, ParameterSetName = 'ManagementGroupScope')]
+ [string]$ManagementGroupID,
 
-  # Set 2: Subscription Scope (also used by other sets) - MUST BE GUID
-  [parameter(Mandatory = $true, ParameterSetName = 'SubscriptionScope')]
-  [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
-  [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
-  [GUID]$Subscription,
+ # New Switch: Only available with ManagementGroupID to enable recursive search
+ [parameter(Mandatory = $false, ParameterSetName = 'ManagementGroupScope')]
+ [Switch]$Recurse,
 
-  # Set 3: Resource Group Scope (also used by Resource set)
-  [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
-  [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
-  [string]$ResourceGroup,
+ # Set 2: Subscription Scope
+ [parameter(Mandatory = $true, ParameterSetName = 'SubscriptionScope')]
+ [GUID]$SubscriptionID,
 
-  # Set 4: Resource Scope
-  [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')]
-  [string]$Resource,
+ # Set 3: Resource Group Scope
+ [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
+ [GUID]$SubscriptionIDForRG, # Renamed to avoid ambiguity with the SubscriptionScope parameter
 
-  # API Version which may be changed at some point by Microsoft
-  [string]$APIVersion = "2022-04-01",
-  [string]$APIVersionEligible = "2020-10-01"
+ [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')]
+ [string]$ResourceGroup,
+
+ # Set 4: Full Resource ID Scope (New and Independent)
+ [parameter(Mandatory = $true, ParameterSetName = 'FullResourceScope')]
+ [string]$ResourceScope, # Takes the full resource ID, e.g., /subscriptions/{guid}/...
+
+ # API Version which may be changed at some point by Microsoft
+ [string]$APIVersion = "2022-04-01",
+ [string]$APIVersionEligible = "2020-10-01",
+ [string]$APIVersionMgmt = "2021-04-01"
  )
+ Try {
+ if (! $(Assert-IsTokenLifetimeValid -Token $AzureToken -ErrorAction Stop) ) { Throw "AzureToken is invalid, provide a valid token" }
+ if (! $(Assert-IsTokenLifetimeValid -Token $UserToken -ErrorAction Stop) ) { Throw "UserToken is invalid, provide a valid token" }
 
- # You can check which parameter set was used inside your script
- Write-Host "Parameter Set Used: $($PSCmdlet.ParameterSetName)"
+  # You can check which parameter set was used inside your script
+ Write-Host -ForegroundColor Magenta "Parameter Set Used: $($PSCmdlet.ParameterSetName)"
 
  $BaseURL = "https://management.azure.com"
 
- # Get Data from Rest
- if ($ResourceGroup) {
-  $RequestURL = "/subscriptions/$Subscription/resourceGroups/$ResourceGroup"
- } elseif ($ManagementGroupID) {
-  $RequestURL = "/providers/Microsoft.Management/managementGroups/$ManagementGroupID"
- } else {
-  $RequestURL = "/subscriptions/$Subscription"
+ # Initialize variables to hold all scopes and results
+ $AllScopes = @()
+ $AllPermanentResults = @()
+ $AllEligibleResults = @()
+
+ # 1. Determine the scope(s) to query based on the parameter set used
+ Write-Host -ForegroundColor Yellow "Determining scope(s) based on parameters..."
+ switch ($PSCmdlet.ParameterSetName) {
+  'ManagementGroupScope' {
+   # Add the Management Group itself to the list of scopes
+   $AllScopes += "/providers/Microsoft.Management/managementGroups/$ManagementGroupID"
+
+   # If -Recurse is used, get all descendant subscriptions and add them too
+   if ($Recurse) {
+    Write-Host -ForegroundColor Yellow "Recurse switch detected. Getting all descendant subscriptions for MG: $ManagementGroupID"
+    try {
+     # --- PAGINATION HANDLING LOGIC ---
+     $AllDescendants = @()
+     # Start with the initial API endpoint
+     $NextLink = "/providers/Microsoft.Management/managementGroups/$ManagementGroupID/descendants?api-version=$APIVersionMgmt"
+
+     # Loop as long as the API provides a link to the next page of results
+     while ($null -ne $NextLink) {
+      Write-Host -ForegroundColor DarkGray "  Fetching data from API..."
+      $ApiResponse = Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest $NextLink
+
+      # Add the results from the current page to our master list
+      if ($ApiResponse.value) {
+       $AllDescendants += $ApiResponse.value
+      }
+
+      # Get the link for the next page. This will be $null on the last page, ending the loop.
+      # The nextLink from Azure is a full URL, so we remove the base URL to make it a relative path for the next call.
+      $NextLink = if ($ApiResponse.nextLink) { $ApiResponse.nextLink.Replace($BaseURL, "") } else { $null }
+     }
+
+     Write-Host -ForegroundColor Yellow "  Finished fetching. Found a total of $($AllDescendants.Count) descendant resources across all pages."
+
+     # Filter the complete list of descendants for subscriptions
+     $SubscriptionIDs = $AllDescendants | Where-Object { $_.type -eq 'Microsoft.Management/managementGroups/subscriptions' } | Select-Object -ExpandProperty name
+
+     if ($SubscriptionIDs) {
+        Write-Host -ForegroundColor Green "  Successfully filtered $($SubscriptionIDs.Count) descendant subscriptions."
+        $SubscriptionIDs | ForEach-Object { $AllScopes += "/subscriptions/$_" }
+     } else {
+        Write-Host -ForegroundColor Yellow "  No descendant subscriptions found for this Management Group."
+     }
+
+    } catch {
+     Write-Error "Failed to get descendants for Management Group '$ManagementGroupID'. Error: $_"
+    }
+   }
+  }
+  'SubscriptionScope' {
+   $AllScopes += "/subscriptions/$SubscriptionID"
+  }
+  'ResourceGroupScope' {
+   $AllScopes += "/subscriptions/$SubscriptionIDForRG/resourceGroups/$ResourceGroup"
+  }
+  'FullResourceScope' {
+   $AllScopes += $ResourceScope
+  }
  }
+ Write-Host -ForegroundColor Green "Ready to query $($AllScopes.Count) scope(s)."
+
+ # 2. Loop through each determined scope and fetch the assignments
+ foreach ($scope in $AllScopes) {
+  try {
+
+   if ($ExactScope) {
+    $Filter = "&`$filter=atScope()"
+   } else {
+    $Filter = ""
+   }
+
+   write-host -ForegroundColor Cyan -Message "Getting Assignements [Permanent] for scope: $scope"
+   $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$scope/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion$Filter").value.properties
+   if ($PermanentRequestResultWithGUIDS) { $AllPermanentResults += $PermanentRequestResultWithGUIDS }
+
+   write-host -ForegroundColor Cyan -Message "Getting Assignements [Eligible] for scope: $scope"
+   $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$scope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible$Filter").value.properties
+   if ($EligibleRequestResultWithGUIDS) { $AllEligibleResults += $EligibleRequestResultWithGUIDS }
+  } catch {
+   Write-Warning "Could not retrieve assignments for scope '$scope'. You may not have sufficient permissions. Error: $_"
+  }
+ }
+
+ # 3. Process and combine all collected results
  Try {
-  # Launch Graph Requests
-  write-host -ForegroundColor Cyan -Message "Getting Assignements [Permanent]"
-  $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion").value.properties
-  if ($PermanentRequestResultWithGUIDS) { $PermanentRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Permanent }
-  write-host -ForegroundColor Cyan -Message "Getting Assignements [Eligible]"
-  $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$RequestURL/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible").value.properties
-  if ($EligibleRequestResultWithGUIDS) { $EligibleRequestResultWithGUIDS | Add-Member -MemberType NoteProperty -Name AssignementType -Value Eligible }
-  $RequestResultWithGUIDS = $PermanentRequestResultWithGUIDS + $EligibleRequestResultWithGUIDS
+  Write-Host -ForegroundColor Yellow "Processing a total of $($AllPermanentResults.Count) permanent and $($AllEligibleResults.Count) eligible assignments..."
+  if ($AllPermanentResults) { $AllPermanentResults | Add-Member -MemberType NoteProperty -Name AssignementType -Value Permanent -Force }
+  if ($AllEligibleResults) { $AllEligibleResults | Add-Member -MemberType NoteProperty -Name AssignementType -Value Eligible -Force }
+
+  # Remove Duplicates (Usefull when looking at Management Group with Recurse
+
+  # First, combine all results, including duplicates, into a single array
+  $CombinedResults = $AllPermanentResults + $AllEligibleResults
+
+  Write-Host -ForegroundColor Yellow "Removing duplicate role assignments to show a unique, effective list..."
+  # Group objects by a unique combination of their properties, then select the first object from each group.
+  # This effectively creates a unique list.
+  $RequestResultWithGUIDS = $CombinedResults | Group-Object scope, principalId, roleDefinitionId | ForEach-Object { $_.Group | Select-Object -First 1 }
+
+  Write-Host -ForegroundColor Green "Processing complete. Found $($RequestResultWithGUIDS.Count) total assignments."
+ }
+ Catch {
+  Write-Error "An error occurred while processing the final results: $_"
+ }
 
   # Add Role GUID
   $RequestResultWithGUIDS = $RequestResultWithGUIDS | Select-Object *,@{name="roleDefinitionGUID";expression={$_.roleDefinitionId.split('/')[-1]}}
@@ -10364,9 +10464,36 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
   $RolesConvertedTableHash = $RoleDefinitions | Group-Object -Property Name -AsHashTable
 
   write-host -ForegroundColor Cyan -Message "Getting User Information"
-  $PrincipalList = $($RequestResultWithGUIDS | Select-Object principalId -Unique).principalId
-  $PrincipalConvertedTable = Get-AzureADObjectInfo -ObjectIDList $PrincipalList -Token $UserToken
-  $PrincipalConvertedTableHash = $PrincipalConvertedTable | Group-Object -Property ID -AsHashTable
+  # $PrincipalList = $($RequestResultWithGUIDS | Select-Object principalId -Unique).principalId
+  # $PrincipalConvertedTable = Get-AzureADObjectInfo -ObjectIDList $PrincipalList -Token $UserToken
+  # $PrincipalConvertedTableHash = $PrincipalConvertedTable | Group-Object -Property ID -AsHashTable
+  # Get the complete list of unique principal IDs
+ $PrincipalList = ($RequestResultWithGUIDS.principalId | Select-Object -Unique)
+
+ # Initialize an empty array to store the results from all batches
+ $PrincipalConvertedTable = @()
+ $BatchSize = 999 # Set batch size just under the 1000 limit to be safe
+
+ Write-Host -ForegroundColor Yellow "Found $($PrincipalList.Count) unique principals. Fetching details in batches of $BatchSize..."
+
+ # Loop through the list in batches
+ for ($i = 0; $i -lt $PrincipalList.Count; $i += $BatchSize) {
+  # Get the current chunk of IDs
+  $CurrentBatch = $PrincipalList[$i..($i + $BatchSize - 1)]
+
+  Write-Host -ForegroundColor DarkGray "  Processing batch $(($i/$BatchSize)+1)..."
+
+  # Call your function with the current batch
+  $BatchResult = Get-AzureADObjectInfo -ObjectIDList $CurrentBatch -Token $UserToken
+
+  # Add the results from this batch to our master list
+  if ($BatchResult) { $PrincipalConvertedTable += $BatchResult }
+ }
+
+ Write-Host -ForegroundColor Green "Successfully retrieved details for all principals."
+
+ # Create the final hash table from the complete list of results
+ $PrincipalConvertedTableHash = $PrincipalConvertedTable | Group-Object -Property ID -AsHashTable
 
   write-host -ForegroundColor Cyan -Message "Merging Data"
   $RequestResult = $RequestResultWithGUIDS | Select-Object *,
@@ -10384,8 +10511,8 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
      @{name="roleDefinitionName";expression={$_.roleDefinitionObjectInfo.roleName}},
      @{name="roleDefinitionType";expression={$_.roleDefinitionObjectInfo.type}}
 
-  if ($HideGUID) {
-   $RequestResult | Select-Object -ExcludeProperty *Id,*On,*By
+  if ($Readable) {
+   $RequestResult | Sort-Object Scope,principalName | Select-Object -ExcludeProperty *Id,*On,*By
   } else {
    $RequestResult
   }
