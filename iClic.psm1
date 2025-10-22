@@ -10224,10 +10224,8 @@ Function Get-AzureRBACRights { # Get all RBAC Rights (Works with Users, Service 
    Progress -Message "Checking subscription : " -Value $CurrentSubscriptionName -PrintTime
   }
 
-  $CurrentSubscription = az role assignment list @ArgumentsOfCurrentSubscription | ConvertFrom-Json | `
-  Select-object `
+  $CurrentSubscription = az role assignment list @ArgumentsOfCurrentSubscription | ConvertFrom-Json | Select-object `
    @{Name="PrincipalName";Expression={ if (! $_.principalName) { "Identity not found" } else { $_.principalName } }},
-   # @{Name="UserUPN";Expression={ if ($UserPrincipalName) { $UserPrincipalName } else { "Only used when filtering by user" } }},
    @{Name="DisplayName";Expression={
     if ($UserDisplayName) {
      $UserDisplayName
@@ -10241,8 +10239,7 @@ Function Get-AzureRBACRights { # Get all RBAC Rights (Works with Users, Service 
        ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).displayName
       }
      } elseif ($_.principalType -eq "Group") {
-      "Group"
-       # Add here to get info on groups (for example to do a recursive search of users)
+      "Group" # Add here to get info on groups (for example to do a recursive search of users)
      } else {
       "Use Advanced switch"
      }
@@ -10259,8 +10256,7 @@ Function Get-AzureRBACRights { # Get all RBAC Rights (Works with Users, Service 
     if ($Advanced -and ($_.principalType -eq "ServicePrincipal")) {
      $SPType = ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).servicePrincipalType
      if (! $_.principalName) {return "Unknown"} elseif ($SPType) {Return $SPType} else {return "ServicePrincipal"}
-    } else {
-     # Use "-Advanced" for more info on Service Principals
+    } else { # Use "-Advanced" for more info on Service Principals
      $_.principalType
     }
    }}, roleDefinitionName,
@@ -11900,6 +11896,8 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
   [Parameter(Mandatory = $false, HelpMessage = 'A security token is required.')]
   $Token,
 
+  [Switch]$Fast,
+
   # --- Specific Get by AppID Set ---
   [Parameter(ParameterSetName = 'GetByAppID', Mandatory = $true, HelpMessage = 'Specify the Application ID.')]
   [string]$AppID,
@@ -11924,16 +11922,14 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
  )
 
  try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
   # --- Script Body ---
   # You can determine which parameter set was used and branch your logic accordingly.
   Write-Verbose "The active parameter set is: $($PSCmdlet.ParameterSetName)"
 
-  if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $headers = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
+  if ($authDetails.Method -eq "Token") {
+   $headers = $authDetails.Header
   } else {
    $headers = "Content-Type=application/json"
   }
@@ -11944,7 +11940,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      if ($URLFilter) { Write-Verbose "URLFilter: $URLFilter" }
      if ($NameFilter) { Write-Verbose "NameFilter: $NameFilter" }
      Write-Verbose "ValuesToShow: $ValuesToShow"
-     if ($Token) {
+     if ($authDetails.Method -eq "Token") {
       # Colums to select # For fast : id,appId,displayName,servicePrincipalType
       $Arguments += "?`$select=$ValuesToShow"
 
@@ -11982,7 +11978,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      Write-Verbose "Running in GetByAppID mode."
      Write-Verbose "AppID: $AppID"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'"
-     if ($Token) {
+     if ($authDetails.Method -eq "Token") {
       $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
@@ -11994,7 +11990,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      Write-Verbose "Running in GetByID mode."
      Write-Verbose "ID: $ID"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'"
-     if ($Token) {
+     if ($authDetails.Method -eq "Token") {
       $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
@@ -12006,7 +12002,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      Write-Verbose "Running in GetByDisplayName mode."
      Write-Verbose "DisplayName: $DisplayName"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'"
-     if ($Token) {
+     if ($authDetails.Method -eq "Token") {
       $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
@@ -15338,6 +15334,253 @@ Function Get-AzureLogAnalyticsRequest {
 
  Write-Verbose -Message "Converting result to Object"
  $Result | Convert-AzureLogAnalyticsRequestAnswer
+}
+# Sentinel Functions
+Function Get-SentinelUserInfo { # Get user logs from Sentinel
+ Param (
+  [Parameter(Mandatory = $true)]$User,
+  [switch]$ConditionalAccessShowOnlySuccess,
+  [switch]$ShowOnlySuccess,
+  [switch]$ShowOnlyInteractive,
+  [switch]$ConditionalAccessIgnoreNotApplied,
+  [switch]$SimplifiedQuery,
+  [switch]$ShowRawResult,
+  [switch]$Readable,
+  $Token,
+  $AzureMonitorToken,
+  $Duration = '1d',
+  $WorkspaceID,
+  $AppDisplayNameFilter,
+  $ResourceDisplayNameFilter,
+  [ValidateSet("DisplayName","Mail","UserPrincipalName")][string]$UserType="UserPrincipalName"
+ )
+
+ try {
+
+  Write-Verbose "Getting WorkspaceID"
+  $WorkspaceID = $global:SentinelWorkspaceID
+  if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
+
+  if ( ! (Assert-IsGUID $User) ) {
+   Write-Verbose "User GUID not provided, searching for user via UserType $UserType (slower)"
+   # Get User ID from User Token
+   Write-Verbose "Getting user Token"
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+   Write-Verbose "Search for user"
+   $UserID = (Get-AzureADUserStartingWith -SearchValue $User -Type $UserType -Exact -Token $authDetails.Token).ID
+   if (! $UserID) {Throw "User $User Not Found"} else {Write-Verbose "Found User GUID : $UserID"}
+  } else {
+   Write-Verbose "User GUID provided using faster search"
+   $UserID = $User
+  }
+
+  # Get and check Azure Monitor Token
+  Write-Verbose "Getting AzureMonitor Token information"
+  if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
+   Write-Verbose "Auth Method: Found AzureMonitorToken provided via parameter."
+  } elseif ($global:AzureMonitorToken) { # Priority 2: Check if a global token variable exists.
+   Write-Verbose "Auth Method: Found token in `$global:AzureMonitorToken."
+   $AzureMonitorToken = $global:AzureMonitorToken
+  } else {
+   Throw 'Azure Monitor Token is not found as a variable nor as a Parameter'
+  }
+
+  if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
+
+  # Start of Query
+  $QueryStart = 'union SigninLogs, AADNonInteractiveUserSignInLogs
+ | where TimeGenerated between (ago('+$Duration+') .. now() )
+ | where UserId == "'+$UserID+'"
+ '
+
+  # Add specific query to filter results
+  if ($AppDisplayNameFilter) { $QueryStart += '| where AppDisplayName == "'+$AppDisplayNameFilter+'"' }
+  if ($ResourceDisplayNameFilter) { $QueryStart += '| where ResourceDisplayName == "'+$ResourceDisplayNameFilter+'"' }
+  if ($ConditionalAccessShowOnlySuccess) { $QueryStart += '| where ConditionalAccessStatus == "success"' }
+  if ($ConditionalAccessIgnoreNotApplied) { $QueryStart += '| where ConditionalAccessStatus != "notApplied"' }
+  if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature == "SUCCESS"' }
+  if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
+
+  # Add Unified Values
+  $QueryStart += '| extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
+ | extend UnifiedDeviceDetailSTRING = coalesce(DeviceDetail_dynamic, parse_json(DeviceDetail_string))
+ | extend UnifiedStatusSTRING = coalesce(Status_dynamic, parse_json(Status_string))
+ | extend UnifiedLocationDetailSTRING = coalesce(LocationDetails_dynamic, parse_json(LocationDetails_string))
+ | extend UnifiedConditionalAccessPoliciesSTRING = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
+ | extend UnifiedTokenProtectionStatusDetailsSTRING = coalesce(TokenProtectionStatusDetails_dynamic, parse_json(TokenProtectionStatusDetails_string))
+ | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))
+ '
+
+  # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
+  if ($SimplifiedQuery) {
+   $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
+   IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
+   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName'
+  }
+
+  # Query will always end with this
+  $QueryEnd = '| sort by TimeGenerated'
+
+  # Merge Start & End
+  $Query = $QueryStart + $QueryEnd
+
+  # Launch Query
+  $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+
+  if ($ResultRaw) {
+   if ($Readable) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
+  } else {
+   # Stop here if no results where found
+   return
+  }
+
+  if ($SimplifiedQuery -or $ShowRawResult) {
+   return $ResultRaw
+  } else {
+   $Result = $ResultRaw | ForEach-Object {
+    # Use Add-Member to create the new properties on the read-only object
+    # UNIFIED
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedMFADetail' -Value ($_.UnifiedMFADetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedDeviceDetail' -Value ($_.UnifiedDeviceDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedStatus' -Value ($_.UnifiedStatusSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedLocationDetail' -Value ($_.UnifiedLocationDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedConditionalAccessPolicies' -Value ($_.UnifiedConditionalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedTokenProtectionStatusDetails' -Value ($_.UnifiedTokenProtectionStatusDetailsSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedConditionUnifiedAgentSTRINGalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    # CONVERSION ONLY
+    $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Details' -Value ($_.AuthenticationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Processing_Details' -Value ($_.AuthenticationProcessingDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Requirement_Policies' -Value ($_.AuthenticationRequirementPolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Network_Details' -Value ($_.NetworkLocationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Session_Lifetime_Policies' -Value ($_.SessionLifetimePolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    # Output the modified object down the pipeline
+    $_
+   } | Select-Object -Property * -ExcludeProperty *STRING,*_dynamic,*_string, # UNIFIED
+   AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
+
+   return $Result
+
+  }
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-SentinelAppInfo { # Get App logs from Sentinel
+ Param (
+  [Parameter(Mandatory = $true)]$App,
+  $AzureMonitorToken,
+  $Token,
+  [switch]$ConditionalAccessShowOnlySuccess,
+  [switch]$ShowOnlySuccess,
+  [switch]$ConditionalAccessIgnoreNotApplied,
+  [switch]$SimplifiedQuery,
+  [switch]$Readable,
+  $Duration = '1d',
+  $WorkspaceID
+ )
+  try {
+
+  Write-Verbose "Getting WorkspaceID"
+  $WorkspaceID = $global:SentinelWorkspaceID
+  if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
+
+  if ( ! (Assert-IsGUID $App) ) {
+   Write-Verbose "App GUID not provided, searching for App via name (slower)"
+   Write-Verbose "Getting App Token"
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+   Write-Verbose "Search for App"
+   $AppID = (Get-AzureAppRegistration -DisplayName $App -ValuesToShow appid -Token $authDetails.Token).appID
+   if (! $AppID) {Throw "App $App Not Found"} else {Write-Verbose "Found App GUID : $AppID"}
+  } else {
+   Write-Verbose "App GUID provided using faster search"
+   $AppID = $App
+  }
+
+  # Get and check Azure Monitor Token
+  Write-Verbose "Getting AzureMonitor Token information"
+  if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
+   Write-Verbose "Auth Method: Found AzureMonitorToken provided via parameter."
+  } elseif ($global:AzureMonitorToken) { # Priority 2: Check if a global token variable exists.
+   Write-Verbose "Auth Method: Found token in `$global:AzureMonitorToken."
+   $AzureMonitorToken = $global:AzureMonitorToken
+  } else {
+   Throw 'Azure Monitor Token is not found as a variable nor as a Parameter'
+  }
+
+  if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
+
+  # Add Unified Values
+  $QueryStart = 'union SigninLogs, AADNonInteractiveUserSignInLogs,AADServicePrincipalSignInLogs,AADManagedIdentitySignInLogs
+ | where TimeGenerated between (ago('+$Duration+') .. now() )
+ | where AppId == "'+$AppID+'"
+ '
+  # Add specific query to filter results
+  if ($ConditionalAccessShowOnlySuccess) { $QueryStart += '| where ConditionalAccessStatus == "success"' }
+  if ($ConditionalAccessIgnoreNotApplied) { $QueryStart += '| where ConditionalAccessStatus != "notApplied"' }
+  if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature == "SUCCESS"' }
+
+  # Add Unified Values
+  $QueryStart += '| extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
+ | extend UnifiedDeviceDetailSTRING = coalesce(DeviceDetail_dynamic, parse_json(DeviceDetail_string))
+ | extend UnifiedStatusSTRING = coalesce(Status_dynamic, parse_json(Status_string))
+ | extend UnifiedLocationDetailSTRING = coalesce(LocationDetails_dynamic, parse_json(LocationDetails_string))
+ | extend UnifiedConditionalAccessPoliciesSTRING = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
+ | extend UnifiedTokenProtectionStatusDetailsSTRING = coalesce(TokenProtectionStatusDetails_dynamic, parse_json(TokenProtectionStatusDetails_string))
+ | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))
+'
+
+  # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
+  if ($SimplifiedQuery) {
+   $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
+   IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus,
+   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName'
+  }
+
+  # Query will always end with this
+  $QueryEnd = '| sort by TimeGenerated'
+
+  # Merge Start & End
+  $Query = $QueryStart + $QueryEnd
+
+  # Launch Query
+  $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+
+  if ($ResultRaw) {
+   if ($Readable) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
+  } else {
+   # Stop here if no results where found
+   return
+  }
+
+  if ($SimplifiedQuery -or $ShowRawResult) {
+   return $ResultRaw
+  } else {
+   $Result = $ResultRaw | ForEach-Object {
+    # Use Add-Member to create the new properties on the read-only object
+    # UNIFIED
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedMFADetail' -Value ($_.UnifiedMFADetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedDeviceDetail' -Value ($_.UnifiedDeviceDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedStatus' -Value ($_.UnifiedStatusSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedLocationDetail' -Value ($_.UnifiedLocationDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedConditionalAccessPolicies' -Value ($_.UnifiedConditionalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedTokenProtectionStatusDetails' -Value ($_.UnifiedTokenProtectionStatusDetailsSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedConditionUnifiedAgentSTRINGalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    # CONVERSION ONLY
+    $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Details' -Value ($_.AuthenticationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Processing_Details' -Value ($_.AuthenticationProcessingDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Requirement_Policies' -Value ($_.AuthenticationRequirementPolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Network_Details' -Value ($_.NetworkLocationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'Session_Lifetime_Policies' -Value ($_.SessionLifetimePolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    # Output the modified object down the pipeline
+    $_
+   } | Select-Object -Property * -ExcludeProperty *STRING,*_dynamic,*_string, # UNIFIED
+   AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
+
+   return $Result
+  }
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 # Misc
 Function Get-AzureADUserOwnedDevice {
