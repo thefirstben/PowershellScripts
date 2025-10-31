@@ -11702,6 +11702,9 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
   $Result | Add-Member -Name ApplicationID -Value $AppInfo.AppID -MemberType NoteProperty
   $Result | Add-Member -Name ApplicationObjectID -Value $AppObjectId -MemberType NoteProperty
   $Result | Add-Member -Name ApplicationDisplayName -Value $AppName -MemberType NoteProperty
+  if ($Global:TenantID) {
+   $Result | Add-Member -Name TenantID -Value $Global:TenantID -MemberType NoteProperty
+  }
 
   if ($ShowObjectID) {
    $Result | Select-Object ApplicationDisplayName,ApplicationID,ApplicationObjectID,displayName,secretText,startDateTime,endDateTime
@@ -13244,7 +13247,10 @@ Function Get-ADOUsers { # Get All Azure DevOps Users
   @{Name="UserType";Expression={$_.User.metaType}},
   @{Name="License";Expression={$_.accessLevel.licenseDisplayName}},
   @{Name="LicenseSource";Expression={$_.accessLevel.licensingSource}},
+  @{Name="gitHubLicenseType";Expression={$_.accessLevel.gitHubLicenseType}},
+  @{Name="msdnLicenseType";Expression={$_.accessLevel.msdnLicenseType}},
   @{Name="LicenseAssignementSource";Expression={$_.accessLevel.assignmentSource}},
+  @{Name="accountLicenseType";Expression={$_.accessLevel.accountLicenseType}},
   @{Name="LicenseStatus";Expression={$_.accessLevel.status}},
   @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "$iClic_TempPath\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
 }
@@ -13484,21 +13490,15 @@ Function Get-AzureADUserMFADeviceBoundAAGUID {
 }
 Function Get-AzureADUserMFAMethods { # Check MFA Methods
  Param (
-  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  $Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
   [ValidateSet("methods","emailMethods","fido2Methods","microsoftAuthenticatorMethods","passwordMethods","phoneMethods","softwareOathMethods",
   "temporaryAccessPassMethods","windowsHelloForBusinessMethods")]$Method = "methods", # Getting details from a specific Methods is about twice faster than the generic | Methods gets all methods
   [switch]$SkipTokenValidation # To make request faster
  )
  Try {
-  if (! $SkipTokenValidation) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-  }
-
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
 
   $GraphURL = "https://graph.microsoft.com/v1.0/users/$UPNorID/authentication/$Method"
 
@@ -13915,15 +13915,32 @@ Function Remove-AzureADGroupOwner { # Remove Owner from group using Rest
  Param (
   [Parameter(Mandatory)]$GroupID,
   [Parameter(Mandatory)]$UserID,
-  [Parameter(Mandatory)]$Token
+  $Token
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
   Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupID/owners/$UserID/`$ref"
+
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
+ }
+}
+Function Remove-AzureADGroup { # Remove Azure AD Group
+ Param (
+  [Parameter(Mandatory)]$GroupID,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
+  Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupID"
 
  } catch {
   $Exception = $($Error[0])
@@ -13941,52 +13958,54 @@ Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
   [Parameter(Mandatory)]$UPNorID,
   $Token
  )
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return } else {
-   $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
+
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($authDetails.Method -eq "Token") {
+   $header = $authDetails.Header
+  }
+
+  if (Assert-IsGUID $UPNorID) {
+   $UserGUID = $UPNorID
+  } else {
+   if ($authDetails.Method -eq "Token") {
+    $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").Value.Id
+   } else {
+    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
    }
   }
- }
 
- if (Assert-IsGUID $UPNorID) {
-  $UserGUID = $UPNorID
- } else {
-  if ($Token) {
-   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").Value.Id
+  if (Assert-IsGUID $GroupName) {
+   $GroupGUID = $GroupName
   } else {
-   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+   if ($authDetails.Method -eq "Token") {
+    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.Id
+   } else {
+    $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+   }
   }
- }
+  if ($authDetails.Method -eq "Token") {
+   Try {
+    $params = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserGUID" }
+    $ParamJson = $params | convertto-json
+    Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/`$ref"  -Body $ParamJson
+   } catch {
+    $Exception = $($Error[0])
+    $StatusCodeJson = $Exception.ErrorDetails.message
+    if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+    $StatusMessageJson = $Exception.ErrorDetails.message
+    if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+    if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+    Write-host -ForegroundColor Red "Error adding user $UPNorID in group $GroupName ($StatusCode | $StatusMessage))"
+   }
+  } else {
+   # Confirm that this works with GUID
+   # az ad group member add --group $GroupName --member-id $UserGUID
+   az ad group member add --group $GroupGUID --member-id $UserGUID
+  }
 
- if (Assert-IsGUID $GroupName) {
-  $GroupGUID = $GroupName
- } else {
-  if ($Token) {
-   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.Id
-  } else {
-   $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
-  }
- }
- if ($Token) {
-  Try {
-   $params = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserGUID" }
-   $ParamJson = $params | convertto-json
-   Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/`$ref"  -Body $ParamJson
-  } catch {
-   $Exception = $($Error[0])
-   $StatusCodeJson = $Exception.ErrorDetails.message
-   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-   $StatusMessageJson = $Exception.ErrorDetails.message
-   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-   Write-host -ForegroundColor Red "Error adding user $UPNorID in group $GroupName ($StatusCode | $StatusMessage))"
-  }
- } else {
-  # Confirm that this works with GUID
-  # az ad group member add --group $GroupName --member-id $UserGUID
-  az ad group member add --group $GroupGUID --member-id $UserGUID
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Copy-AzureADGroupMembers {
