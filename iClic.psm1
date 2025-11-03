@@ -11844,21 +11844,16 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
 
   # --- Parameter Set 2: RoleList ---
   [parameter(Mandatory = $true, ParameterSetName = "RoleList")][object[]]$AppRoleList
+  # Example to Copy Role : $RoleList = Get-AzureAppRegistrationAppRoles -DisplayName DEKRA-SP-Seal_Application-TEST-DSA_Team -Token $AppToken | select-object description,displayName,value,allowedMemberTypes,@{name="isEnabled";expression={$true}},@{name="id";expression={([guid]::NewGuid()).guid}}
  )
 
  # You can check which parameter set was used inside your function like this:
  Write-Output "The active parameter set is: $($PSCmdlet.ParameterSetName)"
 
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+ $header = $authDetails.Header
 
- if ($allowedMemberTypes -eq 'Both') {
-  $allowedMemberTypes = "User","Application"
- }
-
- $header = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
+ if ($allowedMemberTypes -eq 'Both') { $allowedMemberTypes = "User","Application" }
 
  if ($AppRoleList) {
   $body = @{
@@ -13665,101 +13660,107 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   [Switch]$Fast, # Restrict the amounts of columns to make faster response time
   [Switch]$Readable # Removes all GUID information in the result
  )
- Write-Verbose "Start $($($MyInvocation.MyCommand.Name))"
+ Try {
+  Write-Verbose "Start $($($MyInvocation.MyCommand.Name))"
 
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
- if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
+  if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
 
- # Check if parameter was a GUID or the Name, and if it was a GUID, check if ForceName parameter is set to get the GroupName
- if (Assert-IsGUID $Group) {
-  $GroupGUID = $Group
-  if ($ForceName) {
-   Write-Verbose "Search Using GUID - Using ForceName - Getting GroupName"
+  # Check if parameter was a GUID or the Name, and if it was a GUID, check if ForceName parameter is set to get the GroupName
+  if (Assert-IsGUID $Group) {
+   $GroupGUID = $Group
+   if ($ForceName) {
+    Write-Verbose "Search Using GUID - Using ForceName - Getting GroupName"
 
-   if ($authDetails.Method -eq "Token") {
-    $GroupName = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$Group").displayName
-   } else {
-    $GroupName = (az ad group show -g $Group | convertfrom-json).displayname
-   }
-
-  } else { # If name is not used then set the Group Name as the GUID
-   Write-Verbose "Search Using GUID"
-   $GroupName = $Group
-  }
- } else { # If the Group name was sent we need to find the GUID
-  Write-Verbose "Search Using Name - Searching for GUID"
-  if ($authDetails.Method -eq "Token") {
-   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$Group')").value.id
-  } else {
-   $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
-  }
-  $GroupName = $Group # In this case the Group Name is the parameter sent to the function
- }
-
- # If Recurse Parameter is set get all users for any subgroups
- if ($Recurse) {
-  Write-Verbose "Using Recursive Search"
-  $SearchType = "transitiveMembers" } else { $SearchType = "members"
- }
-
- # Initialize Variables
- $FirstRun = $True
- $ContinueRunning = $True
-
- While ($ContinueRunning) { # Run until there are results
-  if ($FirstRun) {
-   Write-Verbose "API Call : First Call"
-   if ($authDetails.Method -eq "Token") {
-    if ($Fast) {
-     Write-Verbose "Search Using Fast Parameter - Will only search for UPN & ID"
-     $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
+    if ($authDetails.Method -eq "Token") {
+     $GroupName = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$Group").displayName
     } else {
-     $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
+     $GroupName = (az ad group show -g $Group | convertfrom-json).displayname
     }
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
-   } else {
-    $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
-    $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
+
+   } else { # If name is not used then set the Group Name as the GUID
+    Write-Verbose "Search Using GUID"
+    $GroupName = $Group
    }
-   $FirstRun=$False
-  } else {
+  } else { # If the Group name was sent we need to find the GUID
+   Write-Verbose "Search Using Name - Searching for GUID"
    if ($authDetails.Method -eq "Token") {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
+    # $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$Group')").value.id
+    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$Group'&`$select=id").id
    } else {
-    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-    # Add error management for API limitation of Azure when using Az Rest
-    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
-    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
-     Start-Sleep 10
-     Continue
+    $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
+   }
+   $GroupName = $Group # In this case the Group Name is the parameter sent to the function
+  }
+  if (! $GroupGUID) {Throw "$Group not found"} else { write-verbose "Found GUID : $GroupGUID"}
+
+  # If Recurse Parameter is set get all users for any subgroups
+  if ($Recurse) {
+   Write-Verbose "Using Recursive Search"
+   $SearchType = "transitiveMembers" } else { $SearchType = "members"
+  }
+
+  # Initialize Variables
+  $FirstRun = $True
+  $ContinueRunning = $True
+
+  While ($ContinueRunning) { # Run until there are results
+   if ($FirstRun) {
+    Write-Verbose "API Call : First Call"
+    if ($authDetails.Method -eq "Token") {
+     if ($Fast) {
+      Write-Verbose "Search Using Fast Parameter - Will only search for UPN & ID"
+      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
+     } else {
+      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
+     }
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
+    } else {
+     $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
+     $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
+    }
+    $FirstRun=$False
+   } else {
+    if ($authDetails.Method -eq "Token") {
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
+    } else {
+     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
+     # Add error management for API limitation of Azure when using Az Rest
+     $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
+     $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+     If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
+      Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
+      Start-Sleep 10
+      Continue
+     }
     }
    }
-  }
 
-  # To avoid having groups in group when using Resurse Mode
-  if ($RecurseHideGroups) { $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
+   # To avoid having groups in group when using Resurse Mode
+   if ($RecurseHideGroups) { $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
 
-  # Request format is different between Token and Az Cli
-  if ($authDetails.Method -eq "Token") { $NextRequest = $CurrentResult.'@odata.nextLink' } else { $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`"" }
+   # Request format is different between Token and Az Cli
+   if ($authDetails.Method -eq "Token") { $NextRequest = $CurrentResult.'@odata.nextLink' } else { $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`"" }
 
-  # If nextLink is available will continue
-  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True ;  Write-Verbose "API Call : Next Link Found - Will Loop Again"} else {$ContinueRunning = $False ;  Write-Verbose "API Call : End Loop"}
+   # If nextLink is available will continue
+   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True ;  Write-Verbose "API Call : Next Link Found - Will Loop Again"} else {$ContinueRunning = $False ;  Write-Verbose "API Call : End Loop"}
 
-  # Filter data and return current value (meaning the values will appear over time instead of at the end - better for memory usage)
-  if ($Fast) {
-   Write-Verbose "Printing data with Fast Tag"
-   $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName,id,
-   @{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
-  } else {
-   $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
-    accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
-  }
-  if ($Readable) {$ReturnValue | Select-Object -ExcludeProperty *id ;  Write-Verbose "Using Readable Tag : Remove *id parameters"} else { $ReturnValue }
- } # End While Loop
- Write-Verbose "Finished $($($MyInvocation.MyCommand.Name))"
+   # Filter data and return current value (meaning the values will appear over time instead of at the end - better for memory usage)
+   if ($Fast) {
+    Write-Verbose "Printing data with Fast Tag"
+    $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName,id,
+    @{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
+   } else {
+    $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
+     accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
+   }
+   if ($Readable) {$ReturnValue | Select-Object -ExcludeProperty *id ;  Write-Verbose "Using Readable Tag : Remove *id parameters"} else { $ReturnValue }
+  } # End While Loop
+  Write-Verbose "Finished $($($MyInvocation.MyCommand.Name))"
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Get-AzureADGroupIDFromName {
  Param (
