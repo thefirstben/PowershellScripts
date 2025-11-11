@@ -14331,12 +14331,9 @@ Function Get-AzureADUserStartingWith { # Get all AAD Users starting with somethi
   $Token
  )
  Try {
-  if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($authDetails.Method -eq "Token") {
+   $header = $authDetails.Header
    if ( $Beta ) { $EndpointType = "beta" } else { $EndpointType = "v1.0" }
    if ($Exact) {
     $GraphURL = "https://graph.microsoft.com/$EndpointType/users?`$filter=$Type eq '$SearchValue'"
@@ -15375,7 +15372,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    Write-Verbose "Getting user Token"
    $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
    Write-Verbose "Search for user"
-   $UserID = (Get-AzureADUserStartingWith -SearchValue $User -Type $UserType -Exact -Token $authDetails.Token).ID
+   $UserID = (Get-AzureADUserStartingWith -SearchValue $User -Type $UserType -Exact -Token $authDetails.Token -ErrorAction Stop).ID
    if (! $UserID) {Throw "User $User Not Found"} else {Write-Verbose "Found User GUID : $UserID"}
   } else {
    Write-Verbose "User GUID provided using faster search"
