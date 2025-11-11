@@ -14206,43 +14206,42 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  )
 
  try {
-
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-
- if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
-
- if (Assert-IsGUID $UPNorID) {
-  Write-Verbose "Using GUID"
-  $UserGUID = $UPNorID
- } else {
-  Write-Verbose "Using UPN, will have to get GUID"
- if ($authDetails.Method -eq "Token") {
-   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").value.id
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
+  if (Assert-IsGUID $UPNorID) {
+   Write-Verbose "Using GUID"
+   $UserGUID = $UPNorID
   } else {
-   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
-  }
+   Write-Verbose "Using UPN, will have to get GUID"
+   if ($authDetails.Method -eq "Token") {
+    $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").value.id
+   } else {
+    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+   }
  }
  if (! $UserGUID) { Throw "User $UPNorID was not found" }
+ Write-Verbose "Running Search"
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
- if ($authDetails.Method -eq "Token") {
-   $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID" -MaximumRetryCount 2
+  if ($authDetails.Method -eq "Token") {
+    $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID" -MaximumRetryCount 2
+   } else {
+    $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
+   }
   } else {
-   $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
-  }
- } else {
-  $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,mail,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
- if ($authDetails.Method -eq "Token") {
-   $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -MaximumRetryCount 2
-  } else {
-   $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
-  }
-  $Result = $RestResult | Select-Object `
-  id,onPremisesImmutableId,displayName,userPrincipalName,mail,accountEnabled,createdDateTime,
-  @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
-  @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
-  @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},lastPasswordChangeDateTime
+   $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,mail,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
+   if ($authDetails.Method -eq "Token") {
+    $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -MaximumRetryCount 2
+   } else {
+    $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
+   }
+   $Result = $RestResult | Select-Object `
+   id,onPremisesImmutableId,displayName,userPrincipalName,mail,accountEnabled,createdDateTime,
+   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
+   @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
+   @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},lastPasswordChangeDateTime
  }
  if ($ShowManager) {
+  Write-Verbose "Getting Manager details"
   if ($authDetails.Method -eq "Token") {
    $ManagerJson = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/manager"
   } else {
@@ -14257,6 +14256,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName ManagerMail -NotePropertyValue $Manager.ManagerMail
  }
  if ($ShowOwnedObjects) {
+  Write-Verbose "Getting all Owned Objects"
   if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
    $OwnedObjects = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects"
   } else {
@@ -14265,6 +14265,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName OwnedObjects -NotePropertyValue $OwnedObjects
  }
  if ($ShowOwnedDevices) {
+  Write-Verbose "Getting all Owned Devices"
   if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
    $OwnedDevices = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices"
   } else {
@@ -14273,15 +14274,15 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   $Result | Add-Member -NotePropertyName OwnedDevices -NotePropertyValue $OwnedDevices
  }
  if ($ShowMemberOf) {
+  Write-Verbose "Getting Member Of"
   $MemberOf=@()
   if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
    $MemberOfTmp = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/memberOf"
    $MemberOf += $MemberOfTmp.Value
    While ($MemberOfTmp.'@odata.nextLink') {
     $MemberOf += $MemberOfTmp.Value
-    $MemberOfTmp = az rest --method get --uri $MemberOfTmp.'@odata.nextLink' --header Content-Type="application/json" -o json | convertfrom-json
+    $MemberOfTmp = Invoke-RestMethod -Method GET -headers $header -Uri $MemberOfTmp.'@odata.nextLink'
    }
-
   } else {
    $MemberOfTmp = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/memberOf" --headers Content-Type=application/json | ConvertFrom-Json
    $MemberOf += $MemberOfTmp.Value
@@ -14651,12 +14652,14 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
 
   # This parameter is mandatory for all three authentication methods.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
+  [parameter(Mandatory = $True, ParameterSetName="CertificateThumbprint")]
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]
   [parameter(Mandatory = $True, ParameterSetName="Interactive")]
   $TenantID,
 
   # This parameter is optional for all sets and defaults to the Azure CLI's public App ID.
   [parameter(Mandatory = $False, ParameterSetName="ClientSecret")]
+  [parameter(Mandatory = $False, ParameterSetName="CertificateThumbprint")]
   [parameter(Mandatory = $False, ParameterSetName="Certificate")]
   [parameter(Mandatory = $False, ParameterSetName="Interactive")]
   $ApplicationID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46", # Azure CLI's Public App ID
@@ -14670,8 +14673,10 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
 
   # This parameter is mandatory ONLY for the 'ClientSecret' set.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]$ClientKey,
-  # This parameter is mandatory ONLY for the 'Certificate' set. Thumbprint must be in the local user certificate store
-  [parameter(Mandatory = $True, ParameterSetName="Certificate")]$CertificateThumbprint,
+  # This parameter is mandatory ONLY for the 'CertificateThumbprint' set. Thumbprint must be in the local user certificate store
+  [parameter(Mandatory = $True, ParameterSetName="CertificateThumbprint")]$CertificateThumbprint,
+  # This parameter is mandatory ONLY when getting the certificate from Vault using MS Vault Storage in Powershell
+  [parameter(Mandatory = $True, ParameterSetName="Certificate")]$Certificate,
   # This switch activates the 'Interactive' parameter set.
   [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive,
   # Parameter for Managed Identity Set ---
@@ -14684,17 +14689,19 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
  try {
   # --- Endpoint and Body setup based on Parameter Set ---
   $tokenResponse = $null
+  $CertObject = $null
+  $LocalAppID = $ApplicationID
 
   if ($PSCmdlet.ParameterSetName -eq "ManagedIdentity") {
    # --- MANAGED IDENTITY AUTHENTICATION FLOW ---
-   Write-Host "Attempting to acquire token using Managed Identity..." -ForegroundColor Yellow
+   Write-Verbose "Attempting to acquire token using Managed Identity..."
 
    $endpoint = ""
    $headers = @{}
 
    if ($env:IDENTITY_ENDPOINT) {
     # Running in an Azure App Service/Function
-    Write-Host "Azure App Service/Function environment detected. Using environment variables." -ForegroundColor Gray
+    Write-Verbose "Azure App Service/Function environment detected. Using environment variables."
     $endpoint = $env:IDENTITY_ENDPOINT
     $headers = @{ 'secret' = $env:IDENTITY_HEADER }
     # Use the API version compatible with the /msi/token endpoint
@@ -14702,7 +14709,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    }
    else {
     # Running in a VM or other IMDS environment
-    Write-Host "Azure VM (IMDS) environment detected." -ForegroundColor Gray
+    Write-Verbose "Azure VM (IMDS) environment detected."
     $endpoint = "http://169.254.169.254/metadata/identity/oauth2/token"
     $headers = @{ Metadata = 'true' }
     # Use a more modern API version for the IMDS endpoint
@@ -14717,15 +14724,15 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    # Is using the UserAssignedClientID then it is a User Assigned Managed Identity, otherwise it will be the system assigned Identity
     if ($UserAssignedClientID) {
      $uri += "&client_id=$UserAssignedClientID"
-     Write-Host "Using User-Assigned Managed Identity with Client ID: $UserAssignedClientID" -ForegroundColor Cyan
+     Write-Verbose "Using User-Assigned Managed Identity with Client ID: $UserAssignedClientID"
     } else {
-     Write-Host "Using System-Assigned Managed Identity." -ForegroundColor Cyan
+     Write-Verbose "Using System-Assigned Managed Identity."
     }
 
     # The final call uses the dynamically set $uri and $headers
     $tokenResponse = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
 
-  } elseif ($PSCmdlet.ParameterSetName -in @("ClientSecret", "Certificate")) {
+  } elseif ($PSCmdlet.ParameterSetName -in @("ClientSecret", "CertificateThumbprint", "Certificate")) {
    $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
    # Client Credentials flow for non-interactive methods
    $Body = @{
@@ -14735,18 +14742,64 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    }
 
    if ($PSCmdlet.ParameterSetName -eq "ClientSecret") {
-    $Body.client_secret = $ClientKey
-   } else { # Certificate
-    # 1. GET THE CERTIFICATE
-    $Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction Stop
+    if ($ClientKey -is [System.Security.SecureString]) {
+      Write-Verbose "Decrypting ClientKey from SecureString..."
+      $DecodedClientKey = $ClientKey | ConvertFrom-SecureString -AsPlainText
+     } else {
+      $DecodedClientKey = $ClientKey
+     }
+    $Body.client_secret = $DecodedClientKey
+   } else { # CertificateThumbprint or Certificate
+    # --- 1. GET THE CERTIFICATE AND APPID ---
+    if ($PSCmdlet.ParameterSetName -eq "CertificateThumbprint") {
+     if ($CertificateThumbprint -is [System.Security.SecureString]) {
+      Write-Verbose "Decrypting CertificateThumbprint from SecureString..."
+      $DecodedThumbprint = $CertificateThumbprint | ConvertFrom-SecureString -AsPlainText
+     } else {
+      $DecodedThumbprint = $CertificateThumbprint
+     }
+     Write-Verbose "Getting certificate from local store using thumbprint..."
+     $CertObject = Get-ChildItem -Path "Cert:\CurrentUser\My\$DecodedThumbprint" -ErrorAction Stop
+     # $LocalAppID already defaults to the $ApplicationID parameter
+
+    } elseif ($PSCmdlet.ParameterSetName -eq "Certificate") {
+     Write-Verbose "Loading certificate from vault secret..."
+
+     # The $Certificate parameter holds the Hashtable from the vault
+     $secretData = $Certificate
+
+     $pfxBytes = $secretData.PfxData
+     $pfxPassword = $secretData.PfxPassword # This is a SecureString
+
+     $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::UserKeySet
+     $CertObject = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($pfxBytes, $pfxPassword, $flags)
+
+     # Check if the user *explicitly* passed a value to -ApplicationID
+     if ($PSBoundParameters.ContainsKey('ApplicationID')) {
+      # User provided it. We will use $LocalAppID (which is already set to $ApplicationID).
+      Write-Verbose "Using user-provided ApplicationID: $LocalAppID"
+     } else {
+      # User did NOT provide -ApplicationID. We'll use the AppID from the vault as a fallback.
+      $LocalAppID = $secretData.AppID
+      Write-Verbose "Using ApplicationID from vault: $LocalAppID"
+     }
+
+     # Update the Body with the final chosen AppID
+     $Body.client_id = $LocalAppID
+    }
+    # --- End of Cert/AppID logic ---
+
+    # SHARED JWT CREATION LOGIC
+    # This code now runs using the $CertObject and $LocalAppID populated above
+
     # 2. BUILD THE JWT HEADER - The x5t claim (SHA-1 thumbprint) is required.
-    $jwtHeader = @{ alg = "RS256"; typ = "JWT"; x5t = ConvertTo-Base64Url -InputObject $Certificate.GetCertHash() } | ConvertTo-Json -Compress
+    $jwtHeader = @{ alg = "RS256"; typ = "JWT"; x5t = ConvertTo-Base64Url -InputObject $CertObject.GetCertHash() } | ConvertTo-Json -Compress
     # 3. BUILD THE JWT CLAIMS (Payload) - Using modern methods for timestamps and adding recommended claims.
     $now = [System.DateTimeOffset]::UtcNow
     $jwtClaims = @{
      aud = $tokenEndpoint
-     iss = $ApplicationID
-     sub = $ApplicationID
+     iss = $LocalAppID
+     sub = $LocalAppID
      jti = [System.Guid]::NewGuid().ToString()
      nbf = $now.ToUnixTimeSeconds()
      exp = $now.AddHours(1).ToUnixTimeSeconds()
@@ -14756,7 +14809,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     $encodedHeader = ConvertTo-Base64Url -InputObject ([System.Text.Encoding]::UTF8.GetBytes($jwtHeader))
     $encodedClaims = ConvertTo-Base64Url -InputObject ([System.Text.Encoding]::UTF8.GetBytes($jwtClaims))
     $signingInput = "$encodedHeader.$encodedClaims"
-    $rsaPrivateKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+    $rsaPrivateKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($CertObject)
     $signatureBytes = $rsaPrivateKey.SignData([System.Text.Encoding]::UTF8.GetBytes($signingInput), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
     $encodedSignature = ConvertTo-Base64Url -InputObject $signatureBytes
 
@@ -14876,75 +14929,6 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    Write-Error "Underlying Exception Message: $($_.Exception.Message)"
   }
   return $null
- }
-}
-Function Get-AzureGraphAPITokenMSAL { # Get API Token using base MS Authentication Module : MSAL.PS # May conflict with other MS Modules
- [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
- Param (
-  # --- Common Parameters for All Sets ---
-
-  # This parameter is mandatory for all three authentication methods.
-  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
-  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
-  [parameter(Mandatory = $True, ParameterSetName="Interactive")]
-  $TenantID,
-
-  # This parameter is optional for all sets and defaults to the Azure CLI's public App ID.
-  [parameter(Mandatory = $False, ParameterSetName="ClientSecret")]
-  [parameter(Mandatory = $False, ParameterSetName="Certificate")]
-  [parameter(Mandatory = $False, ParameterSetName="Interactive")]
-  $ApplicationID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46",
-
-  # Optional resource parameter, available to all sets.
-  # Changed the default to /.default which is the modern recommended scope.
-  $Resource = "https://graph.microsoft.com/.default",
-
-  # --- Parameters for Specific Auth Sets ---
-
-  # This parameter is mandatory ONLY for the 'ClientSecret' set.
-  [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
-  $ClientKey,
-
-  # This parameter is mandatory ONLY for the 'Certificate' set.
-  [parameter(Mandatory = $True, ParameterSetName="Certificate")]
-  $CertificateThumbprint, # Thumbprint must be in the local user certificate store
-
-  # This switch activates the 'Interactive' parameter set.
-  [parameter(Mandatory = $True, ParameterSetName="Interactive")]
-  [switch]$Interactive
- )
-
- Write-Verbose "Active Parameter Set: $($PSCmdlet.ParameterSetName)"
-
- try {
-  switch ($PSCmdlet.ParameterSetName) {
-   "ClientSecret" {
-     Write-Host "Authenticating with Application ID and Client Secret..."
-     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientSecret $ClientKey
-     # $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientSecret (ConvertTo-SecureString $ClientKey -AsPlainText -Force)
-   }
-   "Certificate" {
-     Write-Host "Authenticating with Application ID and Certificate..."
-     $ClientCertificate = Get-Item "Cert:\CurrentUser\My\$($CertificateThumbprint)"
-     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -ClientCertificate $ClientCertificate
-   }
-   "Interactive" {
-     Write-Host "Authenticating interactively..."
-     $tokenResponse = Get-MsalToken -TenantId $TenantID -ClientId $ApplicationID -Scopes $Resource -Interactive
-   }
-  }
-
-  $accessToken=[pscustomobject]@{
-   token_type=$tokenResponse.TokenType;
-   expires_on=$tokenResponse.ExpiresOn.LocalDateTime;
-   resource=$tokenResponse.Scopes;
-   access_token=$tokenResponse.AccessToken;
-  }
-
-  Write-Verbose "Successfully retrieved token!"
-  return $accessToken
- } catch {
-  Write-Error "Failed to acquire token. Error: $_"
  }
 }
 Function Assert-IsTokenLifetimeValid { # Check validity of token
