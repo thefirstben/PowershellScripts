@@ -62,7 +62,7 @@
 # For Azure : Azure CLI or Microsoft.Graph
 # For Exchange Management : ExchangeOnlineManagement
 # For SQL Management : SqlServer
-# To store secure data in Credential Manager : TUN.CredentialManager
+# To store secure data in Credential Manager : TUN.CredentialManager or in PS Store : Microsoft.PowerShell.SecretManagement AND Microsoft.PowerShell.SecretStore
 
 # Not used for authentication : MSAL.PS - Avoid using this module as this generates conflicts with other MS Modules (example : ExchangeOnlineManagement)
 
