@@ -11820,6 +11820,7 @@ Param (
 Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration - Uses Get-AzureAppRegistration
  Param (
  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppID,
+ [parameter(Mandatory=$true,ParameterSetName="ID")]$ID,
  [parameter(Mandatory=$true,ParameterSetName="DisplayName")]$DisplayName,
  [switch]$HideGUID,
  $Token
@@ -11846,41 +11847,58 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
   [parameter(ParameterSetName = "IndividualRole")][ValidateSet("User", "Application", "Both")][string]$allowedMemberTypes = "User",
 
   # --- Parameter Set 2: RoleList ---
-  [parameter(Mandatory = $true, ParameterSetName = "RoleList")][object[]]$AppRoleList
-  # Example to Copy Role : $RoleList = Get-AzureAppRegistrationAppRoles -DisplayName DEKRA-SP-Seal_Application-TEST-DSA_Team -Token $AppToken | select-object description,displayName,value,allowedMemberTypes,@{name="isEnabled";expression={$true}},@{name="id";expression={([guid]::NewGuid()).guid}}
+  [parameter(Mandatory = $true, ParameterSetName = "RoleList")][object[]]$AppRoleList,
+  # Example to Copy Role : $RoleList = Get-AzureAppRegistrationAppRoles -DisplayName $AppName -Token $AppToken | select-object description,displayName,value,allowedMemberTypes,@{name="isEnabled";expression={$true}},@{name="id";expression={([guid]::NewGuid()).guid}}
+  # To Create an object From CSV : $New_Roles = import-csv FILENAME.csv | ForEach-Object {[PSCustomObject]@{description = $_.Role ; displayName = $_.Role ; value = $_.Role ; allowedMemberTypes = @('User') ; isEnabled = $true ; id = ([guid]::NewGuid()).Guid }}
+  [Switch]$Overwrite
  )
+ Try {
+  # You can check which parameter set was used inside your function like this:
+  Write-Output "The active parameter set is: $($PSCmdlet.ParameterSetName)"
 
- # You can check which parameter set was used inside your function like this:
- Write-Output "The active parameter set is: $($PSCmdlet.ParameterSetName)"
+  Write-Verbose "Getting Token information"
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
 
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
- $header = $authDetails.Header
+  if ($AppRoleList) {
+   Write-Verbose "Adding Role List"
+   $body = @{
+    appRoles = @(
+       $AppRoleList
+    )
+   }| ConvertTo-Json -Depth 10
+  } else {
+   Write-Verbose "Adding Individual Role. Checking Member Type"
+   if ($allowedMemberTypes -eq 'Both') { $allowedMemberTypes = "User","Application" }
+   $body = @{
+    appRoles = @(
+      @{
+        allowedMemberTypes = @($allowedMemberTypes)
+        description         = $Description
+        displayName         = $DisplayName
+        id                  = [guid]::NewGuid()
+        isEnabled           = $true
+        value               = $Value
+      }
+    )
+   } | ConvertTo-Json -Depth 10
 
- if ($allowedMemberTypes -eq 'Both') { $allowedMemberTypes = "User","Application" }
+  }
 
- if ($AppRoleList) {
-  $body = @{
-   appRoles = @(
-      $AppRoleList
-   )
-  }| ConvertTo-Json -Depth 10
- } else {
-  $body = @{
-   appRoles = @(
-     @{
-       allowedMemberTypes = @($allowedMemberTypes)
-       description         = $Description
-       displayName         = $DisplayName
-       id                  = [guid]::NewGuid()
-       isEnabled           = $true
-       value               = $Value
-     }
-   )
-  } | ConvertTo-Json -Depth 10
+  if ($Overwrite) {
+   Write-Verbose "Overwrite flag set, getting current roles"
+   $AppRoleToRemove = get-azureappregistrationappRoles -ID $AppRegistrationID | ForEach-Object {[PSCustomObject]@{description = $_.description ; displayName = $_.displayName ; value = $_.value ; allowedMemberTypes = @('User') ; isEnabled = $false ; id = $_.id }}
+   $RemovalBody = @{ appRoles = @( $AppRoleToRemove ) }| ConvertTo-Json -Depth 10
+   Write-Verbose "Overwrite flag set, disabling existing roles"
+   Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" -Headers $header -Body $RemovalBody
+  }
 
+  Write-Verbose "Running Patch command"
+  Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" -Headers $header -Body $body
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
-
- Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" -Headers $header -Body $body
 }
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AzCli AzAD Cmdlet are 5 times slower than AzRest
@@ -13523,7 +13541,7 @@ Function Get-AzureADUserMFAMethods { # Check MFA Methods
 }
 Function Remove-AzureADUserMFAMethods { # Remove MFA Methods
  Param (
-  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  $Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
   [parameter(Mandatory = $true)]$MethodID, # can be UPN or GUID
   [ValidateSet("methods","emailMethods","fido2Methods","microsoftAuthenticatorMethods","passwordMethods","phoneMethods","softwareOathMethods",
@@ -13531,14 +13549,8 @@ Function Remove-AzureADUserMFAMethods { # Remove MFA Methods
   [switch]$SkipTokenValidation # To make request faster
  )
  Try {
-  if (! $SkipTokenValidation) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-  }
-
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $header = $authDetails.Header
 
   $GraphURL = "https://graph.microsoft.com/v1.0/users/$UPNorID/authentication/$Method/$MethodID"
 
