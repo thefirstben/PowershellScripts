@@ -10338,7 +10338,7 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  if (! $(Assert-IsTokenLifetimeValid -Token $UserToken -ErrorAction Stop) ) { Throw "UserToken is invalid, provide a valid token" }
 
   # You can check which parameter set was used inside your script
- Write-Host -ForegroundColor Magenta "Parameter Set Used: $($PSCmdlet.ParameterSetName)"
+ Write-Verbose "Parameter Set Used: $($PSCmdlet.ParameterSetName)"
 
  $BaseURL = "https://management.azure.com"
 
@@ -10348,7 +10348,8 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  $AllEligibleResults = @()
 
  # 1. Determine the scope(s) to query based on the parameter set used
- Write-Host -ForegroundColor Yellow "Determining scope(s) based on parameters..."
+ if ($Verbose) {Write-Host -ForegroundColor Yellow "Determining scope(s) based on parameters..."}
+
  switch ($PSCmdlet.ParameterSetName) {
   'ManagementGroupScope' {
    # Add the Management Group itself to the list of scopes
@@ -10356,7 +10357,7 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
 
    # If -Recurse is used, get all descendant subscriptions and add them too
    if ($Recurse) {
-    Write-Host -ForegroundColor Yellow "Recurse switch detected. Getting all descendant subscriptions for MG: $ManagementGroupID"
+    if ($Verbose) {Write-Host -ForegroundColor Yellow "Recurse switch detected. Getting all descendant subscriptions for MG: $ManagementGroupID"}
     try {
      # --- PAGINATION HANDLING LOGIC ---
      $AllDescendants = @()
@@ -10365,7 +10366,7 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
 
      # Loop as long as the API provides a link to the next page of results
      while ($null -ne $NextLink) {
-      Write-Host -ForegroundColor DarkGray "  Fetching data from API..."
+      if ($Verbose) {Write-Host -ForegroundColor DarkGray "  Fetching data from API..."}
       $ApiResponse = Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest $NextLink
 
       # Add the results from the current page to our master list
@@ -10378,16 +10379,16 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
       $NextLink = if ($ApiResponse.nextLink) { $ApiResponse.nextLink.Replace($BaseURL, "") } else { $null }
      }
 
-     Write-Host -ForegroundColor Yellow "  Finished fetching. Found a total of $($AllDescendants.Count) descendant resources across all pages."
+     if ($Verbose) {Write-Host -ForegroundColor Yellow "  Finished fetching. Found a total of $($AllDescendants.Count) descendant resources across all pages."}
 
      # Filter the complete list of descendants for subscriptions
      $SubscriptionIDs = $AllDescendants | Where-Object { $_.type -eq 'Microsoft.Management/managementGroups/subscriptions' } | Select-Object -ExpandProperty name
 
      if ($SubscriptionIDs) {
-        Write-Host -ForegroundColor Green "  Successfully filtered $($SubscriptionIDs.Count) descendant subscriptions."
+        if ($Verbose) {Write-Host -ForegroundColor Green "  Successfully filtered $($SubscriptionIDs.Count) descendant subscriptions."}
         $SubscriptionIDs | ForEach-Object { $AllScopes += "/subscriptions/$_" }
      } else {
-        Write-Host -ForegroundColor Yellow "  No descendant subscriptions found for this Management Group."
+        if ($Verbose) {Write-Host -ForegroundColor Yellow "  No descendant subscriptions found for this Management Group."}
      }
 
     } catch {
@@ -10405,7 +10406,7 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
    $AllScopes += $ResourceScope
   }
  }
- Write-Host -ForegroundColor Green "Ready to query $($AllScopes.Count) scope(s)."
+ if ($Verbose) {Write-Host -ForegroundColor Green "Ready to query $($AllScopes.Count) scope(s)."}
 
  # 2. Loop through each determined scope and fetch the assignments
  foreach ($scope in $AllScopes) {
@@ -10417,11 +10418,11 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
     $Filter = ""
    }
 
-   write-host -ForegroundColor Cyan -Message "Getting Assignements [Permanent] for scope: $scope"
+   if ($Verbose) {write-host -ForegroundColor Cyan -Message "Getting Assignements [Permanent] for scope: $scope"}
    $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$scope/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion$Filter").value.properties
    if ($PermanentRequestResultWithGUIDS) { $AllPermanentResults += $PermanentRequestResultWithGUIDS }
 
-   write-host -ForegroundColor Cyan -Message "Getting Assignements [Eligible] for scope: $scope"
+   if ($Verbose) {write-host -ForegroundColor Cyan -Message "Getting Assignements [Eligible] for scope: $scope"}
    $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "$scope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible$Filter").value.properties
    if ($EligibleRequestResultWithGUIDS) { $AllEligibleResults += $EligibleRequestResultWithGUIDS }
   } catch {
@@ -10431,7 +10432,7 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
 
  # 3. Process and combine all collected results
  Try {
-  Write-Host -ForegroundColor Yellow "Processing a total of $($AllPermanentResults.Count) permanent and $($AllEligibleResults.Count) eligible assignments..."
+  if ($Verbose) {Write-Host -ForegroundColor Yellow "Processing a total of $($AllPermanentResults.Count) permanent and $($AllEligibleResults.Count) eligible assignments..."}
   if ($AllPermanentResults) { $AllPermanentResults | Add-Member -MemberType NoteProperty -Name AssignementType -Value Permanent -Force }
   if ($AllEligibleResults) { $AllEligibleResults | Add-Member -MemberType NoteProperty -Name AssignementType -Value Eligible -Force }
 
@@ -10440,12 +10441,12 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
   # First, combine all results, including duplicates, into a single array
   $CombinedResults = $AllPermanentResults + $AllEligibleResults
 
-  Write-Host -ForegroundColor Yellow "Removing duplicate role assignments to show a unique, effective list..."
+  if ($Verbose) {Write-Host -ForegroundColor Yellow "Removing duplicate role assignments to show a unique, effective list..."}
   # Group objects by a unique combination of their properties, then select the first object from each group.
   # This effectively creates a unique list.
   $RequestResultWithGUIDS = $CombinedResults | Group-Object scope, principalId, roleDefinitionId | ForEach-Object { $_.Group | Select-Object -First 1 }
 
-  Write-Host -ForegroundColor Green "Processing complete. Found $($RequestResultWithGUIDS.Count) total assignments."
+  if ($Verbose) {Write-Host -ForegroundColor Green "Processing complete. Found $($RequestResultWithGUIDS.Count) total assignments."}
  }
  Catch {
   Write-Error "An error occurred while processing the final results: $_"
@@ -10454,12 +10455,12 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
   # Add Role GUID
   $RequestResultWithGUIDS = $RequestResultWithGUIDS | Select-Object *,@{name="roleDefinitionGUID";expression={$_.roleDefinitionId.split('/')[-1]}}
 
-  write-host -ForegroundColor Cyan -Message "Getting Role Definition Information"
+  if ($Verbose) {write-host -ForegroundColor Cyan -Message "Getting Role Definition Information"}
   # Get All Tenant Level Role Definitions
   $RoleDefinitions = (Get-AzureGraph -Token $AzureToken -BaseURL $BaseURL -GraphRequest "/providers/Microsoft.Authorization/roleDefinitions/?api-version=$APIVersion").Value
   $RolesConvertedTableHash = $RoleDefinitions | Group-Object -Property Name -AsHashTable
 
-  write-host -ForegroundColor Cyan -Message "Getting User Information"
+  if ($Verbose) {write-host -ForegroundColor Cyan -Message "Getting User Information"}
   # $PrincipalList = $($RequestResultWithGUIDS | Select-Object principalId -Unique).principalId
   # $PrincipalConvertedTable = Get-AzureADObjectInfo -ObjectIDList $PrincipalList -Token $UserToken
   # $PrincipalConvertedTableHash = $PrincipalConvertedTable | Group-Object -Property ID -AsHashTable
@@ -10470,14 +10471,14 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
  $PrincipalConvertedTable = @()
  $BatchSize = 999 # Set batch size just under the 1000 limit to be safe
 
- Write-Host -ForegroundColor Yellow "Found $($PrincipalList.Count) unique principals. Fetching details in batches of $BatchSize..."
+ if ($Verbose) {Write-Host -ForegroundColor Yellow "Found $($PrincipalList.Count) unique principals. Fetching details in batches of $BatchSize..."}
 
  # Loop through the list in batches
  for ($i = 0; $i -lt $PrincipalList.Count; $i += $BatchSize) {
   # Get the current chunk of IDs
   $CurrentBatch = $PrincipalList[$i..($i + $BatchSize - 1)]
 
-  Write-Host -ForegroundColor DarkGray "  Processing batch $(($i/$BatchSize)+1)..."
+  if ($Verbose) {Write-Host -ForegroundColor DarkGray "  Processing batch $(($i/$BatchSize)+1)..."}
 
   # Call your function with the current batch
   $BatchResult = Get-AzureADObjectInfo -ObjectIDList $CurrentBatch -Token $UserToken
@@ -10486,12 +10487,12 @@ Function Get-AzureRBACRightsREST { # In progress to get permissions via Graph on
   if ($BatchResult) { $PrincipalConvertedTable += $BatchResult }
  }
 
- Write-Host -ForegroundColor Green "Successfully retrieved details for all principals."
+ if ($Verbose) {Write-Host -ForegroundColor Green "Successfully retrieved details for all principals."}
 
  # Create the final hash table from the complete list of results
  $PrincipalConvertedTableHash = $PrincipalConvertedTable | Group-Object -Property ID -AsHashTable
 
-  write-host -ForegroundColor Cyan -Message "Merging Data"
+  if ($Verbose) {write-host -ForegroundColor Cyan -Message "Merging Data"}
   $RequestResult = $RequestResultWithGUIDS | Select-Object *,
    @{name="roleDefinitionObjectInfo";expression={
     $RoleInformation = $RolesConvertedTableHash[$_.roleDefinitionGUID].Properties
@@ -10835,12 +10836,12 @@ Function New-AzureAppSP_NONSSO { # Create App Registration with all required inf
 }
 # App Registration [Only]
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
+ [CmdletBinding()]
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
   [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
   $Token,
-  [Switch]$ShowOwner,
   [Switch]$HideGUID,
   $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
  )
@@ -10865,7 +10866,7 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   $RedirectURLS += [pscustomobject]@{Type="publicClient";URLs=$Result.publicClient.redirectUris}
   $Result | Add-Member -MemberType NoteProperty -Name "RedirectURLS" -Value $RedirectURLS
 
-  if (! $Result) {Throw "No result found"}
+  if (! $Result) {Throw "No result found for search value '$ValueToCheck'"}
 
   if ($HideGUID) {
    $Result | Select-Object -ExcludeProperty *ID
@@ -10879,7 +10880,6 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   } else {
    Write-Error $_
   }
-  return
  }
 }
 Function Get-AzureAppRegistrationFromAppID { # Get the App Registration information from AppID | Uses Token
@@ -11825,9 +11825,9 @@ Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App R
  [switch]$HideGUID,
  $Token
 )
-
- $Result = Get-AzureAppRegistration @PSBoundParameters | Select-Object @{Name="AppName";Expression={$_.DisplayName}},@{Name="AppID";Expression={$_.id}} -ExpandProperty appRoles
- $Result = $Result | Select-Object -Property AppName,AppID,* -ExcludeProperty AppName,AppID
+ $AppInfo = Get-AzureAppRegistration @PSBoundParameters
+ $AppRoles = $AppInfo | Select-Object -ExpandProperty appRoles
+ $Result = $AppRoles | Select-Object -Property @{Name="AppName";Expression={$AppInfo.DisplayName}},@{Name="AppID";Expression={$AppInfo.AppID}},*
 
  if ($HideGUID) { $Result | Select-Object -ExcludeProperty *ID } else { $Result }
 }
@@ -11906,14 +11906,44 @@ Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using RES
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
   [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
-  $ValuesToShow = "*" # Format is : value1,value2
+  $ValuesToShow = "*", # Format is : value1,value2
+  [Switch]$HideGUID
  )
- if ($AppID) {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'" --headers Content-Type=application/json | ConvertFrom-Json).value
- } elseif ($ID) {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'" --headers Content-Type=application/json | ConvertFrom-Json).Value
- } elseif ($DisplayName) {
- (az rest --method GET --uri "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
+   } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
+   } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
+   }
+  $GraphURI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
+
+  if ($authDetails.Method -eq "Token") {
+   $Result = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $GraphURI).value
+  } else {
+   $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
+  }
+
+  # Add Generic Redirect URLs with all the different redirect URLs
+  $RedirectURLS = @()
+  $RedirectURLS += [pscustomobject]@{Type="SPA";URLs=$Result.SPA.redirectUris}
+  $RedirectURLS += [pscustomobject]@{Type="WEB";URLs=$Result.WEB.redirectUris}
+  $RedirectURLS += [pscustomobject]@{Type="publicClient";URLs=$Result.publicClient.redirectUris}
+  $Result | Add-Member -MemberType NoteProperty -Name "RedirectURLS" -Value $RedirectURLS
+
+  if (! $Result) {Throw "No result found"}
+
+  if ($HideGUID) {
+   $Result | Select-Object -ExcludeProperty *ID
+  } else {
+   $Result
+  }
+ } catch {
+  if ($_.ErrorDetails.Message) {
+   $ErrorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+   Write-Error $ErrorDetails.error.Message
+  } else {
+   Write-Error $_
+  }
  }
 }
 Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
@@ -12085,15 +12115,14 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
 
   # Common Parameters
   $Value = "displayName", # Property to return for SINGLE lookups
-  [parameter(Mandatory=$true)]$Token
+  $Token
  )
 
+ Try {
+
  # Validate token and prepare headers once
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ $header = $authDetails.Header
 
  # --- BATCH PROCESSING LOGIC ---
  if ($Batch) {
@@ -12133,7 +12162,7 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
    $batchUri = "https://graph.microsoft.com/v1.0/`$batch"
 
    # Make the single POST call to the $batch endpoint
-   $batchResult = Invoke-RestMethod -Method POST -Headers $headers -Uri $batchUri -Body $batchBody
+   $batchResult = Invoke-RestMethod -Method POST -Headers $header -Uri $batchUri -Body $batchBody
 
    # Process the responses from the batch
    foreach ($response in $batchResult.responses) {
@@ -12168,7 +12197,7 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
     $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals(appId='$AppID')`?`$select=$Value"
    }
 
-   $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
+   $Result = (Invoke-RestMethod -Method GET -headers $header -Uri $RequestURL)
 
    # If a result is found, return the specified property value, otherwise return the original input
    if (! $Result ) {
@@ -12181,6 +12210,10 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
    Write-Verbose "Application $RequestedValue not found"
    return $RequestedValue
   }
+ }
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
@@ -14067,13 +14100,22 @@ Function New-AzureADGroup { # Create New Group using Graph
  Try {
 
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $header = $authDetails.Header
 
-  $headers = @{
-   'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-   'Content-type'  = "application/json"
+  $CurrentGroup = Get-AzureADGroupIDFromName -GroupName $GroupName
+  if ($CurrentGroup) { Throw "Group Already Exists. Group ID : $CurrentGroup"}
+
+  if (($GroupName.length -ge 64) -and (! $mailNickname)) {
+   Write-Warning -Message "length greater than 64 caracters and not Mailnickname provided, will truncate the GroupName to 64 caracters if not a security group otherwise it will be a GUID"
+   if ($MailEnabled -or $Unified) {
+    $mailNickname = $GroupName -replace "^(.{0,64}).*",'$1'
+   } else {
+    $mailNickname = "SECGRP_$([Guid]::NewGuid().ToString())"
+   }
   }
 
   if (! $mailNickname) { $mailNickname = $GroupName }
+
   if ($Unified) {
    if ($Dynamic) {
     $GroupType = '["Unified","DynamicMembership"]'
@@ -14108,7 +14150,7 @@ Function New-AzureADGroup { # Create New Group using Graph
 
   $GraphURL = 'https://graph.microsoft.com/v1.0/groups/'
 
-  Invoke-RestMethod -Method POST -headers $headers -Uri $GraphURL -Body $ParamJson
+  Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
  } catch {
   Write-host -ForegroundColor Red "Error Creating Group $GroupName ($($Error[0]))"
  }
@@ -14571,11 +14613,13 @@ Function Disable-AzureADUser { # Disable Azure Ad User
   $Token
  )
  Try {
-  if ($Token) {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+  if ($authDetails.Method -eq "Token") {
    $Body = @{
     accountEnabled = 'false'
    } | ConvertTo-Json
-   Get-AzureGraph -Token $Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
+   Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
   } else {
    $Body = '{\"accountEnabled\": \"false\"}}'
    az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UPNorID/" --headers Content-Type=application/json --body $body
@@ -15112,26 +15156,25 @@ Function Get-AzureConditionalAccessLocations {
  countryLookupMethod,@{name="IP_Range";expression={$_.iPRanges.cidrAddress -join(";")}}
 }
 Function Get-AzureConditionalAccessPolicies {
+ [CmdletBinding()]
  Param (
-  [Parameter(Mandatory)]$Token,
+  $Token,
   [Switch]$ShowOnlyEnabled,
   [Switch]$ShowJSON,
   $NameFilter
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
+ Try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
  Write-Verbose "Getting all Conditional Access Policies"
- $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies").value
+ $Result = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies").value
 
  Write-Verbose "Getting all NamedLocations"
- $NamedLocations = Get-AzureConditionalAccessLocations -Token $Token
+ $NamedLocations = Get-AzureConditionalAccessLocations -Token $authDetails.Token
  $NamedLocationsHash = $NamedLocations | Group-Object -Property ID -AsHashTable
 
  Write-Verbose "Getting all Role Definitions"
- $RoleNames = Get-AzureRoleDefinitions -Token $token
+ $RoleNames = Get-AzureRoleDefinitions -Token $authDetails.Token
  $RoleNamesHash = @{} ; $RoleNames | ForEach-Object { $RoleNamesHash[$_.ID] = $_ }
 
  if ($NameFilter) {
@@ -15149,12 +15192,12 @@ Function Get-AzureConditionalAccessPolicies {
 
  Write-Verbose "Get details of all individual IDs [Users/Groups]"
  $UsersToConvertList = $Result.conditions.users.includeUsers + $Result.conditions.users.excludeUsers + $Result.conditions.users.includeGroups + $Result.conditions.users.excludeGroups | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
- $UsersList = Get-AzureADObjectInfo -token $Token -ObjectIDList $UsersToConvertList
+ $UsersList = Get-AzureADObjectInfo -token $authDetails.Token -ObjectIDList $UsersToConvertList
  $UsersListHash = $UsersList | Group-Object -Property ID -AsHashTable
  Write-Verbose "Get details of all individual IDs [Apps]"
  $AppToConvertList = $Result.conditions.applications.includeApplications + $Result.conditions.applications.excludeApplications | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
- if ($AppList) {
-  $AppList = Get-AzureServicePrincipalNameFromID -Token $Token -Batch -AppIDList $AppToConvertList
+ if ($AppToConvertList) {
+  $AppList = Get-AzureServicePrincipalNameFromID -Token $authDetails.Token -Batch -AppIDList $AppToConvertList
   $AppListHash = $AppList | Group-Object -Property AppID -AsHashTable
  }
 
@@ -15269,6 +15312,10 @@ Function Get-AzureConditionalAccessPolicies {
    Write-Verbose "Exclude JSON Data"
    $ResultConverted | Select-Object -ExcludeProperty Full_JSON
   }
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 # Log Analytics
 Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
@@ -15432,7 +15479,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($SimplifiedQuery) {
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
-   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName'
+   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
+   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType'
   }
 
   # Query will always end with this
@@ -15507,7 +15555,11 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
    Write-Verbose "Getting App Token"
    $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
    Write-Verbose "Search for App"
-   $AppID = (Get-AzureAppRegistration -DisplayName $App -ValuesToShow appid -Token $authDetails.Token).appID
+   $AppID = (Get-AzureAppRegistration -DisplayName $App -ValuesToShow appid -Token $authDetails.Token -ErrorAction Stop).appID
+   if (! $AppID) {
+    Write-Verbose "App Registration not found, searching for Enterprise App"
+    $AppID = (Get-AzureAppRegistration -DisplayName $App -ValuesToShow appid -Token $authDetails.Token -ErrorAction Stop).appID
+    }
    if (! $AppID) {Throw "App $App Not Found"} else {Write-Verbose "Found App GUID : $AppID"}
   } else {
    Write-Verbose "App GUID provided using faster search"
@@ -15551,10 +15603,10 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
   if ($SimplifiedQuery) {
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
-   IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus,
-   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName'
+   IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
+   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
+   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType'
   }
-
   # Query will always end with this
   $QueryEnd = '| sort by TimeGenerated'
 
