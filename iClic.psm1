@@ -13402,65 +13402,66 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
  Param (
   $Throttle = 10, # Time in Seconds to wait in case of throttle
   $ExportFileName = "$iClic_TempPath\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  [Parameter(Mandatory)]$Token,
+  $Token,
   [Switch]$NoFileExport
  )
 
- # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
+ try {
 
- # Init Variables
- $Count=0
- $GlobalResult = @()
- $ContinueRunning = $True
- $FirstRun=$True
+  # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
 
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+  # Init Variables
+  $Count=0
+  $GlobalResult = @()
+  $ContinueRunning = $True
+  $FirstRun=$True
 
- $header = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
 
- While ($ContinueRunning) {
-  Progress -Message "Getting all MFA Status of Users Loop $Count : " -Value $GlobalResult.Count -PrintTime
-  Try {
-   if ($FirstRun) {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" -MaximumRetryCount 2
-    $FirstRun=$False
-   } else {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
-   }
-   $NextRequest = $CurrentResult.'@odata.nextLink'
-   if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
-   $Count++
-   $GlobalResult += $CurrentResult.Value | Select-Object *,
-    @{Name="MFA_Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
-    @{Name="MFA_Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
-    @{Name="MFA_Method_email";Expression={$_.methodsRegistered -contains 'email'}},
-    @{Name="MFA_Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
-    @{Name="MFA_Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
-    @{Name="MFA_Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
-    @{Name="MFA_Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
-    @{Name="MFA_Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
-    @{Name="MFA_Method_passKeyDeviceBoundAuthenticator";Expression={$_.methodsRegistered -contains 'passKeyDeviceBoundAuthenticator'}},
-    @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
-    @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
-    @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
-  } catch {
-   $ErrorInfo = $Error[0]
-   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
-    Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
-   } else {
-    Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
+  While ($ContinueRunning) {
+   Progress -Message "Getting all MFA Status of Users Loop $Count : " -Value $GlobalResult.Count -PrintTime
+   Try {
+    if ($FirstRun) {
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" -MaximumRetryCount 2
+     $FirstRun=$False
+    } else {
+      $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
+    }
+    $NextRequest = $CurrentResult.'@odata.nextLink'
+    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
+    $Count++
+    $GlobalResult += $CurrentResult.Value | Select-Object *,
+     @{Name="MFA_Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
+     @{Name="MFA_Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
+     @{Name="MFA_Method_email";Expression={$_.methodsRegistered -contains 'email'}},
+     @{Name="MFA_Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
+     @{Name="MFA_Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
+     @{Name="MFA_Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
+     @{Name="MFA_Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
+     @{Name="MFA_Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
+     @{Name="MFA_Method_passKeyDeviceBoundAuthenticator";Expression={$_.methodsRegistered -contains 'passKeyDeviceBoundAuthenticator'}},
+     @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
+     @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
+     @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
+   } catch {
+    $ErrorInfo = $Error[0]
+    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
+     Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
+    } else {
+     Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
+    }
    }
   }
- }
- if ($NoFileExport) {
-  Return $GlobalResult
- } else {
-  $GlobalResult | Export-CSV $ExportFileName
-  Write-Blank
-  Return $ExportFileName
+  if ($NoFileExport) {
+   Return $GlobalResult
+  } else {
+   $GlobalResult | Export-CSV $ExportFileName
+   Write-Blank
+   Return $ExportFileName
+  }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
@@ -15105,33 +15106,91 @@ Function Test-MsGraphDelegated { # Function to test MS Graph Delegated Access wi
 # Graph Management
 Function Get-AzureGraph { # Send base graph request without any requirements
  Param (
-  [parameter(Mandatory = $True)]$Token,
+  $Token,
   [parameter(Mandatory = $True)]$GraphRequest,
   $BaseURL = 'https://graph.microsoft.com/beta',
   [ValidateSet("GET","POST","DELETE","PATCH")]$Method='GET',
+  [Switch]$ConsistencyLevelEventual,
+  [Switch]$ShowState,
+  $Throttle='10',
   $Body # Json Format Body
  )
 
  try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
+  if ($ConsistencyLevelEventual) {
+   $header.Add("ConsistencyLevel", "eventual")
+  }
 
- # Set Header
- $header = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
+  # Build the Base URL for the API call
+  if ($GraphRequest.StartsWith("http")) {
+   $URL = $GraphRequest
+  } else {
+   $URL = $BaseURL + $GraphRequest
+  }
 
- # Build the Base URL for the API call
- $URL = $BaseURL + $GraphRequest
+  #Initialize Variables (Mostly used for LOOP)
+  $Count=0
+  $GlobalResult = @()
+  $ContinueRunning = $True
+  $FirstRun=$True
 
- # Call the REST-API
- if ($Body) {
-  $RestResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url -Body $Body -ContentType "application/json"
- } else {
-  $RestResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url
- }
+  While ($ContinueRunning) {
+   try { # Try/Catch for Throttle issues
+    if ($FirstRun) {
+     Write-Verbose "First Loop of Get-AzureGraph on $URL"
+     # Call the REST-API
+     if ($Body) {
+      $CurrentResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url -Body $Body -ContentType "application/json"
+     } else {
+      $CurrentResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url
+     }
 
- return $RestResult
+     # Get the Count if the value is present
+     if ($($CurrentResult.'@odata.count') -gt 1) {
+      $NumberOfLoop = [Math]::Ceiling($($CurrentResult.'@odata.count') / 999)
+      Write-Verbose "Found $($CurrentResult.'@odata.count') results will require $NumberOfLoop Loops"
+     } else {
+      $NumberOfLoop = "X"
+     }
+
+     # Set Variables for next run
+     $FirstRun=$False ; $Count++
+
+     # If only one result then exit and print it (does not have the .value)
+     if ( ! $CurrentResult.PSObject.Properties.Match('value')) { Return $CurrentResult }
+
+     # Check if next link or stops
+     if ($CurrentResult.'@odata.nextLink') {
+      if ($ShowState) { Write-host -ForegroundColor "Magenta" -Object "Running loop $Count / $NumberOfLoop" }
+     } else {
+      $ContinueRunning = $False
+     }
+    } else {
+     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
+     if ($ShowState) { Write-host -ForegroundColor "Magenta" -Object "Running loop $Count / $NumberOfLoop" }
+    }
+    # Check Results
+    Write-Verbose "Calculate Result"
+    $GlobalResult += $CurrentResult.Value
+    $NextRequest = $CurrentResult.'@odata.nextLink'
+    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
+    $Count++
+   } catch {
+    # Check for 429 (Too Many Requests)
+    if ($_.Exception.Response.StatusCode -eq 429) {
+     $RetryAfter = $_.Exception.Response.Headers["Retry-After"]
+     if (-not $RetryAfter) { $RetryAfter = $Throttle }
+     Write-Warning "Throttled. Waiting $RetryAfter seconds..."
+     Start-Sleep -Seconds $RetryAfter
+    } else {
+     throw $_ # Throw other errors immediately
+    }
+   }
+  }
+  Write-Verbose "Return Result"
+  return $GlobalResult
  } catch {
   if ($($Error[0].ErrorDetails.Message)) {
    $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json).error.message
