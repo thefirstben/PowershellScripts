@@ -10754,118 +10754,110 @@ Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions f
    Write-Host -ForegroundColor Green "No OAuth2Permissions found on App Registration $AppID"
   }
 }
-Function New-AzureAppRegistrationBlank { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
+Function New-AzureAppRegistration { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
  [CmdletBinding()]
  Param (
   [Parameter(Mandatory = $true)]
   [string]$AppRegistrationName,
-
-  [Switch]$CreateAssociatedServicePrincipal,
-
-  # New optional parameter for the Graph API token
+  [switch]$CreateAssociatedServicePrincipal,
   $Token
  )
 
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
- if ($authDetails.Method -eq "Token") {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ # --- GRAPH API PATH ---
+ Write-Host "Using Microsoft Graph API..."
+ $graphUri = "https://graph.microsoft.com/v1.0"
 
-  # --- GRAPH API PATH ---
-  Write-Host "Using Microsoft Graph API..."
-  $graphUri = "https://graph.microsoft.com/v1.0"
+ $header = $authDetails.Header
+ $AppID = $null
 
-  $header = $authDetails.Header
-  $AppID = $null
+ # 1. CHECK FOR/CREATE APP REGISTRATION
+ try {
+  # Check if an app with the same name already exists
+  $checkAppUri = "$graphUri/applications?`$filter=displayName eq '$AppRegistrationName'"
+  $existingApp = Invoke-RestMethod -Uri $checkAppUri -Headers $Header -Method Get
 
-  # 1. CHECK FOR/CREATE APP REGISTRATION
+  if ($existingApp.value.Count -gt 0) {
+   $AppID = $existingApp.value[0].appId
+   Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID: $AppID"
+  } else {
+   # Create a new, clean App Registration
+   $createAppUri = "$graphUri/applications"
+   $appBody = @{
+    displayName          = $AppRegistrationName
+    signInAudience       = "AzureADMyOrg"
+    requiredResourceAccess = @() # Ensures no default permissions are added
+   } | ConvertTo-Json
+
+   $newApp = Invoke-RestMethod -Uri $createAppUri -Headers $Header -Method Post -Body $appBody
+   $AppID = $newApp.appId
+   Write-Host -ForegroundColor Green "Created clean App Registration `"$AppRegistrationName`" with ID: $AppID"
+  }
+ }
+ catch {
+  Write-Error "Error during Graph API App Registration operation for '$AppRegistrationName': $_"
+  return
+ }
+
+ # 2. CREATE ASSOCIATED SERVICE PRINCIPAL (IF REQUESTED)
+ if ($AppID -and $CreateAssociatedServicePrincipal) {
   try {
-   # Check if an app with the same name already exists
-   $checkAppUri = "$graphUri/applications?`$filter=displayName eq '$AppRegistrationName'"
-   $existingApp = Invoke-RestMethod -Uri $checkAppUri -Headers $Header -Method Get
+   # Check if the SP already exists to avoid errors
+   $checkSpUri = "$graphUri/servicePrincipals?`$filter=appId eq '$AppID'"
+   $existingSp = Invoke-RestMethod -Uri $checkSpUri -Headers $Header -Method Get
 
-   if ($existingApp.value.Count -gt 0) {
-    $AppID = $existingApp.value[0].appId
-    Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID: $AppID"
+   if ($existingSp.value.Count -gt 0) {
+    Write-Host -ForegroundColor Green "Associated Service Principal already exists with Object ID: $($existingSp.value[0].id)"
    } else {
-    # Create a new, clean App Registration
-    $createAppUri = "$graphUri/applications"
-    $appBody = @{
-     displayName          = $AppRegistrationName
-     signInAudience       = "AzureADMyOrg"
-     requiredResourceAccess = @() # Ensures no default permissions are added
+    Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with App ID: $AppID"
+    $createSpUri = "$graphUri/servicePrincipals"
+    $spBody = @{
+     appId = $AppID
     } | ConvertTo-Json
 
-    $newApp = Invoke-RestMethod -Uri $createAppUri -Headers $Header -Method Post -Body $appBody
-    $AppID = $newApp.appId
-    Write-Host -ForegroundColor Green "Created clean App Registration `"$AppRegistrationName`" with ID: $AppID"
+    $newSp = Invoke-RestMethod -Uri $createSpUri -Headers $Header -Method Post -Body $spBody
+    Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id)"
+    Set-AzureServicePrincipalAssignementRequired -ServicePrincipalID $($newSp.id) -Token $Token
+    Write-Host -ForegroundColor Green "Set Assignement Required to True for Service Principal $($newSp.id)"
    }
   }
   catch {
-   Write-Error "Error during Graph API App Registration operation for '$AppRegistrationName': $_"
-   return
-  }
-
-  # 2. CREATE ASSOCIATED SERVICE PRINCIPAL (IF REQUESTED)
-  if ($AppID -and $CreateAssociatedServicePrincipal) {
-   try {
-    # Check if the SP already exists to avoid errors
-    $checkSpUri = "$graphUri/servicePrincipals?`$filter=appId eq '$AppID'"
-    $existingSp = Invoke-RestMethod -Uri $checkSpUri -Headers $Header -Method Get
-
-    if ($existingSp.value.Count -gt 0) {
-     Write-Host -ForegroundColor Green "Associated Service Principal already exists with Object ID: $($existingSp.value[0].id)"
-    } else {
-     Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with App ID: $AppID"
-     $createSpUri = "$graphUri/servicePrincipals"
-     $spBody = @{
-      appId = $AppID
-     } | ConvertTo-Json
-
-     $newSp = Invoke-RestMethod -Uri $createSpUri -Headers $Header -Method Post -Body $spBody
-     Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id)"
-     Set-AzureServicePrincipalAssignementRequired -ServicePrincipalID $($newSp.id) -Token $Token
-     Write-Host -ForegroundColor Green "Set Assignement Required to True for Service Principal $($newSp.id)"
-    }
-   }
-   catch {
-    Write-Error "Error creating Associated Service Principal for '$AppRegistrationName': $_"
-   }
+   Write-Error "Error creating Associated Service Principal for '$AppRegistrationName': $_"
   }
  }
- else {
-
-  # --- AZ CLI PATH ---
-  Write-Host "Using Azure CLI..."
-  Try {
-   $AppID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID
-   if ($AppID) {
-    Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID : $AppID"
-   } else {
-    #Create App Registration
-    $AppReg = az ad app create --only-show-errors --display-name $AppRegistrationName --sign-in-audience 'AzureADMyOrg'
-    #Get App Registration ID
-    $AppID = ($AppReg | ConvertFrom-Json).AppID
-    #Remove default Oauth2 Permissions if any
-    Remove-AppRegistrationOAuth2Permissions -AppID $AppID
-    #Print Result
-    Write-Host -ForegroundColor Green "Created clean AppRegistration `"$AppRegistrationName`" with ID : $AppID"
-   }
-  } Catch {
-   Write-Error "Error creating App Registration $AppRegistrationName : $($Error[0])"
-  }
-  Try {
-   if ($CreateAssociatedServicePrincipal) {
-    Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with ID : $AppID"
-    $ServicePrincipalCreation = az ad sp create --id $AppID --only-show-errors
-    Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID $(($ServicePrincipalCreation | ConvertFrom-JSON).ID)"
-   }
-  } Catch {
-   Write-Error "Error creating Associated Service Principal $AppRegistrationName : $($Error[0])"
-  }
- }
-
  # In both cases return AppID
  return $AppID
 }
+Function New-AzureServicePrincipal { # Created a new Service Principal that can be used for SAML & Provisionning
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true)]
+  [string]$Name,
+  $ApplicationTemplateID = "8adf8e6e-67b2-4cf2-a259-e3dc5476c621",
+  $Token
+ )
+ try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ Write-Verbose "Checking for existing App with name $Name"
+ $existingApp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/ServicePrincipals?`$filter=displayName eq '$Name'"
+ if ($existingApp.Count -gt 0) {
+  $AppID = $existingApp.appId
+  Throw "App Registration with name '$Name' already exists with ID: $AppID"
+ }
+
+ Write-Verbose "Creating App"
+ $Body = (@{
+  "displayName" = "$Name"
+ }) | ConvertTo-JSON
+
+ $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/applicationTemplates/$ApplicationTemplateID/instantiate" -Method POST -Body $Body
+ Write-Host -ForegroundColor Green -Object "Created App $Name with AppID $($Result.application.appid), App ObjectID $($Result.application.id)"
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+
+}
+
 # App Registration [Only]
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
@@ -13882,31 +13874,61 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
 # AAD Group Management
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
  Param (
-  [Parameter(Mandatory=$true)]$UserName,
-  [Parameter(Mandatory=$true)]$Group,
+  [Parameter(Mandatory=$true)]$Member, # If name is provided will search for "MemberType"
+  [Parameter(Mandatory=$true)]$Group, # If Group Name is used will search for ID
+  [ValidateSet("Auto","Group", "ServicePrincipal", "User", "Device")]$MemberType = "Auto",
   $Token
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   if ($authDetails.Method -eq "Token") {
-  $header = $authDetails.Header
-  if ( (! (Assert-IsGUID $Group)) -or (! (Assert-IsGUID $UserName)) ) { Write-host "When using graph GUID is mandatory" ; return }
-  $Result = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/users/$UserName/memberof/$Group"
-  if ($Result.id -eq $Group) { return $True } else { return $False }
- } else {
-  if (Assert-IsGUID $Group) {
-   (az ad group member check --group $Group --member-id $UserName -o json --only-show-errors | ConvertFrom-Json).Value
+  if ( ! (Assert-IsGUID $Group) ) {
+   Write-Verbose "When using graph Group GUID is mandatory - Will Search"
+   $GroupID = Get-AzureADGroupIDFromName -GroupName $Group -Token $authDetails.Token
+   if (! $GroupID) { Throw "Group $Group Not Found"} else { Write-Verbose "Found GroupID $GroupID"}
   } else {
-   (az ad group member check --group $Group --member-id (Get-AzureADUserStartingWith $UserName).ID -o json --only-show-errors | ConvertFrom-Json).Value
+   $GroupID = $Group
+  }
+  if ( ! (Assert-IsGUID $Member) ) {
+   Write-Verbose "When using graph User GUID is mandatory"
+   if ((! $MemberID) -and ($MemberType -eq "User" -or $MemberType -eq "Auto")) {
+    Write-Verbose "Searching for users"
+    $MemberID = (Get-AzureADUserInfo -UPNorID $Member -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
+   }
+   if ((! $MemberID) -and ($MemberType -eq "Group" -or $MemberType -eq "Auto") ) {
+    Write-Verbose "Searching for Groups"
+    $MemberID = Get-AzureADGroupIDFromName -GroupName $Member -Token $authDetails.Token
+   }
+   if ( (! $MemberID) -and ($MemberType -eq "ServicePrincipal" -or $MemberType -eq "Auto") ) {
+    Write-Verbose "Searching for ServicePrincipals"
+    $MemberID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $Member -Token $authDetails.Token
+   }
+   if ( (! $MemberID) -and ($MemberType -eq "Device" -or $MemberType -eq "Auto") ) {
+    Write-Verbose "Searching for Devices"
+    $MemberID = (Get-AzureDeviceObjectIDFromName -DeviceName $Member -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
+   }
+   if (! $MemberID) { Throw "Member $Member Not Found"} else { Write-Verbose "Found MemberID $MemberID"}
+  } else {
+   $MemberID = $Member
+  }
+  $Body = @{ groupIds = @( $GroupID ) } | ConvertTo-Json
+  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/directoryObjects/$MemberID/checkMemberGroups" -Method POST -Body $Body
+  if ($Result -eq $GroupID) { return $True } else { return $False }
+   } else {
+  if (Assert-IsGUID $Group) {
+   (az ad group member check --group $Group --member-id $Member -o json --only-show-errors | ConvertFrom-Json).Value
+  } else {
+   (az ad group member check --group $Group --member-id (Get-AzureADUserStartingWith $Member).ID -o json --only-show-errors | ConvertFrom-Json).Value
   }
  }
   } Catch {
   if ($_.ErrorDetails.Message) {
    $ErrorCode = ($_.ErrorDetails.Message | ConvertFrom-Json).Error.code
    if ($ErrorCode -eq "Request_ResourceNotFound") {
-    write-verbose "User $UserName not in Group $Group"
+    write-verbose "User $Member not in Group $Group"
     return $false
    }
+  } else {
    Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
   }
  }
@@ -13924,6 +13946,24 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
  Try {
   Write-Verbose "Start $($($MyInvocation.MyCommand.Name))"
 
+ # We create the list of columns here.
+  # We use .GetNewClosure() to ensure the $Name variable is "frozen" for each iteration.
+  $ReadableProperties = @('GroupName','displayName','userPrincipalName','accountEnabled')
+  $ReadableProperties += 1..15 | ForEach-Object {
+   $Index = $_
+   $Name = "extensionAttribute$Index"
+   @{
+    Name = $Name
+    Expression = {
+     # We check if the parent object exists, then access the specific property by name
+     if ($_.onPremisesExtensionAttributes) {
+      return $_.onPremisesExtensionAttributes.$Name
+     }
+     return $null
+    }.GetNewClosure() # This captures the correct value of $Name for each column
+   }
+  }
+
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
   if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
@@ -13933,7 +13973,6 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
    $GroupGUID = $Group
    if ($ForceName) {
     Write-Verbose "Search Using GUID - Using ForceName - Getting GroupName"
-
     if ($authDetails.Method -eq "Token") {
      $GroupName = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$Group").displayName
     } else {
@@ -13962,29 +14001,37 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
    $SearchType = "transitiveMembers" } else { $SearchType = "members"
   }
 
-  # Initialize Variables
-  $FirstRun = $True
-  $ContinueRunning = $True
-
-  While ($ContinueRunning) { # Run until there are results
-   if ($FirstRun) {
-    Write-Verbose "API Call : First Call"
-    if ($authDetails.Method -eq "Token") {
-     if ($Fast) {
-      Write-Verbose "Search Using Fast Parameter - Will only search for UPN & ID"
-      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
-     } else {
-      $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
-     }
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL
+  if ($authDetails.Method -eq "Token") {
+   if ($Fast) {
+    Write-Verbose "Search Using Fast Parameter - Will only search for UPN & ID"
+    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
+   } else {
+    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
+   }
+   Write-Verbose "Running Request"
+   $GraphResultRAW = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL
+   Write-Verbose "Adding Type"
+   $GraphResult = $GraphResultRAW | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},*,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
+   if ($RecurseHideGroups) { $GraphResult = $GraphResult | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
+   if ($Readable) {
+    Write-Verbose "Using Readable Tag : Remove *id parameters, and expand OnPremSecurityAttribute"
+    if (! $Fast) {
+     $GraphResult | Select-Object $ReadableProperties
     } else {
+     $GraphResult | Select-Object -ExcludeProperty *ID,'@odata.type'
+    }
+   } else {
+    $GraphResult
+   }
+  } else {
+   # Initialize Variables
+   $FirstRun = $True
+   $ContinueRunning = $True
+   While ($ContinueRunning) { # Run until there are results
+    if ($FirstRun) {
      $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
      $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
-    }
-    $FirstRun=$False
-   } else {
-    if ($authDetails.Method -eq "Token") {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
+     $FirstRun=$False
     } else {
      $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
      # Add error management for API limitation of Azure when using Az Rest
@@ -13996,28 +14043,33 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
       Continue
      }
     }
-   }
-
-   # To avoid having groups in group when using Resurse Mode
-   if ($RecurseHideGroups) { $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
-
-   # Request format is different between Token and Az Cli
-   if ($authDetails.Method -eq "Token") { $NextRequest = $CurrentResult.'@odata.nextLink' } else { $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`"" }
-
-   # If nextLink is available will continue
-   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True ;  Write-Verbose "API Call : Next Link Found - Will Loop Again"} else {$ContinueRunning = $False ;  Write-Verbose "API Call : End Loop"}
-
-   # Filter data and return current value (meaning the values will appear over time instead of at the end - better for memory usage)
-   if ($Fast) {
-    Write-Verbose "Printing data with Fast Tag"
-    $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName,id,
-    @{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
-   } else {
-    $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
+    # Prepare Next Link
+    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
+    if ($CurrentResult.'@odata.nextLink') {
+     $ContinueRunning = $True
+     Write-Verbose "API Call : Next Link Found - Will Loop Again"
+    } else {
+     $ContinueRunning = $False
+     Write-Verbose "API Call : End Loop"
+    }
+    # To avoid having groups in group when using Resurse Mode
+    if ($RecurseHideGroups) { $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
+    # Filter data and return current value (meaning the values will appear over time instead of at the end - better for memory usage)
+    if ($Fast) {
+     Write-Verbose "Printing data with Fast Tag"
+     $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName,id,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
+    } else {
+     $ReturnValue = $CurrentResult.Value | ForEach-Object {
+      if (-not $_.PSObject.Properties['onPremisesExtensionAttributes']) { # Check if onPremisesExtensionAttributes exists on the current object If not, add the property with an empty value (or $null)
+       $_ | Add-Member -MemberType NoteProperty -Name "onPremisesExtensionAttributes" -Value $null
+      }
+      $_  # Output Object
+     } | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
      accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
+    }
+    if ($Readable) {$ReturnValue | Select-Object -ExcludeProperty *id ;  Write-Verbose "Using Readable Tag : Remove *id parameters"} else { $ReturnValue }
    }
-   if ($Readable) {$ReturnValue | Select-Object -ExcludeProperty *id ;  Write-Verbose "Using Readable Tag : Remove *id parameters"} else { $ReturnValue }
-  } # End While Loop
+  }
   Write-Verbose "Finished $($($MyInvocation.MyCommand.Name))"
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -14263,7 +14315,7 @@ Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Copy-AzureADGroupMembers {
+Function Copy-AzureADGroupMembers { # Copy Group Members from one group to another
  Param (
   [Parameter(Mandatory)]$SourceGroupName,
   [Parameter(Mandatory)]$DestinationGroupName
@@ -15436,6 +15488,7 @@ Function Get-AzureConditionalAccessPolicies {
   $Token,
   [Switch]$ShowOnlyEnabled,
   [Switch]$ShowJSON,
+  $ContentFilter,
   $NameFilter
  )
  Try {
@@ -15581,6 +15634,9 @@ Function Get-AzureConditionalAccessPolicies {
   @{name="Full_JSON";expression={
    $_ | ConvertTo-Json -Depth 6
   }}
+  if ($ContentFilter) {
+   $ResultConverted = $ResultConverted | Where-Object { $_.Full_JSON.Contains("$ContentFilter")}
+  }
   if ($ShowJSON) {
    $ResultConverted
   } else {
@@ -16035,6 +16091,74 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
+}
+Function Get-SentinelDeviceInfo {
+ Param (
+  $DeviceName,
+  $Initiator,
+  $AzureMonitorToken,
+  $Duration = '1d',
+  $WorkspaceID,
+  [Switch]$ExcludeDefaultApps
+ )
+
+  Write-Verbose "Getting WorkspaceID"
+  $WorkspaceID = $global:SentinelWorkspaceID
+  if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
+
+  # Get and check Azure Monitor Token
+  Write-Verbose "Getting AzureMonitor Token information"
+  if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
+   Write-Verbose "Auth Method: Found AzureMonitorToken provided via parameter."
+  } elseif ($global:AzureMonitorToken) { # Priority 2: Check if a global token variable exists.
+   Write-Verbose "Auth Method: Found token in `$global:AzureMonitorToken."
+   $AzureMonitorToken = $global:AzureMonitorToken
+  } else {
+   Throw 'Azure Monitor Token is not found as a variable nor as a Parameter'
+  }
+
+  if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
+ $QueryStart = @"
+let UserDetails = IdentityInfo
+| summarize arg_max(TimeGenerated, *) by AccountObjectId
+| project AccountObjectId, UserDisplayName = AccountDisplayName, JobTitle, Department;
+AuditLogs
+| where TimeGenerated between (ago($Duration) .. now())
+//| where OperationName == "Delete device"
+| where Category == "Device"
+| extend InitiatedByParams = parse_json(InitiatedBy)
+| extend
+    InitiatorId = coalesce(tostring(InitiatedByParams.user.id), tostring(InitiatedByParams.app.appId), tostring(InitiatedByParams.app.servicePrincipalId)),
+    InitiatorNameFallback = coalesce(tostring(InitiatedByParams.user.userPrincipalName), tostring(InitiatedByParams.app.displayName))
+| extend TargetResources = parse_json(TargetResources)
+| mv-expand TargetResources
+| extend
+    DeviceName = tostring(TargetResources.displayName),
+    DeviceId = tostring(TargetResources.id),
+    DeviceType = tostring(TargetResources.type)
+| join kind=leftouter (UserDetails) on `$left.InitiatorId == `$right.AccountObjectId
+| extend
+    InitiatorName = coalesce(UserDisplayName, InitiatorNameFallback)
+| project
+    TimeGenerated,
+    OperationName,
+    InitiatorName,
+    InitiatorId,
+    DeviceName,
+    DeviceId,
+    DeviceType
+"@
+
+if ($ExcludeDefaultApps) { $QueryStart += '| where InitiatorName !in ("Device Registration Service", "Intune Grouping and Targeting Client Prod","Intune Application Protection CA Client","Intune Compliance Client Prod","Intune MonoDeviceService ConfidentialClient")'}
+if ($DeviceName) { $QueryStart += "| where DeviceName == '$DeviceName'" }
+if ($Initiator) { $QueryStart += "| where InitiatorName contains '$Initiator'" }
+
+  # Query will always end with this
+  $QueryEnd = '| sort by TimeGenerated'
+
+  # Merge Start & End
+  $Query = $QueryStart + $QueryEnd
+Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
 }
 # Misc
 Function Get-AzureADUserOwnedDevice {
