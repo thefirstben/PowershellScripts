@@ -54,6 +54,7 @@
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
 # To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate -Subject "$($env:username)" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy NonExportable -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
 # To generate Self Signed Certificate for App Registration : $Certificate=New-SelfSignedCertificate -Subject "$AppName" -CertStoreLocation "Cert:\CurrentUser\My" -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
+# Export Cert : $Certificate | Export-Certificate -Type CERT -FilePath $PATH
 # Default Catch : Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
 # Catch with Graph : $_.ErrorDetails.Message
 
@@ -11382,16 +11383,28 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
 
   # A. Client Service Principal (object that "Receives" the permission)
   if (Assert-IsGUID $AppRegistration) {
-   $AppSPID = $AppRegistration
+   Write-Verbose "Using App Registration AppID Checking if proper AppSP ID"
+   $AppSPID = (Get-AzureServicePrincipal -ID $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
+   if (! $AppSPID) {
+    Write-Verbose "Not proper AppSP ID found will search for AppID"
+    $AppSPID = (Get-AzureServicePrincipal -AppID $AppRegistration -Token $authDetails.Token).ID
+   }
   } else {
-   $AppSPID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $AppRegistration -Token $authDetails.Token
+   Write-Verbose "Using App Registration Name, will search for AppID"
+   $AppSPID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue
   }
   if (!$AppSPID) { Throw "Service Principal for '$AppRegistration' not found. (Check Enterprise Applications)" } else { Write-Verbose "Using AppID : $AppSPID" }
 
   # B. Resource Service Principal (The API, e.g., Microsoft Graph)
   if (Assert-IsGUID $API) {
-   $ResSP = get-azureservicePrincipal -ID $API -Token $authDetails.Token
+   Write-Verbose "Using API ID - Will Search for Service Principal via ID : $API"
+   $ResSP = get-azureservicePrincipal -ID $API -Token $authDetails.Token -ErrorAction SilentlyContinue
+   if (! $ResSP) {
+    Write-Verbose "ID not found - Will Search for Service Principal via AppID : $API"
+    $ResSP = get-azureservicePrincipal -AppID $API -Token $authDetails.Token -ErrorAction SilentlyContinue
+   }
   } else {
+   Write-Verbose "Using API Name - Will Search for Service Principal via Name : $API"
    $ResSP = get-azureservicePrincipal -DisplayName $API -Token $authDetails.Token
   }
   if (!$ResSP) { Throw "Service Principal for API '$API' not found." } else { Write-Verbose "Using API ID : $($ResSP.id)" }
@@ -11429,8 +11442,11 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
    # === Delegated Permission (Scope) ===
    # Delegated grants use a different endpoint that DOES support filtering safely.
    Write-Verbose "Get Current Delegated Grants"
-   $ExistingGrant = (Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'").value
+   # $ExistingGrant = (Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue).value
+   # Used the Get-AzureGraph to avoid Error as the ErrorAction SilentlyContinue on the Invoke-RestMethod was still failing when not finding existing grants
+   $ExistingGrant = get-azuregraph -Token $Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue
 
+   Write-Verbose "Searching for API Scope Name"
    # Look up the OFFICIAL case-sensitive name from the API # This fixes the "Profile" vs "profile" issue.
    $OfficialScope = $ResSP.oauth2PermissionScopes | Where-Object { $_.value -eq $RightName } | Select-Object -ExpandProperty value
    if (!$OfficialScope) { Throw "Scope '$RightName' not found in API definitions." }
@@ -11442,10 +11458,10 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
     $Body = @{
      clientId = $AppSPID
      consentType = "AllPrincipals"
-     principalId = $null
      resourceId = $ResSP.id
-     scope = $RightName
+     scope = $OfficialScope
     } | ConvertTo-Json
+    # return $body
     Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
    } else {
     # Update Existing (Merge)
@@ -14292,19 +14308,9 @@ Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
    }
   }
   if ($authDetails.Method -eq "Token") {
-   Try {
     $params = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserGUID" }
     $ParamJson = $params | convertto-json
     Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/`$ref"  -Body $ParamJson
-   } catch {
-    $Exception = $($Error[0])
-    $StatusCodeJson = $Exception.ErrorDetails.message
-    if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-    $StatusMessageJson = $Exception.ErrorDetails.message
-    if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-    if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-    Write-host -ForegroundColor Red "Error adding user $UPNorID in group $GroupName ($StatusCode | $StatusMessage))"
-   }
   } else {
    # Confirm that this works with GUID
    # az ad group member add --group $GroupName --member-id $UserGUID
@@ -14312,7 +14318,14 @@ Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
   }
 
  } catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error adding user $UPNorID in group $GroupName ($StatusCode | $StatusMessage))"
+  # Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Copy-AzureADGroupMembers { # Copy Group Members from one group to another
@@ -15699,6 +15712,7 @@ Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Reques
  }
 }
 Function Get-AzureLogAnalyticsRequest {
+ [CmdletBinding()]
  Param(
   [Parameter(Mandatory)]$WorkspaceID,
   [Parameter(Mandatory)]$Query, #in string (if JSON it can be a POST query with query in BODY)
@@ -15719,9 +15733,10 @@ Function Get-AzureLogAnalyticsRequest {
 
   # Using post with Query in the BODY
   $QueryJSON = @{"query" = $Query} | ConvertTo-Json
-  $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON
+  $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON -ErrorAction Stop
   if ($Result.Error) {
-   Write-Error "Error Found : $($Result.error.details.innererror)"
+   Write-Verbose $Query
+   Throw "Error Found : $Result.Error '$($Result.error.details.innererror)'"
   }
 
   Write-Verbose -Message "Converting result to Object"
@@ -16092,73 +16107,128 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-SentinelDeviceInfo {
- Param (
-  $DeviceName,
-  $Initiator,
-  $AzureMonitorToken,
-  $Duration = '1d',
-  $WorkspaceID,
-  [Switch]$ExcludeDefaultApps
- )
+Function Get-SentinelAuditInfo {
+    [CmdletBinding()]
+    Param (
+        $Initiator,
+        $Category,
+        $OperationName,
+        $TargetName,
+        $AzureMonitorToken,
+        $Duration = '1d',
+        $WorkspaceID,
+        [Switch]$ExcludeDefaultApps,
+        [Switch]$DefaultFilter,
+        [Switch]$Readable
+    )
 
-  Write-Verbose "Getting WorkspaceID"
-  $WorkspaceID = $global:SentinelWorkspaceID
-  if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
+    # 1. Setup & Auth
+    $WorkspaceID = $global:SentinelWorkspaceID
+    if (! $WorkspaceID) {Throw "Workspace ID Not Found"}
 
-  # Get and check Azure Monitor Token
-  Write-Verbose "Getting AzureMonitor Token information"
-  if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
-   Write-Verbose "Auth Method: Found AzureMonitorToken provided via parameter."
-  } elseif ($global:AzureMonitorToken) { # Priority 2: Check if a global token variable exists.
-   Write-Verbose "Auth Method: Found token in `$global:AzureMonitorToken."
-   $AzureMonitorToken = $global:AzureMonitorToken
-  } else {
-   Throw 'Azure Monitor Token is not found as a variable nor as a Parameter'
-  }
+    if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
+        # Provided via param
+    } elseif ($global:AzureMonitorToken) {
+        $AzureMonitorToken = $global:AzureMonitorToken
+    } else {
+        Throw 'Azure Monitor Token is not found'
+    }
+    if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
 
-  if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
- $QueryStart = @"
-let UserDetails = IdentityInfo
-| summarize arg_max(TimeGenerated, *) by AccountObjectId
-| project AccountObjectId, UserDisplayName = AccountDisplayName, JobTitle, Department;
-AuditLogs
-| where TimeGenerated between (ago($Duration) .. now())
-//| where OperationName == "Delete device"
-| where Category == "Device"
-| extend InitiatedByParams = parse_json(InitiatedBy)
-| extend
-    InitiatorId = coalesce(tostring(InitiatedByParams.user.id), tostring(InitiatedByParams.app.appId), tostring(InitiatedByParams.app.servicePrincipalId)),
-    InitiatorNameFallback = coalesce(tostring(InitiatedByParams.user.userPrincipalName), tostring(InitiatedByParams.app.displayName))
-| extend TargetResources = parse_json(TargetResources)
-| mv-expand TargetResources
-| extend
-    DeviceName = tostring(TargetResources.displayName),
-    DeviceId = tostring(TargetResources.id),
-    DeviceType = tostring(TargetResources.type)
-| join kind=leftouter (UserDetails) on `$left.InitiatorId == `$right.AccountObjectId
-| extend
-    InitiatorName = coalesce(UserDisplayName, InitiatorNameFallback)
-| project
-    TimeGenerated,
-    OperationName,
-    InitiatorName,
-    InitiatorId,
-    DeviceName,
-    DeviceId,
-    DeviceType
+    # 2. Build Safe Pre-Filters (Applied before Join)
+    $PreFilters = ""
+    if ($OperationName) { $PreFilters += "| where OperationName contains '$OperationName' `n" }
+    if ($Category) { $PreFilters += "| where Category contains '$Category' `n" }
+    if ($TargetName) { $PreFilters += "| where TargetResources contains '$TargetName' `n" }
+
+    if ($ExcludeDefaultApps) {
+      $PreFilters += @"
+    | where InitiatedBy !in (
+    'Intune MonoDeviceService',
+    'Intune Compliance Client',
+    'Intune Application Protection',
+    'Intune Grouping and Targeting',
+    'Device Registration Service'
+    )
+    | where OperationName !in (
+    'GroupsODataV4_Get',
+    'Group_GetDynamicGroupProperties',
+    'Validate user authentication',
+    'Settings_GetSettingsAsync')
+    | where LoggedByService !in (
+    'Account Provisioning',
+    'B2C')
+"@
+    }
+
+    # 3. Construct KQL Query
+    $Query = @"
+    let UserDetails = IdentityInfo
+    | summarize arg_max(TimeGenerated, *) by AccountObjectId
+    | project InitiatorId = AccountObjectId, UserDisplayName = AccountDisplayName;
+
+    AuditLogs
+    | where TimeGenerated between (ago($Duration) .. now())
+    $PreFilters
+
+    // MEMORY OPTIMIZATION: Project ONLY what we need immediately to prevent 'Low Memory' errors
+    | project TimeGenerated, OperationName, Category, LoggedByService, InitiatedBy, TargetResources, CorrelationId
+
+    // Parse Initiator ID
+    | extend InitiatedByParams = parse_json(InitiatedBy)
+    | extend
+        InitiatorId = coalesce(tostring(InitiatedByParams.user.id), tostring(InitiatedByParams.app.appId), tostring(InitiatedByParams.app.servicePrincipalId)),
+        InitiatorNameFallback = coalesce(tostring(InitiatedByParams.user.userPrincipalName), tostring(InitiatedByParams.app.displayName))
+
+    // Join User Details (Resolve GUID to Name)
+    | join kind=leftouter (UserDetails) on InitiatorId
+    | extend InitiatorName = coalesce(UserDisplayName, InitiatorNameFallback)
+
+    // FILTER BY INITIATOR (Done after join to ensure names are resolved)
+    $(if ($Initiator) { "| where InitiatorName contains '$Initiator'" })
+    $(if ($ExcludeDefaultApps) {
+        "| where InitiatorName !has 'Microsoft Substrate Management'
+         | where InitiatorName !has 'Microsoft Approval Management'
+         | where InitiatorName !has 'Modern Workplace Customer APIs'
+         | where InitiatorName !has 'Azure AD Identity Governance - User Management'"
+    })
+
+    // Expand Targets
+    | extend TargetResources = parse_json(TargetResources)
+    | mv-expand TargetResources
+    | extend
+        ModifiedObjectDisplayName = tostring(TargetResources.displayName),
+        ModifiedObjectType = tostring(TargetResources.type),
+        ModifiedObjectID = tostring(TargetResources.id)
+
+    // Extract Properties (Safe Logic to preserve rows with no changes)
+    | extend mProps = TargetResources.modifiedProperties
+    | extend mProps = iff(isnull(mProps) or array_length(mProps) == 0, dynamic([null]), mProps)
+
+    // Get Old/New Values
+    | mv-apply mProps on (
+        summarize
+            Change_ID_Details = take_anyif(mProps, mProps.displayName has "ObjectID" or mProps.displayName has "UniqueId"),
+            Change_Name_Details = take_anyif(mProps, mProps.displayName has "DisplayName" or mProps.displayName has "UserPrincipalName")
+    )
+
+    | extend
+        OldValue_ID   = tostring(Change_ID_Details.oldValue),
+        NewValue_ID   = tostring(Change_ID_Details.newValue),
+        OldValue_Name = tostring(Change_Name_Details.oldValue),
+        NewValue_Name = tostring(Change_Name_Details.newValue)
+
+    $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectID, OldValue_ID, NewValue_ID, OldValue_Name, NewValue_Name" })
+    | sort by TimeGenerated desc
 "@
 
-if ($ExcludeDefaultApps) { $QueryStart += '| where InitiatorName !in ("Device Registration Service", "Intune Grouping and Targeting Client Prod","Intune Application Protection CA Client","Intune Compliance Client Prod","Intune MonoDeviceService ConfidentialClient")'}
-if ($DeviceName) { $QueryStart += "| where DeviceName == '$DeviceName'" }
-if ($Initiator) { $QueryStart += "| where InitiatorName contains '$Initiator'" }
-
-  # Query will always end with this
-  $QueryEnd = '| sort by TimeGenerated'
-
-  # Merge Start & End
-  $Query = $QueryStart + $QueryEnd
-Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+    # 4. Execute
+  $Result = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+  if ($Readable ) {
+   $Result | Select-Object -ExcludeProperty *ID
+  } else {
+   $Result
+  }
 }
 # Misc
 Function Get-AzureADUserOwnedDevice {
