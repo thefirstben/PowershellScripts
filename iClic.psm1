@@ -12031,7 +12031,7 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
  [CmdletBinding(DefaultParameterSetName="IndividualRole")]
  Param (
   # Parameters mandatory in ALL sets
-  [parameter(Mandatory = $true)][GUID]$AppRegistrationID,
+  [parameter(Mandatory = $true)][GUID]$AppRegistrationObjectID, #ObjectID of App Registration
 
   [parameter(Mandatory = $true)]$Token,
 
@@ -12083,14 +12083,14 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
 
   if ($Overwrite) {
    Write-Verbose "Overwrite flag set, getting current roles"
-   $AppRoleToRemove = get-azureappregistrationappRoles -ID $AppRegistrationID | ForEach-Object {[PSCustomObject]@{description = $_.description ; displayName = $_.displayName ; value = $_.value ; allowedMemberTypes = @('User') ; isEnabled = $false ; id = $_.id }}
+   $AppRoleToRemove = get-azureappregistrationappRoles -ID $AppRegistrationObjectID -Token $authDetails.Token | ForEach-Object {[PSCustomObject]@{description = $_.description ; displayName = $_.displayName ; value = $_.value ; allowedMemberTypes = @('User') ; isEnabled = $false ; id = $_.id }}
    $RemovalBody = @{ appRoles = @( $AppRoleToRemove ) }| ConvertTo-Json -Depth 10
    Write-Verbose "Overwrite flag set, disabling existing roles"
-   Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" -Headers $header -Body $RemovalBody
+   Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationObjectID" -Headers $header -Body $RemovalBody
   }
 
   Write-Verbose "Running Patch command"
-  Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationID" -Headers $header -Body $body
+  Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationObjectID" -Headers $header -Body $body
 
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
