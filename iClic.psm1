@@ -9573,6 +9573,99 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
   }
  }
 }
+Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL
+ [CmdletBinding()]
+ Param (
+  [String]$Name,
+  $Token,
+  $APIVersion = "2024-04-01",
+  [switch]$Exact
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+  if ($Name) {
+   if ($Exact) {
+    $query = "ResourceContainers | where name =~ '$Name'" # =~to be case insensitive
+   } else {
+    $query = "ResourceContainers | where name contains '$Name'"
+   }
+  } else {
+   $query = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'"
+  }
+
+  Write-Verbose "Query : $Query"
+
+  $bodyHashtable = @{
+   query = $Query
+   options = @{ resultFormat = "objectArray" }
+  }
+
+  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+  Write-Verbose "Body : $Body"
+
+  # 4. Execute the Request
+  $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+  # 5. Process
+  if ($response.data) {
+   Write-Verbose "Fetched $($response.data.Count) rows / Total $($response.totalRecords)"
+   if ($response.totalRecords -gt $response.data.Count) {
+    Write-Host -ForegroundColor "Yellow" -Object "More records available, consider implementing pagination : $($response.totalRecords) total vs $($response.data.Count) fetched"
+   }
+   return $response.data
+  } else {
+   Throw "$Name not found"
+  }
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
+Function Get-AzureResource { # Get Azure Resources using API with KQL
+ Param (
+  [parameter(Mandatory = $true, ParameterSetName="Name")][String]$Name,
+  $Token,
+  $APIVersion = "2024-04-01",
+  [switch]$Exact
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($Exact) {
+   $query = "Resources | where name == '$Name'"
+  } else {
+   $query = "Resources | where name contains '$Name'"
+  }
+
+  $BodyRaw = @{
+   query = $query
+   options = @{ resultFormat = "objectArray" }
+  }
+  $Body = $BodyRaw | ConvertTo-Json -Depth 5
+  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+  if ($Result.data) {
+   return $Result.data
+  } else {
+   Write-host "$Name not found"
+  }
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
 # AzCli Env Management
 Function Get-AzureEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
@@ -9677,7 +9770,7 @@ Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
  }
  ProgressClear
 }
-Function Get-AzureResourceGroups { # Get all Azure Resource Groups for all Subscriptions
+Function Get-AzureResourceGroups_CLI { # Get all Azure Resource Groups for all Subscriptions
  Param (
   $ExportFileName = "$iClic_TempPath\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
  )
@@ -10492,7 +10585,7 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
  $PrincipalListGlobal += $RequestResultWithGUIDSAndRoleIDs.principalId
  $PrincipalListGlobal += $RequestResultWithGUIDSAndRoleIDs.createdBy
  $PrincipalListGlobal += $RequestResultWithGUIDSAndRoleIDs.updatedBy
- $PrincipalList = $PrincipalListGlobal | Select-Object -Unique
+ $PrincipalList = $PrincipalListGlobal| Where-Object { $_ -ne "" } | Select-Object -Unique
 
  # Initialize an empty array to store the results from all batches
  $PrincipalConvertedTable = @()
@@ -12046,6 +12139,7 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
   [parameter(Mandatory = $true, ParameterSetName = "RoleList")][object[]]$AppRoleList,
   # Example to Copy Role : $RoleList = Get-AzureAppRegistrationAppRoles -DisplayName $AppName -Token $AppToken | select-object description,displayName,value,allowedMemberTypes,@{name="isEnabled";expression={$true}},@{name="id";expression={([guid]::NewGuid()).guid}}
   # To Create an object From CSV : $New_Roles = import-csv FILENAME.csv | ForEach-Object {[PSCustomObject]@{description = $_.Role ; displayName = $_.Role ; value = $_.Role ; allowedMemberTypes = @('User') ; isEnabled = $true ; id = ([guid]::NewGuid()).Guid }}
+  # From list of roles : $New_Roles = "MGappUser","TemplateEditor","FrontendPublisher","PushnotificationManager","MonitoringAccess" | ForEach-Object {[PSCustomObject]@{description = $_ ; displayName = $_ ; value = $_ ; allowedMemberTypes = @('User') ; isEnabled = $true ; id = ([guid]::NewGuid()).Guid }}
   [Switch]$Overwrite
  )
  Try {
