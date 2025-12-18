@@ -9573,7 +9573,7 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
   }
  }
 }
-Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL
+Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL (Should be created as a template Query and variabilize only the Query)
  [CmdletBinding()]
  Param (
   [String]$Name,
@@ -9582,42 +9582,112 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL
   [switch]$Exact
  )
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
+  # 1. Base Query Construction
   if ($Name) {
    if ($Exact) {
-    $query = "ResourceContainers | where name =~ '$Name'" # =~to be case insensitive
+    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups | where name =~ '$Name'"
    } else {
-    $query = "ResourceContainers | where name contains '$Name'"
+    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups | where name contains '$Name'"
    }
   } else {
-   $query = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'"
+   $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'"
   }
 
-  Write-Verbose "Query : $Query"
+# 2. Get Total Count First
+  # We run a lightweight query just to get the number of records.
+  $countQuery = "$baseQuery | count"
 
   $bodyHashtable = @{
-   query = $Query
+   query = $countQuery
    options = @{ resultFormat = "objectArray" }
   }
-
   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
 
-  Write-Verbose "Body : $Body"
+  Write-Verbose "Checking total count..."
+  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
 
-  # 4. Execute the Request
-  $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
-
-  # 5. Process
-  if ($response.data) {
-   Write-Verbose "Fetched $($response.data.Count) rows / Total $($response.totalRecords)"
-   if ($response.totalRecords -gt $response.data.Count) {
-    Write-Host -ForegroundColor "Yellow" -Object "More records available, consider implementing pagination : $($response.totalRecords) total vs $($response.data.Count) fetched"
-   }
-   return $response.data
+  # Extract the integer from the response (usually { "count": 123 })
+  if ($countResponse.data) {
+   # Access dynamically because property name is usually 'count_' or 'count'
+   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
   } else {
+   $TotalRecords = 0
+  }
+
+  Write-Verbose "Total Resources found: $TotalRecords"
+
+  if ($TotalRecords -eq 0) {
    Throw "$Name not found"
   }
+
+  # 3. Fetch Data
+  $GlobalResult = @()
+  $PageSize = 1000
+
+  # OPTIMIZATION: If data fits in one page, don't use the complex loop
+  if ($TotalRecords -le $PageSize) {
+   Write-Verbose "Fetching all $TotalRecords records in a single call..."
+
+   $query = "$baseQuery | order by id asc | take $PageSize"
+
+   $bodyHashtable = @{
+    query = $query
+    options = @{ resultFormat = "objectArray" }
+   }
+   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+   if ($response.data) { $GlobalResult += $response.data }
+
+  } else {
+   # PAGINATION LOOP: Use strcmp for > 1000 items
+   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
+
+   $LastId = $null
+   $loopCount = 0
+
+   do {
+    $currentQuery = $baseQuery
+
+    # Keyset Filter
+    if (-not [string]::IsNullOrEmpty($LastId)) {
+     $currentQuery += " | where strcmp(id, '$LastId') > 0"
+    }
+
+    $currentQuery += " | order by id asc | take $PageSize"
+
+    $bodyHashtable = @{
+     query = $currentQuery
+     options = @{ resultFormat = "objectArray" }
+    }
+    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+    # Retry logic or simple execute
+    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+    if ($response.data) {
+     $count = $response.data.Count
+     $GlobalResult += $response.data
+     $LastId = $response.data[-1].id
+     $loopCount++
+
+     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
+    } else {
+     $count = 0
+    }
+
+   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
+  }
+
+  # 4. Final Validation
+  if ($GlobalResult.Count -ne $TotalRecords) {
+   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
+  }
+
+  return $GlobalResult
  } catch {
   $Exception = $($Error[0])
   if ($Exception.ErrorDetails.message) {
@@ -9630,31 +9700,242 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL
  }
 }
 Function Get-AzureResource { # Get Azure Resources using API with KQL
+ [CmdletBinding()]
  Param (
-  [parameter(Mandatory = $true, ParameterSetName="Name")][String]$Name,
+  [String]$Name,
+  [String[]]$SubscriptionId,
+  $Token,
+  $APIVersion = "2024-04-01",
+  $Columns,
+  [switch]$Exact
+ )
+ try {
+  # Had to make more detailed because of potential issues in resources with incorrect parameters
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # 1. Base Query Construction
+  $filterClause = ""
+  if ($Name) {
+   if ($Exact) { $filterClause += " | where name =~ '$Name'" }
+   else        { $filterClause += " | where name contains '$Name'" }
+  }
+  if ($SubscriptionId) {
+   $subList = "'" + ($SubscriptionId -join "','") + "'"
+   $filterClause += " | where subscriptionId in ($subList)"
+  }
+
+  # 2. Discovery Phase: Get list of relevant subscriptions
+  # This is usually safe because it only returns counts, not the corrupted resource properties.
+  Write-Verbose "Identifying relevant subscriptions..."
+
+  $subQuery = "Resources $filterClause | summarize Total=count() by subscriptionId | order by Total desc"
+  $bodyHashtable = @{ query = $subQuery; options = @{ resultFormat = "objectArray" } }
+  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+  Write-Verbose $body
+  $subResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+  if (-not $subResponse.data) { Throw "No resources found." }
+
+  $TargetSubs = $subResponse.data
+  $GlobalTotalExpected = ($TargetSubs | Measure-Object -Property Total -Sum).Sum
+  Write-Host -object "Found $($TargetSubs.Count) subscriptions. Expected Total: $GlobalTotalExpected" -ForegroundColor "Cyan"
+
+  $GlobalResult = @()
+  $PageSize = 1000
+
+  # 3. Processing Loop (One Subscription at a time)
+  foreach ($subRow in $TargetSubs) {
+   $CurrentSubId = $subRow.subscriptionId
+   $ExpectedCount = $subRow.Total
+
+   if ($ExpectedCount -eq 0) { continue }
+
+   $SubResult = @()
+   $FetchedForSub = 0
+   $SubLastId = $null
+   $SkipSubscription = $false
+
+   # Pagination Loop
+   try {
+    do {
+     # Use 'strcmp' logic for reliable paging
+     if ($FetchedForSub -eq 0) {
+      $q = "Resources | where subscriptionId == '$CurrentSubId' $filterClause | extend SortKey=tostring(id) | order by SortKey asc | take $PageSize$Columns"
+     } else {
+      $q = "Resources | where subscriptionId == '$CurrentSubId' $filterClause | extend SortKey=tostring(id) | where strcmp(SortKey, '$SubLastId') > 0 | order by SortKey asc | take $PageSize$Columns"
+     }
+
+     # Write-Host -Object "Checking Subscription $($CurrentSubId) " -ForegroundColor Red
+
+     $bodyHashtable = @{ query = $q; options = @{ resultFormat = "objectArray" } }
+     $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+     # --- THE SIMPLIFIED CHECK ---
+     # We wrap the call. If it fails (due to "Duplicate Key" JSON or API error), we catch it and SKIP the sub.
+     $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body -ErrorAction Stop
+
+     if ($response.data) {
+      $pageCount = $response.data.Count
+      $SubResult += $response.data
+      $FetchedForSub += $pageCount
+
+      # Update Cursor safely
+      if ($pageCount -gt 0) {
+       # Handle object vs hashtable just in case, but assume object for simple path
+       if ($response.data[-1].PSObject.Properties['SortKey']) {
+        $SubLastId = $response.data[-1].SortKey
+       } else {
+        $SubLastId = $response.data[-1].id
+       }
+      }
+     } else {
+      $pageCount = 0
+     }
+
+    } while ($pageCount -eq $PageSize)
+
+   } catch {
+    # This block catches the "Duplicate Key" JSON error or any API timeout
+    Write-Host -Object "SKIPPING Subscription $($CurrentSubId) due to data corruption or API error: $($_.Exception.Message)" -ForegroundColor Red
+    $SkipSubscription = $true
+   }
+
+   # Only add to global results if the subscription was clean
+   if (-not $SkipSubscription) {
+    if ($SubResult.Count -eq $ExpectedCount) {
+     $GlobalResult += $SubResult
+     Write-Host -Object "Subscription $($CurrentSubId) - Found $($SubResult.Count) resources" -ForegroundColor Green
+    } else {
+     # If we didn't crash but counts don't match, warn but keep what we got
+     Write-Host -Object "Mismatch on Subscription $($CurrentSubId) : Expected $ExpectedCount, Got $($SubResult.Count)" -ForegroundColor Red
+     $GlobalResult += $SubResult
+    }
+   }
+  }
+
+  Write-host -Object "Success: Retrieved $($GlobalResult.Count) of $GlobalTotalExpected expected resources." -ForegroundColor Magenta
+  return $GlobalResult
+
+ } catch {
+  Write-Error "Script Error: $_"
+ }
+}
+Function Get-AzureSubscriptions_New { # Get Azure Subscriptions using API with KQL
+ [CmdletBinding()]
+ Param (
+  [String]$Name,
   $Token,
   $APIVersion = "2024-04-01",
   [switch]$Exact
  )
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if ($Exact) {
-   $query = "Resources | where name == '$Name'"
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # 1. Base Query Construction
+  if ($Name) {
+   if ($Exact) {
+    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions' | where name =~ '$Name'"
+   } else {
+    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions' | where name contains '$Name'"
+   }
   } else {
-   $query = "Resources | where name contains '$Name'"
+   $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions'"
   }
 
-  $BodyRaw = @{
-   query = $query
+# 2. Get Total Count First
+  # We run a lightweight query just to get the number of records.
+  $countQuery = "$baseQuery | count"
+
+  $bodyHashtable = @{
+   query = $countQuery
    options = @{ resultFormat = "objectArray" }
   }
-  $Body = $BodyRaw | ConvertTo-Json -Depth 5
-  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
-  if ($Result.data) {
-   return $Result.data
+  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+  Write-Verbose "Checking total count..."
+  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+  # Extract the integer from the response (usually { "count": 123 })
+  if ($countResponse.data) {
+   # Access dynamically because property name is usually 'count_' or 'count'
+   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
   } else {
-   Write-host "$Name not found"
+   $TotalRecords = 0
   }
+
+  Write-Verbose "Total Resources found: $TotalRecords"
+
+  if ($TotalRecords -eq 0) {
+   Throw "$Name not found"
+  }
+
+  # 3. Fetch Data
+  $GlobalResult = @()
+  $PageSize = 1000
+
+  # OPTIMIZATION: If data fits in one page, don't use the complex loop
+  if ($TotalRecords -le $PageSize) {
+   Write-Verbose "Fetching all $TotalRecords records in a single call..."
+
+   $query = "$baseQuery | order by id asc | take $PageSize"
+
+   $bodyHashtable = @{
+    query = $query
+    options = @{ resultFormat = "objectArray" }
+   }
+   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+   if ($response.data) { $GlobalResult += $response.data }
+
+  } else {
+   # PAGINATION LOOP: Use strcmp for > 1000 items
+   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
+
+   $LastId = $null
+   $loopCount = 0
+
+   do {
+    $currentQuery = $baseQuery
+
+    # Keyset Filter
+    if (-not [string]::IsNullOrEmpty($LastId)) {
+     $currentQuery += " | where strcmp(id, '$LastId') > 0"
+    }
+
+    $currentQuery += " | order by id asc | take $PageSize"
+
+    $bodyHashtable = @{
+     query = $currentQuery
+     options = @{ resultFormat = "objectArray" }
+    }
+    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+    # Retry logic or simple execute
+    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+    if ($response.data) {
+     $count = $response.data.Count
+     $GlobalResult += $response.data
+     $LastId = $response.data[-1].id
+     $loopCount++
+
+     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
+    } else {
+     $count = 0
+    }
+
+   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
+  }
+
+  # 4. Final Validation
+  if ($GlobalResult.Count -ne $TotalRecords) {
+   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
+  }
+
+  return $GlobalResult
  } catch {
   $Exception = $($Error[0])
   if ($Exception.ErrorDetails.message) {
@@ -9666,12 +9947,6 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
   }
  }
 }
-# AzCli Env Management
-Function Get-AzureEnvironment { # Get Current Environment used by AzCli
- # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
- az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
-}
-# Global Extracts
 Function Get-AzureSubscriptions { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
 [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
@@ -9734,15 +10009,132 @@ Function Get-AzureSubscriptions { # Get all subscription of a Tenant, a lot fast
   }
  }
 }
-Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups Using AzCli
+Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups
+  [CmdletBinding()]
+ Param (
+  $Token,
+  $APIVersion = "2024-04-01"
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # $baseQuery = "ResourceContainers | where type == 'microsoft.management/managementgroups'"
+  $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions'" # Get All subscriptions better to find details on Management Group
+
+  # 2. Get Total Count First
+  # We run a lightweight query just to get the number of records.
+  $countQuery = "$baseQuery | count"
+
+  $bodyHashtable = @{
+   query = $countQuery
+   options = @{ resultFormat = "objectArray" }
+  }
+  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+  Write-Verbose "Checking total count..."
+  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+  # Extract the integer from the response (usually { "count": 123 })
+  if ($countResponse.data) {
+   # Access dynamically because property name is usually 'count_' or 'count'
+   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
+  } else {
+   $TotalRecords = 0
+  }
+
+  Write-Verbose "Total Resources found: $TotalRecords"
+
+  if ($TotalRecords -eq 0) {
+   Throw "$Name not found"
+  }
+
+  # 3. Fetch Data
+  $GlobalResult = @()
+  $PageSize = 1000
+
+  # OPTIMIZATION: If data fits in one page, don't use the complex loop
+  if ($TotalRecords -le $PageSize) {
+   Write-Verbose "Fetching all $TotalRecords records in a single call..."
+
+   $query = "$baseQuery | order by id asc | take $PageSize"
+
+   $bodyHashtable = @{
+    query = $query
+    options = @{ resultFormat = "objectArray" }
+   }
+   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+   if ($response.data) { $GlobalResult += $response.data }
+
+  } else {
+   # PAGINATION LOOP: Use strcmp for > 1000 items
+   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
+
+   $LastId = $null
+   $loopCount = 0
+
+   do {
+    $currentQuery = $baseQuery
+
+    # Keyset Filter
+    if (-not [string]::IsNullOrEmpty($LastId)) {
+     $currentQuery += " | where strcmp(id, '$LastId') > 0"
+    }
+
+    $currentQuery += " | order by id asc | take $PageSize"
+
+    $bodyHashtable = @{
+     query = $currentQuery
+     options = @{ resultFormat = "objectArray" }
+    }
+    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+    # Retry logic or simple execute
+    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+    if ($response.data) {
+     $count = $response.data.Count
+     $GlobalResult += $response.data
+     $LastId = $response.data[-1].id
+     $loopCount++
+
+     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
+    } else {
+     $count = 0
+    }
+
+   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
+  }
+
+  # 4. Final Validation
+  if ($GlobalResult.Count -ne $TotalRecords) {
+   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
+  }
+
+  $GlobalResult | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
+Function Get-AzureManagementGroups_AzCLI { # Get all subscription and associated Management Groups Using AzCli
  $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
  (az graph query -q $Query -o json --first 200 | ConvertFrom-Json).data | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
 }
-Function Get-AzureManagementGroups_Other { # Get all subscription and associated Management Groups Using PS Module
- $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
- $response = Search-AzGraph -Query $Query
- $response | Select-Object name,id,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
+# AzCli Env Management
+Function Get-AzureEnvironment { # Get Current Environment used by AzCli
+ # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
+ az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
+# Global Extracts
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptions | foreach-object {
   $SubscriptionName = $_.Name
@@ -15487,8 +15879,9 @@ Function Get-AzureGraph { # Send base graph request without any requirements
  )
 
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  $header = $authDetails.Header
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+   $header = $authDetails.Header
+
   if ($ConsistencyLevelEventual) {
    $header.Add("ConsistencyLevel", "eventual")
   }
