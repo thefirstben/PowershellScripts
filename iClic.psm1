@@ -11422,61 +11422,18 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
   $Token
  )
  try {
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
- $FastColumns = "DisplayName,appId,id"
- $DefaultColumns = "DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,keyCredentials,
-  passwordCredentials,publisherDomain,signInAudience,tags,publicClient,spa,web"
  if ($Fast) {
-  $Columns = $FastColumns
+  $Columns = "DisplayName,appId,id"
  } else {
-  $Columns = $DefaultColumns
+  $Columns = "DisplayName,AppID,id,appRoles,createdDateTime,defaultRedirectUri,groupMembershipClaims,identifierUris,keyCredentials,passwordCredentials,publisherDomain,signInAudience,tags,publicClient,spa,web"
  }
 
-if ($authDetails.Method -eq "Token") {
-  $header = $authDetails.Header
-  $CmdLine = "https://graph.microsoft.com/beta/applications?`$top=999"
-  if (! $ShowAllColumns) { $CmdLine += "&`$select=$Columns" }
- } else {
-  $CmdLine = '"https://graph.microsoft.com/beta/applications?$top=999'
-  if ($ShowAllColumns) { $CmdLine += "`"" } else { $CmdLine += '&$select='+$Columns+'"' }
- }
+ $CmdLine = "https://graph.microsoft.com/beta/applications?`$top=999"
+ if (! $ShowAllColumns) { $CmdLine += "&`$select=$Columns" }
 
- $Count=0
- $GlobalResult = @()
- $ContinueRunning = $True
- $FirstRun=$True
- While ($ContinueRunning -eq $True) {
-  if ($Verbose) { Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($GlobalResult.Count)) : " -Value $Count -PrintTime }
-  if ($FirstRun) { # First Loop
-   if ($authDetails.Method -eq "Token") {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CmdLine
-    $NextRequest = $CurrentResult.'@odata.nextLink'
-   } else {
-    $CurrentResult = az rest --method get --uri $CmdLine --header Content-Type="application/json" -o json | convertfrom-json
-    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
-   }
-   $FirstRun=$False
-  } else { # If not the first loop
-   if ($authDetails.Method -eq "Token") {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
-    $NextRequest = $CurrentResult.'@odata.nextLink'
-   } else { # If using Az Cli
-    $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-    If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-     Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 5s sleep"
-     Start-Sleep 5
-     Continue
-    }
-    $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
-    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
-   }
-  }
-  $Count++
-  if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-  $GlobalResult += $CurrentResult.Value
- }
+ $GlobalResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest $CmdLine
 
  $Result = $GlobalResult | Sort-Object displayName | Select-Object *,@{Name="URLs";Expression={($_.publicClient.redirectUris -join ",") + ($_.sap.redirectUris -join ",") + ($_.web.redirectUris -join ",")}}
 
@@ -11491,11 +11448,7 @@ if ($authDetails.Method -eq "Token") {
  if ($NameFilter) { $Result = $Result | Where-Object displayName -like "*$NameFilter*" }
  if ($ShowOwners) { $Result = $Result | Select-Object *,@{Name="Owner";Expression={
   Progress -Message "Check Owner of App : " -Value $_.DisplayName -PrintTime ;
-  if ($authDetails.Method -eq "Token") {
-   Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID -Token $authDetails.Token
-  } else {
-   Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID
-  }
+  Get-AzureAppRegistrationOwner -AppRegistrationObjectID $_.ID -Token $authDetails.Token
  }}
  }
  if ($Verbose) { ProgressClear }
@@ -11512,33 +11465,19 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   $Token
  )
  Try {
- if ($Token) {
-  if ($AppRegistrationID) { $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $Token }
-  if ($AppRegistrationName) { $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $Token }
-  if ($AppRegistrationObjectID) { $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -Token $Token }
- } else {
-  if ($AppRegistrationID) { $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID }
-  if ($AppRegistrationName) { $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName }
-  if ($AppRegistrationObjectID) { $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID }
- }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+ if ($AppRegistrationID) { $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $authDetails.Token -ErrorAction Stop }
+ if ($AppRegistrationName) { $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $authDetails.Token -ErrorAction Stop }
+ if ($AppRegistrationObjectID) { $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -Token $authDetails.Token -ErrorAction Stop }
  if (! $AppInfo.ID) { Throw "Application not found with AppID : $AppRegistrationID, Object ID : $AppRegistrationObjectID and AppName : $AppRegistrationName" }
 
- if ($Token) {
-  $Result = (Get-AzureGraph -Token $Token -GraphRequest /applications/$($AppInfo.ID)/owners).value
- } else {
-  $Result = (az rest --method get --uri https://graph.microsoft.com/beta/applications/$($AppInfo.ID)/owners | convertfrom-json).value
- }
+ $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest /applications/$($AppInfo.ID)/owners
  $Result | Select-Object @{Name="AppObjectID";Expression={$($AppInfo.ID)}},
  @{Name="AppID";Expression={$AppInfo.appId}},
  @{Name="AppName";Expression={$AppInfo.displayName}},id,userPrincipalName,displayName
  } catch {
-  Try {
-   Write-Error -Message ($Error[0].ErrorDetails.message | ConvertFrom-Json).Error.message
-  } catch {
-   Write-Error $_
-  }
+  Write-Error $_
  }
-
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
@@ -11690,67 +11629,63 @@ Function Get-AzureAppRegistrationPermissionsGlobal { # Check Permission for All 
   $Token
  )
 
- #Extract all App Registration Permission with only GUID (Faster)
- Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 1 | " -ColoredText "Retrieving App Registrations"
- if ($Token) {
-  $AppRegistrationList = Get-AzureAppRegistrations -Token $Token
- } else {
-  $AppRegistrationList = Get-AzureAppRegistrations
- }
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  #Extract all App Registration Permission with only GUID (Faster)
+  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 1 | " -ColoredText "Retrieving App Registrations"
+  $AppRegistrationList = Get-AzureAppRegistrations -Token $authDetails.Token
 
- Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 2 | " -ColoredText "Found $($AppRegistrationList.Count) App Registrations"
+  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 2 | " -ColoredText "Found $($AppRegistrationList.Count) App Registrations"
 
- Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 3 | " -ColoredText "Retrieving App Registration Permission with GUID Only (Will take about 2 seconds per app Registration) : File used : $ExportFile"
- $AppRegistrationListCount = 0
- $AppRegistrationList | Sort-Object DisplayName | ForEach-Object {
-  $AppRegistrationListCount++
-  Progress -Message "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -Value $_.DisplayName -PrintTime
-  Try {
-   if ($Token) {
-    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -Token $Token
-   } else {
-    $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID
-   }
-
-   #Added this otherwise Export-CSV sends an error if the app registration has no rights
-   if ($Permission) {
-    $Permission | Export-CSV $ExportFile -Append
-   } else {
-    if ($Verbose) {
-     Write-Colored -Color "Green" -FilePath $LogFile -ColoredText "No permission found for $($_.DisplayName)"
+  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 3 | " -ColoredText "Retrieving App Registration Permission with GUID Only (Will take about 2 seconds per app Registration) : File used : $ExportFile"
+  $AppRegistrationListCount = 0
+  $AppRegistrationList | Sort-Object DisplayName | ForEach-Object {
+   $AppRegistrationListCount++
+   Progress -Message "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -Value $_.DisplayName -PrintTime
+   Try {
+     $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -Token $authDetails.Token
+    #Added this otherwise Export-CSV sends an error if the app registration has no rights
+    if ($Permission) {
+     $Permission | Export-CSV $ExportFile -Append
+    } else {
+     if ($Verbose) {
+      Write-Colored -Color "Green" -FilePath $LogFile -ColoredText "No permission found for $($_.DisplayName)"
+     }
     }
+
+   } catch {
+    Write-Colored -Color "Red" -FilePath $LogFile -ColoredText "Error checking permission of $($_.DisplayName) ($($_.AppID)) : $($Error[0])"
    }
-
-  } catch {
-   Write-Colored -Color "Red" -FilePath $LogFile -ColoredText "Error checking permission of $($_.DisplayName) ($($_.AppID)) : $($Error[0])"
   }
- }
- ProgressClear ; Write-Blank
+  ProgressClear ; Write-Blank
 
- #Convert File to PS Object
- Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 4 | " -ColoredText "Convert File to PS Object"
- $AzureAppRegistrationPermissionGUID = import-csv $ExportFile
+  #Convert File to PS Object
+  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 4 | " -ColoredText "Convert File to PS Object"
+  $AzureAppRegistrationPermissionGUID = import-csv $ExportFile
 
- # [Stats]
- $UniqueAppRegistrationWithPermissions = ($AzureAppRegistrationPermissionGUID | Select-Object AppRegistrationID -Unique).Count
- Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 5 | " -ColoredText "Found $UniqueAppRegistrationWithPermissions unique App Registration with permissions (Total permissions $($AzureAppRegistrationPermissionGUID.count))"
+  # [Stats]
+  $UniqueAppRegistrationWithPermissions = ($AzureAppRegistrationPermissionGUID | Select-Object AppRegistrationID -Unique).Count
+  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 5 | " -ColoredText "Found $UniqueAppRegistrationWithPermissions unique App Registration with permissions (Total permissions $($AzureAppRegistrationPermissionGUID.count))"
 
- # Generate conversion Table (Takes a minute or 2)
- Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 6 | " -ColoredText "Generate conversion Table - Will take a couple minutes"
- $IDConversionTable = @()
- $AzureAppRegistrationPermissionGUID | Select-Object -Unique PolicyID | ForEach-Object {
-  Progress -Message "Checking Policy : " -Value $($_.PolicyID) -PrintTime
-  if ($Token) {
-   $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID -Token $Token
-  } else {
-   $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID
+  # Generate conversion Table (Takes a minute or 2)
+  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 6 | " -ColoredText "Generate conversion Table - Will take a couple minutes"
+  $IDConversionTable = @()
+  $AzureAppRegistrationPermissionGUID | Select-Object -Unique PolicyID | ForEach-Object {
+   Progress -Message "Checking Policy : " -Value $($_.PolicyID) -PrintTime
+   if ($Token) {
+    $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID -Token $Token
+   } else {
+    $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID
+   }
   }
- }
- ProgressClear ; Write-Blank
+  ProgressClear ; Write-Blank
 
- # Convert GUID To READABLE (Takes a couple seconds)
- Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
- Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
+  # Convert GUID To READABLE (Takes a couple seconds)
+  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
+  Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
+ } catch {
+  Write-Error $_
+ }
 }
 Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to be fully working) - Remove Automated Consent, need to manually consent when all permissions are added
  [CmdletBinding()]
@@ -12443,6 +12378,7 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
 
   # Check Token status
   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+  $CurrentDate = Get-Date
 
   # Get Param to send them to sub functions
   $AppInfoParam = $PSBoundParameters
@@ -12461,7 +12397,14 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
   # Loop through all values and ask for confirmation
   $OldSecrets | ForEach-Object {
    # Print status
-   Write-host -ForegroundColor "Red" -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] from App $($AppInfo.displayName) that will expire on $($_.endDateTime)"
+   if ($_.endDateTime -le $CurrentDate) {
+    $ColorMsg = "Green"
+    $TextMsg = "expired on"
+   } else {
+    $ColorMsg = "Red"
+    $TextMsg = "will expire on"
+   }
+   Write-host -ForegroundColor $ColorMsg -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] from App $($AppInfo.displayName) that $TextMsg $($_.endDateTime)"
    # If confirmation is required ask for confirmation
    if (! $NoConfirm ) {
     $Answer = Question "Please confirm removal" -defaultChoice "1"
@@ -12912,35 +12855,46 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
 }
 Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$ServicePrincipalID,
+  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+  $Token
  )
- $Result = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" --header Content-Type=application/json | ConvertFrom-Json).Value
- $Result | ForEach-Object {
-  $OwnerType = ($_.'@odata.id' -split('/'))[-1]
-  $OwnerID = ($_.'@odata.id' -split('/'))[-2]
-  if ($OwnerType -eq 'Microsoft.DirectoryServices.ServicePrincipal') {
-   Get-AzureServicePrincipalInfo -ID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
-   @{name="OwnerType";expression={$OwnerType}},
-   @{name="OwnerID";expression={$OwnerID}},
-   @{name="OwnerName";expression={$_.displayName}},
-   @{name="OwnerUPN";expression={""}}
-  } elseif ($OwnerType -eq 'Microsoft.DirectoryServices.User') {
-   Get-azureaduserinfo -UPNorID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
-   @{name="OwnerType";expression={$OwnerType}},
-   @{name="OwnerID";expression={$OwnerID}},
-   @{name="OwnerName";expression={$_.displayName}},
-   @{name="OwnerUPN";expression={$_.userPrincipalName}}
-  } else {
-   [pscustomobject]@{ServicePrincipalID="$ServicePrincipalID";OwnerType="$OwnerType";OwnerID="$OwnerID";OwnerName="Not Implemented";OwnerUPN="Not Implemented"}
-  }
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+ if ($AppRegistrationID) { $AppInfo = Get-AzureServicePrincipal -AppID $AppRegistrationID -Token $authDetails.Token -ErrorAction Stop }
+ if ($AppRegistrationName) { $AppInfo = Get-AzureServicePrincipal -DisplayName $AppRegistrationName -Token $authDetails.Token -ErrorAction Stop }
+ if ($ServicePrincipalID) { $AppInfo = Get-AzureServicePrincipal -ID $ServicePrincipalID -Token $authDetails.Token -ErrorAction Stop }
+ if (! $AppInfo.ID) { Throw "Service Principal not found with AppID : $AppRegistrationID, Object ID : $ServicePrincipalID and AppName : $AppRegistrationName" }
+
+ $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest /servicePrincipals/$($AppInfo.ID)/owners
+ $Result | Select-Object @{Name="SpObjectID";Expression={$($AppInfo.ID)}},
+ @{Name="AppID";Expression={$AppInfo.appId}},
+ @{Name="AppName";Expression={$AppInfo.displayName}},id,userPrincipalName,displayName
+ } catch {
+  Write-Error $_
  }
-}
-Function Get-AzureServicePrincipalOwnerForAllApps { # Get Owner(s) of all Service Principals
- Get-AzureServicePrincipal | ForEach-Object {
-  Progress -Message "Checking current Service Principal : " -Value $_.DisplayName
-  Get-AzureServicePrincipalOwner -ServicePrincipalID $_.id
- } | Export-Csv "$iClic_TempPath\AzureServicePrincipalOwnerForAllApps_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
- ProgressClear
+
+ # $Result = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" --header Content-Type=application/json | ConvertFrom-Json).Value
+ # $Result | ForEach-Object {
+ #  $OwnerType = ($_.'@odata.id' -split('/'))[-1]
+ #  $OwnerID = ($_.'@odata.id' -split('/'))[-2]
+ #  if ($OwnerType -eq 'Microsoft.DirectoryServices.ServicePrincipal') {
+ #   Get-AzureServicePrincipalInfo -ID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
+ #   @{name="OwnerType";expression={$OwnerType}},
+ #   @{name="OwnerID";expression={$OwnerID}},
+ #   @{name="OwnerName";expression={$_.displayName}},
+ #   @{name="OwnerUPN";expression={""}}
+ #  } elseif ($OwnerType -eq 'Microsoft.DirectoryServices.User') {
+ #   Get-azureaduserinfo -UPNorID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
+ #   @{name="OwnerType";expression={$OwnerType}},
+ #   @{name="OwnerID";expression={$OwnerID}},
+ #   @{name="OwnerName";expression={$_.displayName}},
+ #   @{name="OwnerUPN";expression={$_.userPrincipalName}}
+ #  } else {
+ #   [pscustomobject]@{ServicePrincipalID="$ServicePrincipalID";OwnerType="$OwnerType";OwnerID="$OwnerID";OwnerName="Not Implemented";OwnerUPN="Not Implemented"}
+ #  }
+ # }
 }
 Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (it is different than App Registration Owners) - The ID must be the ObjectID of the 'Enterprise App'
  Param (
@@ -13441,43 +13395,44 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
   $Token
  )
 
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
- # Get Data
- if ($Token) {
-  $AppList = Get-AzureServicePrincipal -Token $Token
- } else {
-  $AppList = Get-AzureServicePrincipal
+  # Get Data
+  $AppList = Get-AzureServicePrincipal -Token $authDetails.Token
+
+  $Date_Today = Get-Date
+
+  # Format data
+  $Result = $AppList | Where-Object passwordCredentials | Select-Object `
+   @{Name="Name";Expression={$_.DisplayName}},AppID,id,appRoleAssignmentRequired,
+   @{Name="Mode";Expression={$_.preferredSingleSignOnMode}},
+   @{Name="Type";Expression={$_.servicePrincipalType}},
+   @{Name="Contacts";Expression={($_.notificationEmailAddresses | Sort-Object) -join ","}},
+   @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+   @{Name="URLs";Expression={$_.replyUrls -join ","}},
+   @{Name="Audience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | `
+    Select-Object -Property `
+    @{Name="SecretDescription";Expression={$_.DisplayName}},
+    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
+    @{Name="SecretExpiration";Expression={$_.endDateTime}},
+    @{Name="SecretType";Expression={$_.preferredSingleSignOnMode}},
+    @{Name="ExpiresIn";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
+     Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
+     @{Name="Count";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
+
+  # Filter Data
+  if ($NameFilterInclusion) { $Result = $Result | Where-Object Name -like $NameFilterInclusion }
+  if ($NameFilterExclusion) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
+  if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
+  if ($ShowOnlySAML) { $Result = $Result | Where-Object Mode -eq "saml" }
+  if (! $ShowAll) { $Result = $Result | Where-Object ExpiresIn -lt $Expiration }
+
+  # Print Data
+  $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,appRoleAssignmentRequired,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs,AppID,ID,SecretDescription,SecretCreatedOn,SecretType
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
-
- $Date_Today = Get-Date
-
- # Format data
- $Result = $AppList | Where-Object passwordCredentials | Select-Object `
-  @{Name="Name";Expression={$_.DisplayName}},AppID,id,appRoleAssignmentRequired,
-  @{Name="Mode";Expression={$_.preferredSingleSignOnMode}},
-  @{Name="Type";Expression={$_.servicePrincipalType}},
-  @{Name="Contacts";Expression={$_.notificationEmailAddresses -join ","}},
-  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
-  @{Name="URLs";Expression={$_.replyUrls -join ","}},
-  @{Name="Audience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | `
-   Select-Object -Property `
-   @{Name="SecretDescription";Expression={$_.DisplayName}},
-   @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
-   @{Name="SecretExpiration";Expression={$_.endDateTime}},
-   @{Name="SecretType";Expression={$_.preferredSingleSignOnMode}},
-   @{Name="ExpiresIn";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
-    Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
-    @{Name="Count";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
-
- # Filter Data
- if ($NameFilterInclusion) { $Result = $Result | Where-Object Name -like $NameFilterInclusion }
- if ($NameFilterExclusion) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
- if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
- if ($ShowOnlySAML) { $Result = $Result | Where-Object Mode -eq "saml" }
- if (! $ShowAll) { $Result = $Result | Where-Object ExpiresIn -lt $Expiration }
-
- # Print Data
- $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,appRoleAssignmentRequired,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs,AppID,ID,SecretDescription,SecretCreatedOn,SecretType
 }
 Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Service Principals
  [CmdletBinding(DefaultParameterSetName = 'SPName_SubName')] # Optional: sets a default if no unique set is determined
@@ -15377,24 +15332,15 @@ Function Disable-AzureADUser { # Disable Azure Ad User
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
-  if ($authDetails.Method -eq "Token") {
-   $Body = @{
-    accountEnabled = 'false'
-   } | ConvertTo-Json
-   Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
-  } else {
-   $Body = '{\"accountEnabled\": \"false\"}}'
-   az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UPNorID/" --headers Content-Type=application/json --body $body
-  }
+  $Body = @{
+   accountEnabled = 'false'
+  } | ConvertTo-Json
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
+
  } Catch {
-  $ScriptError = $_
-  Try {
-   Write-Error -Message ($Error[0].ErrorDetails.message | ConvertFrom-Json).Error.message
-  } catch {
-   Write-Error $ScriptError
-  }
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Enable-AzureADUser { # Enable Azure Ad User
@@ -15403,22 +15349,13 @@ Function Enable-AzureADUser { # Enable Azure Ad User
   $Token
  )
  Try {
-  if ($Token) {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
    $Body = @{
     accountEnabled = 'true'
    } | ConvertTo-Json
-   Get-AzureGraph -Token $Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
-  } else {
-   $Body = '{\"accountEnabled\": \"true\"}}'
-   az rest --method PATCH --uri "https://graph.microsoft.com/beta/users/$UPNorID/" --headers Content-Type=application/json --body $body
-  }
+   Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
  } Catch {
-  $ScriptError = $_
-  Try {
-   Write-Error -Message ($Error[0].ErrorDetails.message | ConvertFrom-Json).Error.message
-  } catch {
-   Write-Error $ScriptError
-  }
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a user in Azure
@@ -16381,7 +16318,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   try {
 
   Write-Verbose "Getting WorkspaceID"
-  $WorkspaceID = $global:SentinelWorkspaceID
+  if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
   if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
 
   if ( ! (Assert-IsGUID $App) ) {
