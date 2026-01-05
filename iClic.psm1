@@ -9587,9 +9587,9 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL 
   # 1. Base Query Construction
   if ($Name) {
    if ($Exact) {
-    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups | where name =~ '$Name'"
+    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | where name =~ '$Name'"
    } else {
-    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups | where name contains '$Name'"
+    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups' | where name contains '$Name'"
    }
   } else {
    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'"
@@ -9606,6 +9606,7 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL 
   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
 
   Write-Verbose "Checking total count..."
+  Write-Verbose $body
   $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
 
   # Extract the integer from the response (usually { "count": 123 })
