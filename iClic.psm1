@@ -12861,7 +12861,7 @@ Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
  if ($AppRegistrationID) { $AppInfo = Get-AzureServicePrincipal -AppID $AppRegistrationID -Token $authDetails.Token -ErrorAction Stop }
  if ($AppRegistrationName) { $AppInfo = Get-AzureServicePrincipal -DisplayName $AppRegistrationName -Token $authDetails.Token -ErrorAction Stop }
  if ($ServicePrincipalID) { $AppInfo = Get-AzureServicePrincipal -ID $ServicePrincipalID -Token $authDetails.Token -ErrorAction Stop }
@@ -12874,27 +12874,6 @@ Function Get-AzureServicePrincipalOwner { # Get owner(s) of a Service Principal
  } catch {
   Write-Error $_
  }
-
- # $Result = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/owners/`$ref" --header Content-Type=application/json | ConvertFrom-Json).Value
- # $Result | ForEach-Object {
- #  $OwnerType = ($_.'@odata.id' -split('/'))[-1]
- #  $OwnerID = ($_.'@odata.id' -split('/'))[-2]
- #  if ($OwnerType -eq 'Microsoft.DirectoryServices.ServicePrincipal') {
- #   Get-AzureServicePrincipalInfo -ID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
- #   @{name="OwnerType";expression={$OwnerType}},
- #   @{name="OwnerID";expression={$OwnerID}},
- #   @{name="OwnerName";expression={$_.displayName}},
- #   @{name="OwnerUPN";expression={""}}
- #  } elseif ($OwnerType -eq 'Microsoft.DirectoryServices.User') {
- #   Get-azureaduserinfo -UPNorID $OwnerID | Select-Object @{name="ServicePrincipalID";expression={$ServicePrincipalID}},
- #   @{name="OwnerType";expression={$OwnerType}},
- #   @{name="OwnerID";expression={$OwnerID}},
- #   @{name="OwnerName";expression={$_.displayName}},
- #   @{name="OwnerUPN";expression={$_.userPrincipalName}}
- #  } else {
- #   [pscustomobject]@{ServicePrincipalID="$ServicePrincipalID";OwnerType="$OwnerType";OwnerID="$OwnerID";OwnerName="Not Implemented";OwnerUPN="Not Implemented"}
- #  }
- # }
 }
 Function Add-AzureServicePrincipalOwner { # Add a Owner to a Service Principal (it is different than App Registration Owners) - The ID must be the ObjectID of the 'Enterprise App'
  Param (
@@ -13530,6 +13509,37 @@ Function Add-AzureServicePrincipalAssignments {
  } catch {
   # write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $(($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message)"
   write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $($Error[0])"
+ }
+}
+Function Set-AzureServicePrincipalContact {
+ Param (
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
+  [parameter(Mandatory=$true,ParameterSetName="ServicePrincipalID")]$ServicePrincipalID,
+  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationName")]$AppRegistrationName,
+  [parameter(Mandatory=$true)]$Contact, # Can use multiple values like : "mail1@mail.com","mail2@mail.com"
+  [switch]$Append,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  if ($AppRegistrationID) { $AppInfo = Get-AzureServicePrincipal -AppID $AppRegistrationID -Token $authDetails.Token -ErrorAction Stop }
+  if ($AppRegistrationName) { $AppInfo = Get-AzureServicePrincipal -DisplayName $AppRegistrationName -Token $authDetails.Token -ErrorAction Stop }
+  if ($ServicePrincipalID) { $AppInfo = Get-AzureServicePrincipal -ID $ServicePrincipalID -Token $authDetails.Token -ErrorAction Stop }
+  if (! $AppInfo.ID) { Throw "Service Principal not found with AppID : $AppRegistrationID, Object ID : $ServicePrincipalID and AppName : $AppRegistrationName" }
+  if ($Append) {
+   $CurrentContacts = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$($AppInfo.ID)?`$select=notificationEmailAddresses").notificationEmailAddresses
+   $FinalContact = $CurrentContacts + $Contact | Sort-Object Unique
+   Write-Host "Found current Contacts $CurrentContacts, will append $Contact to app $($AppInfo.AppDisplayName). Full Contact List = $FinalContact"
+  } else {
+   $FinalContact = $Contact
+  }
+  $Body = (@{
+   "notificationEmailAddresses" = @($FinalContact)
+  })
+  $BodyJSON = $Body | ConvertTo-JSON -Depth 6
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$($AppInfo.ID)" -Method PATCH -Body $BodyJSON
+ } catch {
+  Write-Error $_
  }
 }
 # User Role Assignement (Not RBAC)
@@ -15956,13 +15966,15 @@ Function Get-AzureConditionalAccessPolicies {
  # To allow parsing to get only GUID we need a "Template"
  $dummyGuid = [guid]::Empty
 
- Write-Verbose "Get details of all individual IDs [Users/Groups]"
- $UsersToConvertList = $Result.conditions.users.includeUsers + $Result.conditions.users.excludeUsers + $Result.conditions.users.includeGroups + $Result.conditions.users.excludeGroups | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
- $UsersList = Get-AzureADObjectInfo -token $authDetails.Token -ObjectIDList $UsersToConvertList
- $UsersListHash = $UsersList | Group-Object -Property ID -AsHashTable
- Write-Verbose "Get details of all individual IDs [Apps]"
- $AppToConvertList = $Result.conditions.applications.includeApplications + $Result.conditions.applications.excludeApplications | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
+ [array]$UsersToConvertList = $Result.conditions.users.includeUsers + $Result.conditions.users.excludeUsers + $Result.conditions.users.includeGroups + $Result.conditions.users.excludeGroups | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
+ if ($UsersToConvertList) {
+  Write-Verbose "Get details of all individual IDs [Users/Groups]"
+  $UsersList = Get-AzureADObjectInfo -token $authDetails.Token -ObjectIDList $UsersToConvertList
+  $UsersListHash = $UsersList | Group-Object -Property ID -AsHashTable
+ }
+ [array]$AppToConvertList = $Result.conditions.applications.includeApplications + $Result.conditions.applications.excludeApplications | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
  if ($AppToConvertList) {
+  Write-Verbose "Get details of all individual IDs [Apps]"
   $AppList = Get-AzureServicePrincipalNameFromID -Token $authDetails.Token -Batch -AppIDList $AppToConvertList
   $AppListHash = $AppList | Group-Object -Property AppID -AsHashTable
  }
@@ -16024,10 +16036,10 @@ Function Get-AzureConditionalAccessPolicies {
   $_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes -replace ",",";" -join(";")
  }},
  @{name="includeApplications";expression={
-  ($_.conditions.applications.includeApplications | ForEach-Object { $AppListHash[$_].DisplayName }) -Join(";")
+  ($_.conditions.applications.includeApplications | ForEach-Object { if (Assert-IsGUID -Value $_) {$AppListHash[$_].DisplayName} else {$_} }) -Join(";")
  }},
  @{name="excludeApplications";expression={
-  ($_.conditions.applications.excludeApplications | ForEach-Object { $AppListHash[$_].DisplayName }) -Join(";")
+  ($_.conditions.applications.excludeApplications | ForEach-Object { if (Assert-IsGUID -Value $_) {$AppListHash[$_].DisplayName} else {$_} }) -Join(";")
  }},
  @{name="applicationFilter_Include";expression={
   ($_.conditions.applications.applicationFilter | Where-Object mode -eq include).Rule
