@@ -455,27 +455,27 @@ Function Format-Color {
 }
 Function Format-TypeServices {
  Param (
-  $Service,
+  [Parameter(Mandatory)]$Service,
   [switch]$formattable=$false
  )
  # if ($_.displayname -eq $_.name) { $RealName=(get-service -ComputerName $servername -name $_.name).DisplayName } else {$RealName=$_.displayname}
- if ( ! $_.startname) { $LoginName="Unknown"} else {$LoginName=$_.startname}
- if ( ! $_.CommandLine) { if ( ! $_.PathName) { $CommandLine="Unknown" } else {$CommandLine=$_.PathName} } else {$CommandLine=$_.CommandLine}
+ if ( ! $Service.startname) { $LoginName="Unknown"} else {$LoginName=$Service.startname}
+ if ( ! $Service.CommandLine) { if ( ! $Service.PathName) { $CommandLine="Unknown" } else {$CommandLine=$Service.PathName} } else {$CommandLine=$Service.CommandLine}
 
  # write-colored "Magenta" "" ($RealName,"(",$_.name,")")
  if (! $formattable) {
-  write-colored "Magenta" "" ($_.displayname,"(",$_.name,")")
-  Write-Colored -Color $defaultblue -NonColoredText " Start Mode : " $_.startmode -nonewline
-  Write-Colored -Color $defaultblue -NonColoredText " | Status : " $_.state -nonewline
+  write-colored -Color "Magenta" -ColoredText ($Service.displayname,"(",$Service.name,")")
+  Write-Colored -Color $defaultblue -NonColoredText " Start Mode : " $Service.startmode -nonewline
+  Write-Colored -Color $defaultblue -NonColoredText " | Status : " $Service.state -nonewline
   Write-Colored -Color $defaultblue -NonColoredText " | Login Name : " $LoginName
   Write-Colored -Color $defaultblue -NonColoredText " CommandLine : " $CommandLine
  } else {
   $obj=@()
   $obj+=[pscustomobject]@{
-   DisplayName=$_.displayname
-   name=$_.name
-   startmode=$_.startmode
-   state=$_.state
+   DisplayName=$Service.displayname
+   name=$Service.name
+   startmode=$Service.startmode
+   state=$Service.state
    LoginName=$LoginName
    CommandLine=$CommandLine
   }
@@ -1421,7 +1421,7 @@ Function Test-ADPorts {
  Param (
   [Parameter(Mandatory)]$Domain
  )
- $DNSServerList = (Resolve-DnsName auto-contact.com).IPAddress
+ $DNSServerList = (Resolve-DnsName $Domain).IPAddress
  $portlist = $('135','389','636','3268','3269','53','88','445','138','139','42')
 
  $DNSServerList | ForEach-Object {
@@ -1579,12 +1579,6 @@ Function Test-RemotePowershell {
   }
   if ($printmessage) {write-colored "Cyan" -ColoredText "$servername`t$true"} else {return $true}
  } catch { if ($printmessage) {write-colored -Color "red" -ColoredText "$servername`t$false`t$($error[0])"} else { return $false } }
-}
-Function Test-PSSpeed {
- Param (
-  $TestCommand="Write-Host 1"
- )
- powershell -noprofile -ExecutionPolicy Bypass ( Measure-Command { powershell $TestCommand } ).TotalSeconds
 }
 
 # GetInfo
@@ -3181,14 +3175,14 @@ Function Set-RegKey {
 # Services, Tasks, GPO
 Function Get-ServicesSpecific {
  Param (
-  $ServerName = $env:COMPUTERNAME,
-  [Switch]$Filter
+  [Switch]$Filter,
+  $ServerName
  )
  try {
-  if ($ServerName -eq $env:COMPUTERNAME) {
-   $result = Get-CimInstance Win32_Service -ErrorAction Stop
-  } else {
+  if ($ServerName) {
    $result = Get-CimInstance Win32_Service -ErrorAction Stop -ComputerName $ServerName
+  } else {
+   $result = Get-CimInstance Win32_Service -ErrorAction Stop
   }
   if ($Filter) {
    $result = $result | Where-Object {
@@ -3208,7 +3202,7 @@ Function Get-ServicesSpecific {
  if (! ($result)) {
   Write-Colored "darkgreen" -coloredtext "No service found"
  } else {
-  $result | ForEach-Object { Format-TypeServices $._ $ServerName -formattable }
+  $result | Sort-Object DisplayName | ForEach-Object { Format-TypeServices $_ -formattable }
  }
 }
 Function Get-ServicesFiltered { # Search specific service(s), can do actions on all the services (Start/Stop)
@@ -3231,7 +3225,7 @@ Function Get-ServicesFiltered { # Search specific service(s), can do actions on 
 
  #Print Service List
  if ((! $Start) -and (! $Stop)) {
-  $result | ForEach-Object {Format-TypeServices $._}
+  $result | ForEach-Object {Format-TypeServices $_}
  }
 
  if ($Stop) {
@@ -3656,6 +3650,7 @@ Function Get-ADMembersWithMails {
   $OU=(Get-ADDomain).DistinguishedName,
   $Filter="*"
  )
+ Write-Verbose "Filtering on $Filter"
  Get-adgroup -SearchBase $OU -Filter {Name -like $Filter} | ForEach-Object {
   try { (Get-ADGroupMember -ErrorAction Stop $_.Name) | ForEach-Object {
    $mail=(get-aduser $_.SamAccountName -properties mail).mail
@@ -3737,7 +3732,6 @@ Function Get-ADUserLastLogon {
 }
 Function Get-ADUnusedComputers {
  Param (
-  $domain=$env:USERDNSDOMAIN,
   $DaysInactive=91
  )
  $time = (Get-Date).AddDays(-($DaysInactive))
@@ -3804,7 +3798,8 @@ Function Update-ADUserUPN_Full_OU {
   [Parameter(Mandatory=$true)]$NewUPNSuffix,
   $Filter="*"
  )
- Get-ADUser -Filter { Name -like "$Filter" } -properties UserPrincipalName,Created,Modified | Select-Object Name,SamAccountName,UserPrincipalName,Created,Modified |
+ $ADFilter = $Filter
+ Get-ADUser -Filter { Name -like $ADFilter } -properties UserPrincipalName,Created,Modified | Select-Object Name,SamAccountName,UserPrincipalName,Created,Modified |
  Where-Object {$_.UserPrincipalName -like "*@$OldUPNSuffix"} | ForEach-Object {
   $OldUPN=$_.UserPrincipalName
   $OldSamAccount=($OldUPN -split("@"))[0]
@@ -3999,6 +3994,7 @@ Function Update-AccountPassword {
   $Date = (Get-Date).AddDays(-120),
   $OutFile="UserList_$(get-date -uformat '%Y-%m-%d').csv"
  )
+ Write-Verbose "Filtering on PasswordLastSet older than $Date"
  # Usage example : Update-AccountPassword -OU @("OU=ouName1,DC=dcname,DC=com","OU=ouName2,DC=dcname,DC=com")
  $OU | ForEach-Object {
   write-host
@@ -4097,12 +4093,14 @@ Function Get-ADUserFromUPN {
  Param (
   $UPN
  )
+ Write-Verbose "Filtering on $UPN"
  Get-ADUser -Filter {UserPrincipalName -eq $UPN}
 }
 Function Get-ADUserFromName {
  Param (
   $DisplayName
  )
+ Write-Verbose "Filtering on $DisplayName"
  Get-ADUser -Filter {Name -eq $DisplayName}
 }
 
@@ -4435,16 +4433,6 @@ Function Assert-O365User {
   return $false
  }
 }
-Function Assert-IsSelf {
- Param (
-  $ValueToCheck,
-  $MembersMails
- )
- #If Self is present in the Array, add members to Array
- $TMP=@() ; $TMP+=$ValueToCheck
- if ($TMP.contains("SELF")) { $TMP+=$(Get-ADUpnFromMail $($_.DistributionGroupMemberMailAddress -split ",")) }
- $TMP -join ','
-}
 Function Assert-O365Account {
  Param (
   $LoginName
@@ -4485,6 +4473,7 @@ Function SamToMail {
  Param (
   $Sam
  )
+ Write-Verbose "Filtering on $Sam"
  try {
   $UserInfo=get-aduser -filter {SamAccountName -eq $Sam} -properties mail
  } catch {write-host -foregroundcolor "Red" $Error[0]}
@@ -4626,6 +4615,7 @@ Function Get-WU {
   $UpdateID
  )
 
+ Write-Verbose "Filtering on $UpdateID"
  $ErrorActionPreference="Stop"
 
  Function LocalUpdate ([Switch]$Install,$ScriptLog) {
@@ -4967,9 +4957,7 @@ Function Set-WSUSConfig { # Fully configure WSUS using commandlines
 }
 Function Remove-WSUSSuperseeded { # Decline all superseeded updates
  Param (
-  $WsusServerInfo=$(Get-WSUSServer),
-  [Boolean]$useSecureConnection = $False,
-  [Int32]$portNum = $portNumber
+  $WsusServerInfo=$(Get-WSUSServer)
  )
  # Load .NET assembly
  [void][reflection.assembly]::LoadWithPartialName("Microsoft.UpdateServices.Administration")
@@ -5024,8 +5012,7 @@ Function Get-WSUSConfiguredApprovalRules { # List all approval rules on a WSUS S
 Function Connect-WSUS { # Open connection to WSUS service
  Param (
   [Parameter(Mandatory=$true)]$WsusServer, #WSUS FQDN
-  [Switch]$NoSSL,
-  $Path="$iClic_TempPath\"
+  [Switch]$NoSSL
  )
  if ($NoSSL) {
   $UseSSL=$false
@@ -5886,7 +5873,6 @@ Function Connect-Kaspersky { #Connect to the API
  Param (
   $KLUser=$env:USERNAME,
   $KLDomain=$env:USERDOMAIN,
-  [Parameter(Mandatory=$true)]$KLServer, #Kaspersky ServerName
   [Parameter(Mandatory=$true)]$KLServerFull #Kaspersky FQDN
  )
 
@@ -5896,9 +5882,6 @@ Function Connect-Kaspersky { #Connect to the API
  $KLPassword=$(read-host -AsSecureString "Enter $KLUser password")
  $KLPasswordEncoded=Convert-StringToBase64UTF8 $(ConvertFrom-SecureString $KLPassword -AsPlainText)
  $KLDomainEncoded=Convert-StringToBase64UTF8 $KLDomain
-
- #Not Used :
- # $KLServerEncoded=Convert-StringToBase64UTF8 $KLServer
 
  $url = "https://$($KLServerFull):13299/api/v1.0/login"
  $Authentheaders = @{
@@ -7855,9 +7838,6 @@ Function Install-AzureCli { # Download and install latest AzureCLI [MSI]
  Remove-Item $MSIInstallFile
 }
 Function Install-7zip { # Download and install latest 7Zip [MSI]
- Param (
-  $InstallDestination="C:\Apps\7Zip"
- )
  $MSIInstallFile = '7zip.msi'
  $RootURL = "https://www.7-zip.org/"
  $DownloadLink = $RootURL + $((Invoke-WebRequest $RootURL/download.html).links | Where-Object { $_ -like  "*x64.msi*" } | Select-Object -first 1).href
@@ -8456,56 +8436,9 @@ Function Get-DuplicatePSModules { # Check duplicate Powershell modules as the ol
   }
  }
 }
-Function Get-WebSiteCertificate { # Check the certificate from a remote website (Does not work on PS Core)
+Function Get-WebSiteCertificate { # built from here : https://gist.github.com/jstangroome/5945820 - Works on PS Core
  Param (
-  $URL
- )
-
- $ErrorActionPreference='Stop'
-
- Try {
- add-type @"
- using System.Net;
- using System.Security.Cryptography.X509Certificates;
- public class TrustAllCertsPolicy : ICertificatePolicy {
-     public bool CheckValidationResult(
-         ServicePoint srvPoint, X509Certificate certificate,
-         WebRequest request, int certificateProblem) {
-         return true;
-     }
- }
-"@
-if ($([System.Net.ServicePointManager]::CertificatePolicy).ToString() -ne "System.Net.DefaultCertPolicy") {
- [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-}
-
-  # $WebRequest = Invoke-WebRequest $URL -UseBasicParsing -UseDefaultCredentials
-  $ServicePoint = [System.Net.ServicePointManager]::FindServicePoint("$URL")
-
-  $CertificateInfoHash = $ServicePoint.Certificate.GetCertHashString()
-  $CertificateInfoSerialNumber = $ServicePoint.Certificate.GetSerialNumberString()
-  $CertificateInfoEndDate = $ServicePoint.Certificate.GetExpirationDateString()
-  $CertificateInfoStartDate = $ServicePoint.Certificate.GetEffectiveDateString()
-
-  [pscustomobject]@{
-   URL =  $URL;
-   ProtocolVersion = $ServicePoint.ProtocolVersion.ToString();
-   Issuer = $ServicePoint.Certificate.Issuer;
-   Subject = $ServicePoint.Certificate.Subject;
-   StartDate = $CertificateInfoStartDate;
-   EndDate = $CertificateInfoEndDate;
-   Hash = $CertificateInfoHash;
-   Serial = $CertificateInfoSerialNumber;
-  }
-
-  } Catch {
-   write-host -foregroundcolor "red" $error[0]
-  }
-
-}
-Function Get-Certificate { # built from here : https://gist.github.com/jstangroome/5945820 - Works on PS Core
- Param (
-  [Parameter(Mandatory=$true)][string]$Domain,
+  [Parameter(Mandatory=$true)][string]$URL,
   [Int16]$Port=443,
   [Int]$Timeout = 500
 
@@ -8516,18 +8449,17 @@ Function Get-Certificate { # built from here : https://gist.github.com/jstangroo
  $TcpClient.SendTimeout = $Timeout
 
  try {
-  $TcpClient.Connect($Domain, $Port)
+  $TcpClient.Connect($URL, $Port)
   $TcpStream = $TcpClient.GetStream()
-  $Callback = { param($sendername, $cert, $chain, $errors) return $true }
-  $SslStream = New-Object -TypeName System.Net.Security.SslStream -ArgumentList @($TcpStream, $true, $Callback)
+  $SslStream = New-Object -TypeName System.Net.Security.SslStream -ArgumentList @($TcpStream, $true)
   try {
-   $SslStream.AuthenticateAsClient($domain)
+   $SslStream.AuthenticateAsClient($URL)
    $certificate = $SslStream.RemoteCertificate
   } finally {
    $SslStream.Dispose()
   }
  } catch {
- Write-Host -ForegroundColor Red "Error checking URL `"$Domain`" on port $Port with a timeout of $Timeout`ms ($($Error[0]))"
+ Write-Host -ForegroundColor Red "Error checking URL `"$URL`" on port $Port with a timeout of $Timeout`ms ($($Error[0]))"
  } finally {
   $TcpClient.Dispose()
  }
@@ -9482,12 +9414,6 @@ Function Connect-AzureCli {
  while (! $Password) {$Password=read-host -AsSecureString "Enter Azure Password `"$AzureLogin`" "}
  $Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AzureLogin,$Password
  az login -u $Credential.UserName -p $Credential.GetNetworkCredential().Password
-}
-Function Connect-Azure {
- Param (
-  [Parameter(Mandatory)]$AzureLogin
- )
- Connect-AzAccount
 }
 Function Open-MgGraphConnection {
  Param (
@@ -10603,7 +10529,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
   [Parameter(Mandatory)]$SecretName,
   [Parameter(Mandatory)]$NameSpace
  )
- $SECRETCONTENT = kubectl get secrets $SecretName -n data -o json
+ $SECRETCONTENT = kubectl get secrets $SecretName -n $NameSpace -o json
  $TLSCERTB64 = (( $SECRETCONTENT | select-string tls.crt) -split("`""))[3]
  $TLSCERT = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($TLSCERTB64))
  $TLSKEYB64 = (( $SECRETCONTENT | select-string tls.key) -split("`""))[3]
@@ -10637,8 +10563,7 @@ Function Get-AzureRBACRightsAzCLI { # Get all RBAC Rights (Works with Users, Ser
   [Switch]$IncludeInherited,
   [Switch]$HideProgress,
   [Switch]$HideID,
-  [Switch]$ShowCondition,
-  [parameter(Mandatory = $false, ParameterSetName="ShowAll")][Switch]$ShowAll
+  [Switch]$ShowCondition
  )
 
  # For the parameters, it's either Subscription Name OR Subscription ID - And - User Name or User DisplayName
@@ -11902,73 +11827,53 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
  }
 }
 Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret - Does not see Federated Credential, as the data is not seen in the JSON
+ [CmdletBinding()]
  Param (
   $Expiration = 30,
   $MaxExpiration = 730,
   $Token
  )
+ Write-Verbose "Using Expiration of $Expiration days / Max Expiration $MaxExpiration days"
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $GraphRequest = "https://graph.microsoft.com/v1.0/applications?`$select=DisplayName,Notes,Tags,AppID,createdDateTime,signInAudience,passwordCredentials,keyCredentials&`$top=999"
+  $AppList = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphRequest
+  $Date_Today = Get-Date
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
-  $ContinueRunning = $True
-  $FirstRun=$True
-  While ($ContinueRunning -eq $True) {
-   if ($Verbose) { Progress -Message "Getting all Application Loop (Sleep $SleepDurationInS`s | Current Count $($AppList.Count)) : " -Value $Count -PrintTime }
-   if ($FirstRun) {
-    $CurrentResult = (Invoke-RestMethod -Method GET -headers $Header -Uri "https://graph.microsoft.com/v1.0/applications?`$select=DisplayName,Notes,Tags,AppID,createdDateTime,signInAudience,passwordCredentials,keyCredentials")
-    $FirstRun=$False
-   } else {
-    $CurrentResult = (Invoke-RestMethod -Method GET -headers $Header -Uri $NextRequest )
-   }
-   $Count++
-   $NextRequest = $CurrentResult.'@odata.nextLink'
-   if ($CurrentResult.'@odata.nextLink') {$ContinueRunning = $True} else {$ContinueRunning = $False}
-   $AppList += $CurrentResult.Value
-  }
- } else {
-  $AppList = az ad app list --all -o json --query "[].{DisplayName:displayName,Notes:notes,Tags:tags,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience,passwordCredentials:passwordCredentials,keyCredentials:keyCredentials}" | ConvertFrom-Json
- }
- $Date_Today = Get-Date
- $KeyList = $AppList | Where-Object passwordCredentials | Select-Object `
- @{Name="AppName";Expression={$_.DisplayName}},AppID,
- @{Name="AppNotes";Expression={$_.notes}},
- @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
- @{Name="AppTags";Expression={
-  $TagList = [PSCustomObject]@{}
-  $_.Tags | ForEach-Object {
-    $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1]
-   }
-   $TagList
- }}, @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | Select-Object -Property `
-  @{Name="SecretDescription";Expression={$_.DisplayName}},
-  @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
-  @{Name="SecretExpiration";Expression={$_.endDateTime}},
-  @{Name="SecretType";Expression={"Key"}},
-  @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}},*
+  Write-Verbose "Getting All Key Credentials"
+  $KeyList = $AppList | Where-Object passwordCredentials | Select-Object `
+  @{Name="AppName";Expression={$_.DisplayName}},AppID,
+  @{Name="AppNotes";Expression={$_.notes}},
+  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+  @{Name="AppTags";Expression={
+   $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
+   $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] } ; $TagList
+  }},
+  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | Select-Object -Property `
+   @{Name="SecretDescription";Expression={$_.DisplayName}},
+   @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
+   @{Name="SecretExpiration";Expression={$_.endDateTime}},
+   @{Name="SecretType";Expression={"Key"}},
+   @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}},*
 
- $CertificateList = $AppList | Where-Object keyCredentials | Select-Object `
- @{Name="AppName";Expression={$_.DisplayName}},AppID,
- @{Name="AppNotes";Expression={$_.notes}},
- @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
- @{Name="AppTags";Expression={
-  $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
-  $_.Tags | ForEach-Object {
-    $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1]
-   }
-   $TagList
- }},
- @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty keyCredentials | Select-Object -Property `
+  Write-Verbose "Getting All Certificate Credentials"
+  $CertificateList = $AppList | Where-Object keyCredentials | Select-Object `
+  @{Name="AppName";Expression={$_.DisplayName}},AppID,
+  @{Name="AppNotes";Expression={$_.notes}},
+  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
+  @{Name="AppTags";Expression={
+   $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
+   $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] } ; $TagList
+  }},
+  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty keyCredentials | Select-Object -Property `
    @{Name="SecretDescription";Expression={$_.DisplayName}},
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
    @{Name="SecretExpiration";Expression={$_.endDateTime}},
    @{Name="SecretType";Expression={"Certificate"}},
    @{Name="CertificateCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).keyCredentials.Count}},*
 
-  $KeyList + $CertificateList | Select-Object `
+  Write-Verbose "Merge Secret & Certificates"
+  $KeyList + $CertificateList | Sort-Object SecretExpiration | Select-Object `
    AppName,AppNotes,AppTags,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,KeyCount,CertificateCount,SecretType,hint,
    @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.SecretExpiration).Days}} | Select-Object *,
    @{Name="Status";Expression={
@@ -11987,6 +11892,11 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
     }
    }},
    @{Name="SecretCount";Expression={$_.KeyCount + $_.CertificateCount}}
+
+  Write-Verbose "Found $(($KeyList + $CertificateList).Count) App Registration with Secrets out of $($AppList.Count) total Apps"
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Get-AzureAppRegistrationAudience { # Check All App registration Audiences : this can be added to filter wrong configured ones | ? AppAudience -ne "AzureADMyOrg"
  az ad app list --all -o json --query "[].{DisplayName:displayName,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience}" | ConvertFrom-Json | Select-Object `
@@ -12666,7 +12576,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
      }
-     if (! $RestResultObj) { Throw "$AppID Not found"}
+     if (! $RestResultObj.value) { Throw "$AppID Not found"}
      $RestResultObj.value
    }
    'GetByID' {
@@ -12678,7 +12588,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
      }
-     if (! $RestResultObj) { Throw "$AppID Not found"}
+     if (! $RestResultObj.value) { Throw "$AppID Not found"}
      $RestResultObj.value
    }
    'GetByDisplayName' {
@@ -12690,7 +12600,7 @@ Function Get-AzureServicePrincipal { # Get all Service Principal of a Tenant
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
      }
-     if (! $RestResultObj) { Throw "$DisplayName Not found"}
+     if (! $RestResultObj.value) { Throw "$DisplayName Not found"}
      $RestResultObj.value
    }
   } # End Switch
@@ -13546,7 +13456,6 @@ Function Set-AzureServicePrincipalContact {
 Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
   [parameter(Mandatory = $true)]$Token,
-  [switch]$Convert,
   [Switch]$HideGUID
  )
 
@@ -14033,8 +13942,7 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
   [Parameter(Mandatory)]$RequestURI, # Example : projects
   $BaseURI="https://dev.azure.com/", # For DevOps Graph the URL is : https://vssps.dev.azure.com/
   [Parameter(Mandatory)]$Header,
-  [Parameter(Mandatory)]$Organization,
-  $AmountOfReturnValues = '1000' # Max 1000
+  [Parameter(Mandatory)]$Organization
  )
 
 # Examples :
@@ -14064,7 +13972,7 @@ Function Get-ADORepositoryList {
  Param (
   [Parameter(Mandatory)]$ProjectName
  )
- az repos list --project "Cloud Team" -o json | convertfrom-json | Sort-Object Name | Select-Object name,@{N="Size";E={Format-Filesize $_.Size}},remoteUrl
+ az repos list --project $ProjectName -o json | convertfrom-json | Sort-Object Name | Select-Object name,@{N="Size";E={Format-Filesize $_.Size}},remoteUrl
 }
 # MFA
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
@@ -14646,44 +14554,26 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
 
   # Get user GUID if not provided
   if (Assert-IsGUID $UPNorID) {
    $UserGUID = $UPNorID
   } else {
-   if ($authDetails.Method -eq "Token") {
-    $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").Value.Id
-   } else {
-    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
-   }
+   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").Value.Id
   }
 
   # Get Group GUID if not provided
   if (Assert-IsGUID $GroupName) {
    $GroupGUID = $GroupName
   } else {
-   if ($authDetails.Method -eq "Token") {
-    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.ID
-   } else {
-    $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
-   }
+   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.ID
   }
 
-  if ($authDetails.Method -eq "Token") {
-   Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/$UserGUID/`$ref"
-  } else {
-   az ad group member remove --group $GroupGUID --member-id $UserGUID
-  }
+  Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/$UserGUID/`$ref"
  } catch {
-  $Exception = $($Error[0])
-  $StatusCodeJson = $Exception.ErrorDetails.message
-  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-  $StatusMessageJson = $Exception.ErrorDetails.message
-  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) removing user $UPNorID ($UserGUID) from group $GroupName ($GroupGUID) : $_"
  }
 }
 Function Remove-AzureADGroupOwner { # Remove Owner from group using Rest
@@ -14704,7 +14594,54 @@ Function Remove-AzureADGroupOwner { # Remove Owner from group using Rest
   $StatusMessageJson = $Exception.ErrorDetails.message
   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
+  Write-host -ForegroundColor Red "Error removing user $UserID from owner of group $GroupName ($StatusCode | $StatusMessage))"
+ }
+}
+Function Add-AzureADGroupOwner { # Add Owner from group using Rest
+ Param (
+  [GUID][Parameter(Mandatory)]$GroupID,
+  [GUID][Parameter(Mandatory)]$UserID,
+  [ValidateSet("users","serviceprincipals")]$OwnerType = "users",
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
+
+  $Body = (@{
+   "@odata.id" = "https://graph.microsoft.com/v1.0/$OwnerType/$UserID"
+  })
+  $BodyJSON = $Body | ConvertTo-JSON -Depth 6
+
+  Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupID/owners/`$ref" -Body $BodyJSON
+
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error addin user $UserID as owner of group $GroupID ($StatusCode | $StatusMessage))"
+ }
+}
+Function Get-AzureADGroupOwner { # See Owner from group using Rest
+ Param (
+  [GUID][Parameter(Mandatory)]$GroupID,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
+  Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupID/owners"
+ } catch {
+  $Exception = $($Error[0])
+  $StatusCodeJson = $Exception.ErrorDetails.message
+  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $StatusMessageJson = $Exception.ErrorDetails.message
+  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
+  Write-host -ForegroundColor Red "Error checking owner of group $GroupID ($StatusCode | $StatusMessage))"
  }
 }
 Function Remove-AzureADGroup { # Remove Azure AD Group
@@ -15002,7 +14939,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   } else {
    Write-Verbose "Using UPN, will have to get GUID"
    if ($authDetails.Method -eq "Token") {
-    $UserGUID = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").id
+    $UserGUID = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" -ErrorAction Stop).id
    } else {
     $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
    }
@@ -15011,14 +14948,14 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  Write-Verbose "Getting user detail using GUID $UserGUID"
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
   if ($authDetails.Method -eq "Token") {
-    $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID"
+    $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID" -ErrorAction Stop
    } else {
     $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
    }
   } else {
    $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,mail,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
    if ($authDetails.Method -eq "Token") {
-    $RestResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter"
+    $RestResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -ErrorAction Stop
    } else {
     $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
    }
@@ -15101,7 +15038,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  $Result
  } catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : `n$_"
  }
 }
 Function Get-AzureADUserStartingWith { # Get all AAD Users starting with something [Token or Az Cli] - Can search for exact value or start with values
@@ -15421,12 +15358,13 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   [parameter(Mandatory = $True, ParameterSetName="Interactive")]
   $TenantID,
 
-  # This parameter is optional for all sets and defaults to the Azure CLI's public App ID.
+  # This parameter is optional for all sets and defaults to the Microsoft Graph Command Line Tools public App ID.
   [parameter(Mandatory = $False, ParameterSetName="ClientSecret")]
   [parameter(Mandatory = $False, ParameterSetName="CertificateThumbprint")]
   [parameter(Mandatory = $False, ParameterSetName="Certificate")]
   [parameter(Mandatory = $False, ParameterSetName="Interactive")]
-  $ApplicationID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46", # Azure CLI's Public App ID
+  $ApplicationID = "14d82eec-204b-4c2f-b7e8-296a70dab67e", # Microsoft Graph Command Line Tools Public App ID
+  # $ApplicationID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46", # Azure CLI's Public App ID
 
   # Optional resource parameter, available to all sets /.default is the modern recommended scope.
   [parameter(Mandatory = $False)]$Scope = "https://graph.microsoft.com/.default",
@@ -16325,8 +16263,11 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   [switch]$ShowOnlyInteractive,
   [switch]$Readable,
   $Duration = '1d',
+  $StartDuration,
+  $EndDuration,
   $WorkspaceID
  )
+  # Example : $Result = get-sentinelappInfo -App $AppName -Readable -Duration '1d' -SimplifiedQuery -StartDuration "datetime(2025-12-19 14:46:33)" -EndDuration "datetime(2025-12-20 14:46:33)"
   try {
 
   Write-Verbose "Getting WorkspaceID"
@@ -16362,9 +16303,20 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
 
   if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
 
+  # Pepare TimeFrame :
+  if (! $EndDuration) {
+   $EndDuration = "now()"
+  }
+  if (! $StartDuration) {
+   $StartDuration = "ago($Duration)"
+  }
+  $TimeFrame = "$StartDuration .. $EndDuration"
+
+  Write-Verbose "Using TimeFrame $TimeFrame"
+
   # Add Unified Values
   $QueryStart = 'union SigninLogs, AADNonInteractiveUserSignInLogs,AADServicePrincipalSignInLogs,AADManagedIdentitySignInLogs
- | where TimeGenerated between (ago('+$Duration+') .. now() )
+ | where TimeGenerated between ('+$TimeFrame+')
  | where AppId == "'+$AppID+'"
  '
   # Add specific query to filter results
