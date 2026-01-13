@@ -57,6 +57,7 @@
 # Export Cert : $Certificate | Export-Certificate -Type CERT -FilePath $PATH
 # Default Catch : Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
 # Catch with Graph : $_.ErrorDetails.Message
+# Query in Azure without any specific module, check example : Get-AzureManagementGroups
 
 # Required Modules
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
@@ -9748,10 +9749,10 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
   Write-Error "Script Error: $_"
  }
 }
-Function Get-AzureSubscriptions_New { # Get Azure Subscriptions using API with KQL
+Function Get-AzureSubscriptions { # Get Azure Subscriptions using API with KQL
  [CmdletBinding()]
  Param (
-  [String]$Name,
+  [String]$Subscription,
   $Token,
   $APIVersion = "2024-04-01",
   [switch]$Exact
@@ -9759,16 +9760,18 @@ Function Get-AzureSubscriptions_New { # Get Azure Subscriptions using API with K
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
+  # Check Requested Value
+  if (Assert-IsGUID -Value $Subscription) { $ValueToSearch = "subscriptionId" } else { $ValueToSearch = "name" }
+  if ($Exact) { $ComparisonValue = "=~" } else {$ComparisonValue = "contains"}
+
   # 1. Base Query Construction
-  if ($Name) {
-   if ($Exact) {
-    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions' | where name =~ '$Name'"
-   } else {
-    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions' | where name contains '$Name'"
-   }
+  if ($Subscription) {
+   $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions' | where $ValueToSearch $ComparisonValue '$Subscription'"
   } else {
    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions'"
   }
+
+  Write-Verbose "Using Base Query $baseQuery"
 
 # 2. Get Total Count First
   # We run a lightweight query just to get the number of records.
@@ -9780,8 +9783,7 @@ Function Get-AzureSubscriptions_New { # Get Azure Subscriptions using API with K
   }
   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
 
-  Write-Verbose "Checking total count..."
-  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body -ErrorAction Stop
 
   # Extract the integer from the response (usually { "count": 123 })
   if ($countResponse.data) {
@@ -9793,9 +9795,7 @@ Function Get-AzureSubscriptions_New { # Get Azure Subscriptions using API with K
 
   Write-Verbose "Total Resources found: $TotalRecords"
 
-  if ($TotalRecords -eq 0) {
-   Throw "$Name not found"
-  }
+  if ($TotalRecords -eq 0) { Throw "$Subscription not found" }
 
   # 3. Fetch Data
   $GlobalResult = @()
@@ -9862,7 +9862,7 @@ Function Get-AzureSubscriptions_New { # Get Azure Subscriptions using API with K
    Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
   }
 
-  return $GlobalResult
+  $GlobalResult | Select-Object -ExpandProperty properties -ExcludeProperty properties | Sort-Object name
  } catch {
   $Exception = $($Error[0])
   if ($Exception.ErrorDetails.message) {
@@ -9874,7 +9874,7 @@ Function Get-AzureSubscriptions_New { # Get Azure Subscriptions using API with K
   }
  }
 }
-Function Get-AzureSubscriptions { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
+Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
 [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
   [Switch]$ShowAll,
@@ -10056,20 +10056,58 @@ Function Get-AzureManagementGroups_AzCLI { # Get all subscription and associated
  $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
  (az graph query -q $Query -o json --first 200 | ConvertFrom-Json).data | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
 }
+Function New-AzureResourceGroup { # Create new Azure Resource Group user API
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory)][String]$ResourceGroupName,
+  [Parameter(Mandatory)]$Subscription,
+  [Parameter(Mandatory)]$Location,
+  $Tags, # Format of Tags : @{ "Environment" = "Production" ; "CostCenter"  = "12345" ; "ManagedBy"   = "PowerShell" }
+  $Token,
+  $APIVersion = "2025-04-01"
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Build Body
+  $BodyParams = @{
+  "location" = $Location
+  "tags"     = $Tags
+  }
+ $JsonBody = $BodyParams | ConvertTo-Json -Depth 15
+
+ Write-Verbose "Using Body $JsonBody"
+
+[guid]$SubscriptionID = (Get-AzureSubscriptions -Subscription $Subscription -Token $authDetails.Token).SubscriptionID
+if (! $SubscriptionID) { Throw "Subscription $Subscription does not exist"}
+
+Get-AzureGraph -Token $authDetails.Token -Method "PUT" -Body $JsonBody -GraphRequest "https://management.azure.com/subscriptions/$SubscriptionID/resourcegroups/$ResourceGroupName`?api-version=$APIVersion" -ErrorAction Stop
+
+ } Catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
 # AzCli Env Management
-Function Get-AzureEnvironment { # Get Current Environment used by AzCli
+Function Get-AzureCliEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
 # Global Extracts
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
- Get-AzureSubscriptions | foreach-object {
+ Get-AzureSubscriptionsAZCLI | foreach-object {
   $SubscriptionName = $_.Name
   az network public-ip list --subscription $_.id -o json | convertfrom-json | Select-Object @{Name="SubscriptionName";Expression={$SubscriptionName}},location,resourceGroup,ipAddress,linkedPublicIpAddress
  }
 }
-Function Get-AzureResources { # Get all Azure Resources for all Subscriptions
- Get-AzureSubscriptions | ForEach-Object {
+Function Get-AzureResourceAZCLI { # Get all Azure Resources for all Subscriptions
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking resources of subscription : " -Value $subscriptionName -PrintTime
@@ -10093,7 +10131,7 @@ Function Get-AzureResourceGroups_CLI { # Get all Azure Resource Groups for all S
  Param (
   $ExportFileName = "$iClic_TempPath\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
  )
- Get-AzureSubscriptions | ForEach-Object {
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking resource groups of subscription : " -Value $subscriptionName -PrintTime
@@ -10112,7 +10150,7 @@ Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (C
  Param (
   [switch]$ShowAccessPolicies # Will add a huge time on the check
  )
- Get-AzureSubscriptions | ForEach-Object {
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking Keyvaults of subscription : " -Value $subscriptionName -PrintTime
@@ -10206,7 +10244,7 @@ Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (C
 }
 Function Get-AzureStorageAccounts { # Get all Azure Storage Accounts for all Subscriptions (Checks ACLs)
  # Filter Example : | select SubscriptionName,resourceGroup,name,AD_Authentication,minimumTlsVersion,enableHttpsTrafficOnly,Network_Public_Mode,Network_Public_Blob_Mode,Network_Bypass,Network_Default_Action,Network_Private_Endpoint_Name | ft
- Get-AzureSubscriptions | ForEach-Object {
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking Storage Accounts of subscription : " -Value $subscriptionName -PrintTime
@@ -10278,7 +10316,7 @@ Function Get-AzureStorageAccounts { # Get all Azure Storage Accounts for all Sub
  }
 }
 Function Get-AzureSQLServers { # Get all Azure SQL Servers for all Subscription (check ACLs and firewall rules)
- Get-AzureSubscriptions | ForEach-Object {
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking SQL Server of subscription : " -Value $subscriptionName -PrintTime
@@ -10320,7 +10358,7 @@ Function Get-AzureSQLServers { # Get all Azure SQL Servers for all Subscription 
  }
 }
 Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add all Tags in separate columns, same for Extensions [See example : Get-MDCConfiguration]
- Get-AzureSubscriptions | ForEach-Object {
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking VMs of subscription : " -Value $subscriptionName -PrintTime
@@ -10356,8 +10394,8 @@ Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add a
   $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllVMs_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
-Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
- Get-AzureSubscriptions | Where-Object State -eq Enabled | ForEach-Object {
+Function Get-AzurePolicyExemptionsAZCLI { # Get All Azure Policy Exemptions using Az Cli
+ Get-AzureSubscriptionsAZCLI | Where-Object State -eq Enabled | ForEach-Object {
   $CurrentSubscriptionID = $_.id
   $CurrentSubscriptionName = $_.name
   az account set -n $CurrentSubscriptionID
@@ -10373,8 +10411,157 @@ Function Get-AzurePolicyExemptions { # Get All Azure Policy Exemptions
    @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "$iClic_TempPath\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
+Function Get-AzurePolicyExemption { # Get All Azure Policy Exemption using Graph
+  [CmdletBinding()]
+ Param (
+  $Token,
+  $APIVersion = "2024-04-01"
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  $baseQuery = "PolicyResources | where type == 'microsoft.authorization/policyexemptions'" # Get All subscriptions better to find details on Management Group
+
+  # 2. Get Total Count First
+  # We run a lightweight query just to get the number of records.
+  $countQuery = "$baseQuery | count"
+
+  $bodyHashtable = @{
+   query = $countQuery
+   options = @{ resultFormat = "objectArray" }
+  }
+  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+  Write-Verbose "Checking total count..."
+  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+  # Extract the integer from the response (usually { "count": 123 })
+  if ($countResponse.data) {
+   # Access dynamically because property name is usually 'count_' or 'count'
+   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
+  } else {
+   $TotalRecords = 0
+  }
+
+  Write-Verbose "Total Resources found: $TotalRecords"
+
+  if ($TotalRecords -eq 0) {
+   Throw "$Name not found"
+  }
+
+  # 3. Fetch Data
+  $GlobalResult = @()
+  $PageSize = 1000
+
+  # OPTIMIZATION: If data fits in one page, don't use the complex loop
+  if ($TotalRecords -le $PageSize) {
+   Write-Verbose "Fetching all $TotalRecords records in a single call..."
+
+   $query = "$baseQuery | order by id asc | take $PageSize"
+
+   $bodyHashtable = @{
+    query = $query
+    options = @{ resultFormat = "objectArray" }
+   }
+   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+   if ($response.data) { $GlobalResult += $response.data }
+
+  } else {
+   # PAGINATION LOOP: Use strcmp for > 1000 items
+   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
+
+   $LastId = $null
+   $loopCount = 0
+
+   do {
+    $currentQuery = $baseQuery
+
+    # Keyset Filter
+    if (-not [string]::IsNullOrEmpty($LastId)) {
+     $currentQuery += " | where strcmp(id, '$LastId') > 0"
+    }
+
+    $currentQuery += " | order by id asc | take $PageSize"
+
+    $bodyHashtable = @{
+     query = $currentQuery
+     options = @{ resultFormat = "objectArray" }
+    }
+    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+    # Retry logic or simple execute
+    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+    if ($response.data) {
+     $count = $response.data.Count
+     $GlobalResult += $response.data
+     $LastId = $response.data[-1].id
+     $loopCount++
+
+     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
+    } else {
+     $count = 0
+    }
+
+   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
+  }
+
+  # 4. Final Validation
+  if ($GlobalResult.Count -ne $TotalRecords) {
+   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
+  }
+
+  $GlobalResult | Select-Object * -ExpandProperty properties -ExcludeProperty properties
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
+Function Remove-AzurePolicyExemption {
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory=$true)]$ExemptionId,
+  $Token,
+  $APIVersion = "2024-12-01-preview"
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $GraphFullURL = "https://management.azure.com$($ExemptionId)?api-version=$APIVersion"
+  $CurrentValue = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphFullURL
+  if ($CurrentValue) {
+   Write-Host -foregroundcolor "Yellow" -Object "Will delete Exemption :"
+   ($CurrentValue | Select-Object * -ExpandProperty Properties -ExcludeProperty Properties)
+
+   $Answer = Question "Please confirm removal" -defaultChoice "1"
+   if (! $Answer) {
+    write-host -foregroundcolor "Yellow" -Object "Cancelled"
+   } else {
+    write-host -ForegroundColor "Red" -Object "DELETED"
+    get-azuregraph -Token $authDetails.Token -GraphRequest $GraphFullURL -Method DELETE
+   }
+  }
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
 Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the tenant
- Get-AzureSubscriptions | ForEach-Object {
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking App Service Certificates of subscription : " -Value $subscriptionName -PrintTime
@@ -10393,7 +10580,7 @@ Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the ten
  }
 }
 Function Get-AzureCertificates { # Check All Azure Web Certificates -> Check keyVaultId error
- Get-AzureSubscriptions | ForEach-Object {
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $subscriptionId = $_.id
   $subscriptionName = $_.name
   Progress -Message "Checking Certificates of subscription : " -Value $subscriptionName -PrintTime
@@ -10413,8 +10600,8 @@ Function Get-AzureReservation { # Check all Azure Reservation Orders
   }
  }
 }
-Function Get-AzureApplicationGateway {
- Get-AzureSubscriptions | ForEach-Object {
+Function Get-AzureApplicationGateway { # Check all Azure Application Gateway
+ Get-AzureSubscriptionsAZCLI | ForEach-Object {
   $SubscriptionID = $_.id
   $SubscriptionName = $_.name
   Progress -Message "Currently processing " -Value $SubscriptionName -PrintTime
@@ -10423,12 +10610,6 @@ Function Get-AzureApplicationGateway {
  }
 }
 # Convert Methods
-Function Get-AzureSubscriptionNameFromID { #Retrieve name of Subscription from the ID
- Param (
-  [Parameter(Mandatory=$true)]$SubscriptionID
- )
- (Get-AzureSubscriptions | Where-Object id -eq $SubscriptionID).Name
-}
 Function Convert-Tag { # Convert Tags to a usable value
  Param (
   $TagToSearch,
@@ -11007,7 +11188,7 @@ Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandato
  )
  if (! $SubscriptionID) {
   Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime
-  $SubscriptionID = (Get-AzureSubscriptions | Where-Object Name -eq $SubscriptionName).ID
+  $SubscriptionID = (Get-AzureSubscriptionsAZCLI | Where-Object Name -eq $SubscriptionName).ID
  }
 
  az account set --subscription $subscriptionId
@@ -11032,7 +11213,7 @@ Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandato
   write-host -ForegroundColor "Green" -Object "Successfully added $roleDefinitionName permission for $principalId [$principalType] on scope $scope"
  }
 }
-Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
+Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope - Using Azure CLI
  Param (
   [parameter(Mandatory = $true, ParameterSetName="UserName")]$UserName,
   [parameter(Mandatory = $true, ParameterSetName="ID")][GUID]$Id,
@@ -11046,7 +11227,7 @@ Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Ob
   az role assignment create --assignee $UserName --role $Role --scope $Scope
  }
 }
-Function Add-AzureRBACRights {
+Function Add-AzureRBACRights { # Add Azure RBAC permissions
   Param (
   [parameter(Mandatory = $true, ParameterSetName="ID")][String]$Id, # Changed to String to handle input flexibility
   [parameter(Mandatory = $true, ParameterSetName="ID")][ValidateSet("Group","ServicePrincipal","User","ForeignGroup")]$ID_Type,
@@ -13356,7 +13537,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
   if ($Token) {
    $SubscriptionID = $((Get-AzureSubscriptions -Name $SubscriptionName -Token $Token).id)
   } else {
-   $SubscriptionID = $((Get-AzureSubscriptions -Name $SubscriptionName).id)
+   $SubscriptionID = $((Get-AzureSubscriptionsAZCLI -Name $SubscriptionName).id)
   }
  }
  if (! $SubscriptionID ) { write-host -ForegroundColor Red "Subscription $SubscriptionName not found" ; Return}
@@ -14244,6 +14425,40 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
   Write-host -ForegroundColor Red "Error getting default MFA Method for user $UPNorID ($StatusCode | $StatusMessage))"
+ }
+}
+# Access Packages
+Function Get-AzureAccessPackages {
+ Param (
+  [Switch]$ExpandAssignementPolicies,
+  [GUID]$AccessPackageID,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $AccessPackages = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/accessPackages/$AccessPackageID"
+  if ($ExpandAssignementPolicies ) {
+   # $AccessPackageWithPolicies = @()
+   $AccessPackages | Sort-Object displayName | ForEach-Object {
+    Progress -Message "Checking Policy of Access Package : " -Value $_.displayName -PrintTime
+    $Policy = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/accessPackages/$($_.ID)?`$expand=assignmentPolicies"
+    $_ | Add-Member -MemberType NoteProperty -Name "LinkedPolicies" -Value $Policy.assignmentPolicies
+   }
+  }
+  $AccessPackages
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-AzureAccessPackagesAssignmentPolicies {
+ Param (
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/assignmentPolicies"
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 
@@ -15757,7 +15972,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   $Token,
   [parameter(Mandatory = $True)]$GraphRequest,
   $BaseURL = 'https://graph.microsoft.com/beta',
-  [ValidateSet("GET","POST","DELETE","PATCH")]$Method='GET',
+  [ValidateSet("GET","POST","DELETE","PATCH","PUT")]$Method='GET',
   [Switch]$ConsistencyLevelEventual,
   [Switch]$ShowState,
   $Throttle='10',
@@ -16191,10 +16406,18 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
  | extend UnifiedDeviceDetailSTRING = coalesce(DeviceDetail_dynamic, parse_json(DeviceDetail_string))
  | extend UnifiedStatusSTRING = coalesce(Status_dynamic, parse_json(Status_string))
  | extend UnifiedLocationDetailSTRING = coalesce(LocationDetails_dynamic, parse_json(LocationDetails_string))
- | extend UnifiedConditionalAccessPoliciesSTRING = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
  | extend UnifiedTokenProtectionStatusDetailsSTRING = coalesce(TokenProtectionStatusDetails_dynamic, parse_json(TokenProtectionStatusDetails_string))
- | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))
+ | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))'
+
+ # Specifically add the Conditional Access Part where we exclude the reportOnlyNotApplied,notApplied,notEnabled values as they are not at all needed/used
+ $QueryStart += '
+ | extend UnifiedCAP_TEMP = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
+ | mv-apply CAP = UnifiedCAP_TEMP on ( where CAP.result !in ("reportOnlyNotApplied", "notApplied", "notEnabled") | summarize CAP_List = make_list(CAP) )
+ | extend UnifiedConditionalAccessPoliciesSTRING = tostring(CAP_List)
+ | project-away UnifiedCAP_TEMP, CAP_List
  '
+ # $QueryStart += '| extend UnifiedConditionalAccessPoliciesSTRING = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))'
+
 
   # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
   if ($SimplifiedQuery) {
@@ -16230,9 +16453,9 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedDeviceDetail' -Value ($_.UnifiedDeviceDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedStatus' -Value ($_.UnifiedStatusSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedLocationDetail' -Value ($_.UnifiedLocationDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
-    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedConditionalAccessPolicies' -Value ($_.UnifiedConditionalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
-    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedTokenProtectionStatusDetails' -Value ($_.UnifiedTokenProtectionStatusDetailsSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
-    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedConditionUnifiedAgentSTRINGalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedConditionalAccessPolicies' -Value ($_.UnifiedConditionalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedTokenProtectionStatusDetails' -Value ($_.UnifiedTokenProtectionStatusDetailsSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedAgentSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
     # CONVERSION ONLY
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Details' -Value ($_.AuthenticationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Processing_Details' -Value ($_.AuthenticationProcessingDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
@@ -16330,10 +16553,16 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
  | extend UnifiedDeviceDetailSTRING = coalesce(DeviceDetail_dynamic, parse_json(DeviceDetail_string))
  | extend UnifiedStatusSTRING = coalesce(Status_dynamic, parse_json(Status_string))
  | extend UnifiedLocationDetailSTRING = coalesce(LocationDetails_dynamic, parse_json(LocationDetails_string))
- | extend UnifiedConditionalAccessPoliciesSTRING = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
  | extend UnifiedTokenProtectionStatusDetailsSTRING = coalesce(TokenProtectionStatusDetails_dynamic, parse_json(TokenProtectionStatusDetails_string))
- | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))
-'
+ | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))'
+
+ # Specifically add the Conditional Access Part where we exclude the reportOnlyNotApplied,notApplied,notEnabled values as they are not at all needed/used
+ $QueryStart += '
+ | extend UnifiedCAP_TEMP = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
+ | mv-apply CAP = UnifiedCAP_TEMP on ( where CAP.result !in ("reportOnlyNotApplied", "notApplied", "notEnabled") | summarize CAP_List = make_list(CAP) )
+ | extend UnifiedConditionalAccessPoliciesSTRING = tostring(CAP_List)
+ | project-away UnifiedCAP_TEMP, CAP_List
+ '
 
   # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
   if ($SimplifiedQuery) {
@@ -16368,9 +16597,9 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedDeviceDetail' -Value ($_.UnifiedDeviceDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedStatus' -Value ($_.UnifiedStatusSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedLocationDetail' -Value ($_.UnifiedLocationDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
-    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedConditionalAccessPolicies' -Value ($_.UnifiedConditionalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
-    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedTokenProtectionStatusDetails' -Value ($_.UnifiedTokenProtectionStatusDetailsSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
-    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedConditionUnifiedAgentSTRINGalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedConditionalAccessPolicies' -Value ($_.UnifiedConditionalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedTokenProtectionStatusDetails' -Value ($_.UnifiedTokenProtectionStatusDetailsSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedAgentSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
     # CONVERSION ONLY
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Details' -Value ($_.AuthenticationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Processing_Details' -Value ($_.AuthenticationProcessingDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
@@ -16435,15 +16664,20 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
   if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
 
   # Add Unified Values
-  $QueryStart += ' | extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
+  $QueryStart += '| extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
  | extend UnifiedDeviceDetailSTRING = coalesce(DeviceDetail_dynamic, parse_json(DeviceDetail_string))
  | extend UnifiedStatusSTRING = coalesce(Status_dynamic, parse_json(Status_string))
  | extend UnifiedLocationDetailSTRING = coalesce(LocationDetails_dynamic, parse_json(LocationDetails_string))
- | extend UnifiedConditionalAccessPoliciesSTRING = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
  | extend UnifiedTokenProtectionStatusDetailsSTRING = coalesce(TokenProtectionStatusDetails_dynamic, parse_json(TokenProtectionStatusDetails_string))
- | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))
- '
+ | extend UnifiedAgentSTRING = coalesce(Agent_dynamic, parse_json(Agent_string))'
 
+ # Specifically add the Conditional Access Part where we exclude the reportOnlyNotApplied,notApplied,notEnabled values as they are not at all needed/used
+ $QueryStart += '
+ | extend UnifiedCAP_TEMP = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
+ | mv-apply CAP = UnifiedCAP_TEMP on ( where CAP.result !in ("reportOnlyNotApplied", "notApplied", "notEnabled") | summarize CAP_List = make_list(CAP) )
+ | extend UnifiedConditionalAccessPoliciesSTRING = tostring(CAP_List)
+ | project-away UnifiedCAP_TEMP, CAP_List
+ '
   if ($SimplifiedQuery) {
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus,
@@ -16478,7 +16712,7 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedLocationDetail' -Value ($_.UnifiedLocationDetailSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedConditionalAccessPolicies' -Value ($_.UnifiedConditionalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
     $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedTokenProtectionStatusDetails' -Value ($_.UnifiedTokenProtectionStatusDetailsSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
-    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedConditionUnifiedAgentSTRINGalAccessPoliciesSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
+    $_ | Add-Member -MemberType NoteProperty -Name 'UnifiedAgent' -Value ($_.UnifiedAgentSTRING | ConvertFrom-Json -ErrorAction SilentlyContinue | Where-Object Result -notin 'reportOnlyNotApplied','notApplied','notEnabled' | Select-Object -ExcludeProperty id)
     # CONVERSION ONLY
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Details' -Value ($_.AuthenticationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Processing_Details' -Value ($_.AuthenticationProcessingDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
