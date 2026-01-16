@@ -1248,7 +1248,7 @@ Function Assert-IsInAAD {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   if ($authDetails.Method -eq "Token") {
    if ($Type -eq 'Group') {
-    $Result = Get-AzureADGroupIDFromName -GroupName $NameOrID -Token $authDetails.Token
+    $Result = Get-AzureADGroup -Group $NameOrID -HideError -Token $authDetails.Token
    } else {
     $Result = Get-AzureADUserInfo -UPNorID $NameOrID -Token $authDetails.Token
    }
@@ -14490,7 +14490,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   if ($authDetails.Method -eq "Token") {
   if ( ! (Assert-IsGUID $Group) ) {
    Write-Verbose "When using graph Group GUID is mandatory - Will Search"
-   $GroupID = Get-AzureADGroupIDFromName -GroupName $Group -Token $authDetails.Token
+   $GroupID = (Get-AzureADGroup -Group $Group -HideError -Token $authDetails.Token).ID
    if (! $GroupID) { Throw "Group $Group Not Found"} else { Write-Verbose "Found GroupID $GroupID"}
   } else {
    $GroupID = $Group
@@ -14503,7 +14503,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
    }
    if ((! $MemberID) -and ($MemberType -eq "Group" -or $MemberType -eq "Auto") ) {
     Write-Verbose "Searching for Groups"
-    $MemberID = Get-AzureADGroupIDFromName -GroupName $Member -Token $authDetails.Token
+    $MemberID = (Get-AzureADGroup -Group $Group -HideError -Token $authDetails.Token).ID
    }
    if ( (! $MemberID) -and ($MemberType -eq "ServicePrincipal" -or $MemberType -eq "Auto") ) {
     Write-Verbose "Searching for ServicePrincipals"
@@ -14681,22 +14681,22 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-AzureADGroupIDFromName {
+Function Get-AzureADGroup { # Get Azure Ad Group Details
  Param (
-  [Parameter(Mandatory)]$GroupName,
-  $Token
+  [Parameter(Mandatory)]$Group,
+  $Token,
+  [Switch]$HideError
  )
- try {
-
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-
- if ($authDetails.Method -eq "Token") {
-  (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'").value.id
- } else {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/Groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.id
- }
- } catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  if (Assert-IsGUID $Group) {
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups/$Group"
+  } else {
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$Group'"
+  }
+  if ($Result) { Return $Result} else { Throw "Group $Group not found"}
+ } Catch {
+  if (! $HideError) {Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"}
  }
 }
 Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using AzCli)
@@ -14779,7 +14779,7 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
 }
 Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or Rest if token is provided
  Param (
-  [Parameter(Mandatory)]$GroupName,
+  [Parameter(Mandatory)]$Group,
   [Parameter(Mandatory)]$UPNorID,
   $Token
  )
@@ -14791,19 +14791,20 @@ Function Remove-AzureADGroupMember { # Remove Member from group (Using AzCli) or
   if (Assert-IsGUID $UPNorID) {
    $UserGUID = $UPNorID
   } else {
-   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").Value.Id
+   $URI = "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'"
+   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri $URI).Value.Id
   }
 
   # Get Group GUID if not provided
-  if (Assert-IsGUID $GroupName) {
-   $GroupGUID = $GroupName
+  if (Assert-IsGUID $Group) {
+   $GroupGUID = $Group
   } else {
-   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.ID
+   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$Group'").Value.ID
   }
 
   Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupGUID/members/$UserGUID/`$ref"
  } catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) removing user $UPNorID ($UserGUID) from group $GroupName ($GroupGUID) : $_"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) removing user $UPNorID ($UserGUID) from group $Group ($GroupGUID) : $_"
  }
 }
 Function Remove-AzureADGroupOwner { # Remove Owner from group using Rest
@@ -14917,13 +14918,13 @@ Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
    }
   }
 
-  if (Assert-IsGUID $GroupName) {
-   $GroupGUID = $GroupName
+  if (Assert-IsGUID $Group) {
+   $GroupGUID = $Group
   } else {
    if ($authDetails.Method -eq "Token") {
-    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'").Value.Id
+    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$Group'").Value.Id
    } else {
-    $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+    $GroupGUID = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayname eq '$Group'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
    }
   }
   if ($authDetails.Method -eq "Token") {
@@ -14943,18 +14944,18 @@ Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
   $StatusMessageJson = $Exception.ErrorDetails.message
   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error adding user $UPNorID in group $GroupName ($StatusCode | $StatusMessage))"
+  Write-host -ForegroundColor Red "Error adding user $UPNorID in group $Group ($StatusCode | $StatusMessage))"
   # Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Copy-AzureADGroupMembers { # Copy Group Members from one group to another
  Param (
-  [Parameter(Mandatory)]$SourceGroupName,
-  [Parameter(Mandatory)]$DestinationGroupName
+  [Parameter(Mandatory)]$SourceGroup,
+  [Parameter(Mandatory)]$DestinationGroup
  )
- Get-AzureADGroupMembers -Group $SourceGroupName | ForEach-Object {
-  Write-Verbose "Copying User $($_.DisplayName) from Group $SourceGroupName to $DestinationGroupName"
-  Add-AzureADGroupMember -Group $DestinationGroupName -UPNorID $_.id
+ Get-AzureADGroupMembers -Group $SourceGroup | ForEach-Object {
+  Write-Verbose "Copying User $($_.DisplayName) from Group $SourceGroup to $DestinationGroup"
+  Add-AzureADGroupMember -Group $DestinationGroup -UPNorID $_.id
  }
 }
 Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Groups
@@ -14962,7 +14963,7 @@ Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Gr
   [Parameter(Mandatory)]$GroupPrefix,
   [switch]$PrintOnly
  )
- $GroupList = Get-AzureADGroups -Group $GroupPrefix -ShowMembers -ExcludeDynamicGroups
+ $GroupList = Get-AzureADGroups -GroupName $GroupPrefix -ShowMembers -ExcludeDynamicGroups
  $Result = $GroupList |
   `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} -ErrorAction SilentlyContinue |
   `Where-Object {! $_.accountEnabled} |
@@ -15004,7 +15005,7 @@ Function New-AzureADGroup { # Create New Group using Graph
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   $header = $authDetails.Header
 
-  $CurrentGroup = Get-AzureADGroupIDFromName -GroupName $GroupName -Token $authDetails.token
+  $CurrentGroup = Get-AzureADGroup -Group $GroupName -HideError -Token $authDetails.token
   if ($CurrentGroup) { Throw "Group Already Exists. Group ID : $CurrentGroup"}
 
   if (($GroupName.length -ge 64) -and (! $mailNickname)) {
