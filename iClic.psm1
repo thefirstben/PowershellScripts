@@ -1241,22 +1241,37 @@ Function Assert-IsInAAD {
  Param (
   [Parameter(Mandatory=$true)]$NameOrID, # Works with Name (UPN for users) & ID
   [ValidateSet("Group","User")]$Type="User",
-  [switch]$PrintError
+  [switch]$PrintError,
+  $Token
  )
- if ($Type -eq 'Group') {
-  $ResultJson = az ad group show -g $NameOrID 2>&1
-  $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-  $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-  if ($ErrorMessage) {
-   if ($ErrorMessage -like "*More than one group*") {
-    write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]"
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($authDetails.Method -eq "Token") {
+   if ($Type -eq 'Group') {
+    $Result = Get-AzureADGroupIDFromName -GroupName $NameOrID -Token $authDetails.Token
+   } else {
+    $Result = Get-AzureADUserInfo -UPNorID $NameOrID -Token $authDetails.Token
    }
-   if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]" }
+  } else {
+   if ($Type -eq 'Group') {
+    $ResultJson = az ad group show -g $NameOrID 2>&1
+    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+    $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+    if ($ErrorMessage) {
+     if ($ErrorMessage -like "*More than one group*") {
+      write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]"
+     }
+     if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]" }
+    }
+   } else {
+    $Result = az ad user show --id $NameOrID 2>&1
+   }
   }
- } else {
-  $Result = az ad user show --id $NameOrID 2>&1
+  if ($Result) { return $True } else { return $False }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  return $False
  }
- if ($Result) { return $True } else { return $False }
 }
 Function Assert-IsGUID {
  Param (
@@ -14881,7 +14896,7 @@ Function Remove-AzureADGroup { # Remove Azure AD Group
 }
 Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
  Param (
-  [Parameter(Mandatory)]$GroupName,
+  [Parameter(Mandatory)]$Group,
   [Parameter(Mandatory)]$UPNorID,
   $Token
  )
@@ -14938,7 +14953,8 @@ Function Copy-AzureADGroupMembers { # Copy Group Members from one group to anoth
   [Parameter(Mandatory)]$DestinationGroupName
  )
  Get-AzureADGroupMembers -Group $SourceGroupName | ForEach-Object {
-  Add-AzureADGroupMember -GroupName $DestinationGroupName -UPNorID $_.id
+  Write-Verbose "Copying User $($_.DisplayName) from Group $SourceGroupName to $DestinationGroupName"
+  Add-AzureADGroupMember -Group $DestinationGroupName -UPNorID $_.id
  }
 }
 Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Groups
@@ -16096,7 +16112,7 @@ Function Get-AzureConditionalAccessPolicies {
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
  Write-Verbose "Getting all Conditional Access Policies"
- $Result = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies").value
+ $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies"
 
  Write-Verbose "Getting all NamedLocations"
  $NamedLocations = Get-AzureConditionalAccessLocations -Token $authDetails.Token
@@ -16301,29 +16317,22 @@ Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Reques
    $logData
  }
 }
-Function Get-AzureLogAnalyticsRequest {
+Function Get-AzureLogAnalyticsRequest { # Run cmd towards Log Analytics Workspace
  [CmdletBinding()]
  Param(
   [Parameter(Mandatory)]$WorkspaceID,
   [Parameter(Mandatory)]$Query, #in string (if JSON it can be a POST query with query in BODY)
-  [Parameter(Mandatory)]$Token,
-  $BaseAPIURL = "api.loganalytics.io" #URL api.loganalytics.io will be deprecated, replace it with https://api.loganalytics.azure.com when available
+  $Token,
+  $BaseAPIURL = "api.loganalytics.azure.com" #URL api.loganalytics.io will be deprecated, replaced it with api.loganalytics.azure.com
  )
 
  Try {
-  Write-Verbose -Message "Checking Token validity"
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-
-  Write-Verbose -Message "Generating Headers"
-  $headers = @{ 'Authorization' = "$($Token.token_type) $($Token.access_token)" ; 'Content-type'  = "application/json" }
-
-  Write-Verbose -Message "Requesting Rest Method"
-  # Using GET with Query in the URL
-  # $Result = Invoke-RestMethod -Method GET -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $header = $authDetails.Header
 
   # Using post with Query in the BODY
   $QueryJSON = @{"query" = $Query} | ConvertTo-Json
-  $Result = Invoke-RestMethod -Method POST -headers $headers -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON -ErrorAction Stop
+  $Result = Invoke-RestMethod -Method POST -headers $header -Uri "https://$BaseAPIURL/v1/workspaces/$WorkspaceID/query?query=$query" -MaximumRetryCount 2 -Body $QueryJSON -ErrorAction Stop
   if ($Result.Error) {
    Write-Verbose $Query
    Throw "Error Found : $Result.Error '$($Result.error.details.innererror)'"
@@ -16540,8 +16549,10 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   # Add Unified Values
   $QueryStart = 'union SigninLogs, AADNonInteractiveUserSignInLogs,AADServicePrincipalSignInLogs,AADManagedIdentitySignInLogs
  | where TimeGenerated between ('+$TimeFrame+')
- | where AppId == "'+$AppID+'"
+ | where AppId =~ "'+$AppID+'" or ResourceIdentity =~ "'+$AppID+'"
  '
+# | where "'+$AppID+'" in~ (AppId, ResourceIdentity)
+
   # Add specific query to filter results
   if ($ConditionalAccessShowOnlySuccess) { $QueryStart += '| where ConditionalAccessStatus == "success"' }
   if ($ConditionalAccessIgnoreNotApplied) { $QueryStart += '| where ConditionalAccessStatus != "notApplied"' }
@@ -16578,7 +16589,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   $Query = $QueryStart + $QueryEnd
 
   # Launch Query
-  $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+  $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
 
   if ($ResultRaw) {
    if ($Readable) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
@@ -16614,6 +16625,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
    return $Result
   }
  } catch {
+  Write-Verbose $Query
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
