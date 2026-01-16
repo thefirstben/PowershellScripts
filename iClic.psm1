@@ -13155,7 +13155,7 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   # Get Principal Name if not provided
   if ($ServicePrincipalName) {
    if ($authDetails.Method -eq "Token") {
-    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName -Token $authDetails.Token).ID
+    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName -Token $authDetails.Token -ErrorAction Stop).ID
    } else {
     $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName).ID
    }
@@ -14690,9 +14690,9 @@ Function Get-AzureADGroup { # Get Azure Ad Group Details
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   if (Assert-IsGUID $Group) {
-   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups/$Group"
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups/$Group" -ErrorAction Stop
   } else {
-   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$Group'"
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$Group'" -ErrorAction Stop
   }
   if ($Result) { Return $Result} else { Throw "Group $Group not found"}
  } Catch {
@@ -14877,9 +14877,10 @@ Function Get-AzureADGroupOwner { # See Owner from group using Rest
 }
 Function Remove-AzureADGroup { # Remove Azure AD Group
  Param (
-  [Parameter(Mandatory)]$GroupID,
+  [Parameter(Mandatory, ValueFromPipeline)]$GroupID,
   $Token
  )
+ process {
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   $header = $authDetails.Header
@@ -14894,6 +14895,7 @@ Function Remove-AzureADGroup { # Remove Azure AD Group
   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
   Write-host -ForegroundColor Red "Error removing user $UPNorID from group $GroupName ($StatusCode | $StatusMessage))"
  }
+}
 }
 Function Add-AzureADGroupMember { # Add Member from group (Using AzCli or token)
  Param (
@@ -16491,9 +16493,11 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   $Token,
   [switch]$ConditionalAccessShowOnlySuccess,
   [switch]$ShowOnlySuccess,
+  [switch]$ShowOnlyFailure,
   [switch]$ConditionalAccessIgnoreNotApplied,
   [switch]$SimplifiedQuery,
   [switch]$ShowOnlyInteractive,
+  [switch]$ShowCertificateDetails,
   [switch]$Readable,
   $Duration = '1d',
   $StartDuration,
@@ -16512,15 +16516,20 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
    Write-Verbose "Getting App Token"
    $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
    Write-Verbose "Search for App"
-   $AppID = (Get-AzureAppRegistration -DisplayName $App -ValuesToShow appid -Token $authDetails.Token -ErrorAction Stop).appID
+   $AppID = (Get-AzureAppRegistration -DisplayName $App -ValuesToShow appid -Token $authDetails.Token -ErrorAction SilentlyContinue).appID
    if (! $AppID) {
     Write-Verbose "App Registration not found, searching for Enterprise App"
-    $AppID = (Get-AzureAppRegistration -DisplayName $App -ValuesToShow appid -Token $authDetails.Token -ErrorAction Stop).appID
+    $AppID = (Get-AzureServicePrincipal -DisplayName $App -ValuesToShow appid -Token $authDetails.Token -ErrorAction Stop).appID
     }
    if (! $AppID) {Throw "App $App Not Found"} else {Write-Verbose "Found App GUID : $AppID"}
   } else {
    Write-Verbose "App GUID provided using faster search"
    $AppID = $App
+  }
+
+  if ($ShowCertificateDetails) {
+   $SecretsInfo = Get-AzureAppRegistrationSecrets -AppRegistrationID $AppID -Token $authDetails.Token
+   $CertificatesHash = $SecretsInfo.keyCredentials | Group-Object -Property keyId -AsHashTable
   }
 
   # Get and check Azure Monitor Token
@@ -16557,7 +16566,8 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   # Add specific query to filter results
   if ($ConditionalAccessShowOnlySuccess) { $QueryStart += '| where ConditionalAccessStatus == "success"' }
   if ($ConditionalAccessIgnoreNotApplied) { $QueryStart += '| where ConditionalAccessStatus != "notApplied"' }
-  if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature == "SUCCESS"' }
+  if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature =~ "SUCCESS"' }
+  if ($ShowOnlyFailure) { $QueryStart += '| where ResultSignature =~ "FAILURE"' }
   if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
 
   # Add Unified Values
@@ -16581,7 +16591,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
    ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
-   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType'
+   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,ServicePrincipalCredentialKeyId'
   }
   # Query will always end with this
   $QueryEnd = '| sort by TimeGenerated'
@@ -16618,6 +16628,9 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Requirement_Policies' -Value ($_.AuthenticationRequirementPolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Network_Details' -Value ($_.NetworkLocationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Session_Lifetime_Policies' -Value ($_.SessionLifetimePolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    if ($ShowCertificateDetails -and $_.ServicePrincipalCredentialKeyId) {
+     $_ | Add-Member -MemberType NoteProperty -Name 'CertificateSecretDescription' -Value ($CertificatesHash[$_.ServicePrincipalCredentialKeyId].displayName)
+    }
     # Output the modified object down the pipeline
     $_
    } | Select-Object -Property * -ExcludeProperty *STRING,*_dynamic,*_string, # UNIFIED
@@ -16626,7 +16639,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
    return $Result
   }
  } catch {
-  Write-Verbose $Query
+  if ($Query) {Write-Verbose $Query}
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
