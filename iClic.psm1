@@ -13234,12 +13234,12 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   $header = $authDetails.Header
 
   # Get Required values to get a full object
-  if (!$principalId) {$CheckedValue = $principalName ; $principalId = (Get-AzureServicePrincipal -Token $authDetails.Token -DisplayName $principalName).ID}
-  if (!$principalName) {$CheckedValue = $principalId ; $principalName = (Get-AzureServicePrincipal -Token $authDetails.Token -ID $principalId).displayName}
+  if (!$principalId) {$CheckedValue = $principalName ; $principalId = (Get-AzureServicePrincipal -Token $authDetails.Token -DisplayName $principalName -ErrorAction Stop).ID}
+  if (!$principalName) {$CheckedValue = $principalId ; $principalName = (Get-AzureServicePrincipal -Token $authDetails.Token -ID $principalId -ErrorAction Stop).displayName}
 
   ########## APPLICATION ROLES ##########
   # Get all App Roles [ Application ]
