@@ -14817,7 +14817,7 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
    $Result
   }
  } Catch {
-  Write-Error "Error getting groups ($($Error[0]))"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 
 
@@ -15846,15 +15846,41 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $Body
 
   } elseif ($PSCmdlet.ParameterSetName -eq "Interactive") {
+   Write-Verbose "Using Interactive Login"
    $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
    # --- Native Interactive Authentication Flow ---
 
    # 1. Set up a listener on localhost to catch the redirect
-   $redirectPort = 5001 # Can be any available port
-   $redirectUri = "http://localhost:$redirectPort/"
+   # We try random ports between 5001 and 5050 until we find one that works.
    $httpListener = New-Object System.Net.HttpListener
-   $httpListener.Prefixes.Add($redirectUri)
-   $httpListener.Start()
+   $listening = $false
+   $retryCount = 0
+   $maxRetries = 20
+   $redirectPort = 0
+   $redirectUri = ""
+
+   while (-not $listening -and $retryCount -lt $maxRetries) {
+    try {
+     $retryCount++
+     # Get a random port between 5001 and 5050
+     $redirectPort = Get-Random -Minimum 5001 -Maximum 5051
+     $redirectUri = "http://localhost:$redirectPort/"
+
+     # Important: Clear prefixes from previous failed attempts in this loop
+     $httpListener.Prefixes.Clear()
+     $httpListener.Prefixes.Add($redirectUri)
+     $httpListener.Start()
+
+     $listening = $true
+     Write-Verbose "Listening on $redirectUri"
+    } catch {
+     Write-Verbose "Port $redirectPort is busy or unavailable. Retrying..."
+    }
+   }
+
+   if (-not $listening) {
+    throw "Unable to start interactive listener after $maxRetries attempts. Please check your network settings or close conflicting applications."
+   }
 
    # 2. Build the authorization URL and launch the browser
    $authUrl = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/authorize?" +
@@ -15947,6 +15973,21 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    throw "Token acquisition failed for an unknown reason. ($Scope)"
   }
  } catch {
+  if ($PSCmdlet.ParameterSetName -eq "Interactive" -and $httpListener) {
+   Write-Verbose "Cleaning up HttpListener in catch block..."
+   try {
+    if ($context -and $context.Response) { $context.Response.Close() }
+   } catch {
+    Write-Verbose "Ignore errors closing the response context, it might be already closed or null"
+   }
+   try {
+    if ($httpListener.IsListening) { $httpListener.Stop() }
+    $httpListener.Close()
+   } catch {
+    Write-Verbose "Ignore errors stopping the listener"
+   }
+  }
+
   # Use the $_ automatic variable, which reliably contains the current exception.
   Write-Error "Failed to acquire token. The original error was: $_"
 
