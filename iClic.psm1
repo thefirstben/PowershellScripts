@@ -14100,47 +14100,92 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  az rest --method PUT --uri "$BaseURL/AI?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
 }
 # DevOps
-Function Get-ADOUsers { # Get All Azure DevOps Users
- # This needs to be setup first : az devops configure -d organization=ORG_URL
- (az devops user list --top 1000 -o json | convertfrom-json).Members | Select-Object dateCreated,lastAccessedDate,
-  @{Name="DisplayName";Expression={$_.User.displayName}},
-  @{Name="principalName";Expression={$_.User.principalName}},
-  @{Name="mailAddress";Expression={$_.User.mailAddress}},
-  @{Name="Origin";Expression={$_.User.Origin}},
-  @{Name="UserType";Expression={$_.User.metaType}},
-  @{Name="License";Expression={$_.accessLevel.licenseDisplayName}},
-  @{Name="LicenseSource";Expression={$_.accessLevel.licensingSource}},
-  @{Name="gitHubLicenseType";Expression={$_.accessLevel.gitHubLicenseType}},
-  @{Name="msdnLicenseType";Expression={$_.accessLevel.msdnLicenseType}},
-  @{Name="LicenseAssignementSource";Expression={$_.accessLevel.assignmentSource}},
-  @{Name="accountLicenseType";Expression={$_.accessLevel.accountLicenseType}},
-  @{Name="LicenseStatus";Expression={$_.accessLevel.status}},
-  @{Name="DescriptorID";Expression={$_.User.Descriptor}} | Export-Csv "$iClic_TempPath\AzureDevOpsUsers_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
-}
-Function Get-ADOPermissions_Groups { # Project Level Permission Only
- Param (
-  $ProjectName
+Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects (or a single project) | Uses on Get-ADO_Request
+ param (
+  [string]$ProjectName,
+  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Organization
  )
- # Get all project list
+
+ # 1. Get Project List
  if ($ProjectName) {
-  $AzureDevopsProjectList = (az devops project show -p "$ProjectName" | convertfrom-json).Name
+  # Encode name for URL safety (e.g. "My Project" -> "My%20Project")
+  $EncodedName = [Uri]::EscapeDataString($ProjectName)
+  $URI = "projects/$EncodedName`?api-version=7.0"
+
+  Write-Verbose "Fetching single project from: $URI"
+
+  # Force result into an array explicitly to prevent null-pipeline issues
+  $RawResult = Get-ADO_Request -RequestURI $URI -AccessToken $AccessToken -Organization $Organization
+  $ProjectList = @($RawResult)
+
+  # Debugging Output
+  if (($ProjectList.Count -eq 0) -or ($null -eq $ProjectList[0])) {
+   Write-Warning "Project '$ProjectName' lookup returned empty/null. Check if project name is exact."
+   return
+  }
+  Write-Verbose "Project Lookup Success: Found '$($ProjectList[0].name)' (ID: $($ProjectList[0].id))"
+
  } else {
-  $AzureDevopsProjectList = ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
+  $ProjectList = Get-ADO_Request -RequestURI "projects?api-version=7.0" -AccessToken $AccessToken -Organization $Organization
+  $ProjectList = $ProjectList | Sort-Object name
  }
- # Get all permission name and ID
- $AzureDevopsProjectList | ForEach-Object {
-  $ProjectRealName = $_
-  $ProjectName = $ProjectRealName -replace " - ","-" -replace "- ","_" -replace "--","-" -replace " ","_"
-  $GroupList = (az devops security group list --project $_ -o json | convertfrom-json).graphGroups
-  $GroupList | Select-Object `
-   @{Name="ProjectRealName";Expression={Progress -Message "Checking Project : " -Value $ProjectRealName -PrintTime ; $ProjectRealName}},
-   @{Name="ProjectName";Expression={$ProjectName}},
-   @{Name="PermissionName";Expression={$_.displayName}},
-   @{Name="PermissionID";Expression={$_.descriptor}},origin,isCrossProject,subjectKind,
-   @{Name="AADGroupCount";Expression={($GroupList | Where-Object origin -eq "aad").Count}}
+
+ # 2. Process Projects
+ foreach ($Proj in $ProjectList) {
+  if ($null -eq $Proj) { continue } # Skip nulls
+
+  $ProjectRealName = $Proj.name
+  $ProjectId = $Proj.id
+
+  $CleanProjectName = $ProjectRealName -replace " - ","-" -replace "- ","_" -replace "--","-" -replace " ","_"
+
+  Write-Progress -Activity "Fetching Permissions" -Status "Checking Project: $ProjectRealName"
+
+  try {
+   # 3. Get Project Descriptor
+   $DescriptorObj = Get-ADO_Request `
+    -RequestURI "graph/descriptors/$ProjectId" `
+    -AccessToken $AccessToken `
+    -Organization $Organization `
+    -BaseURI "https://vssps.dev.azure.com/"
+
+   # Handle wrapped vs unwrapped descriptor return
+   if ($DescriptorObj -is [Array]) { $Descriptor = $DescriptorObj[0].value }
+   elseif ($DescriptorObj.value) { $Descriptor = $DescriptorObj.value }
+   else { $Descriptor = $DescriptorObj }
+
+   if ([string]::IsNullOrWhiteSpace($Descriptor)) {
+    Write-Warning "Could not find descriptor for project: $ProjectRealName. Skipping."
+    continue
+   }
+
+   # 4. Get Groups
+   $GroupList = Get-ADO_Request `
+    -RequestURI "graph/groups?scopeDescriptor=$Descriptor" `
+    -AccessToken $AccessToken `
+    -Organization $Organization `
+    -BaseURI "https://vssps.dev.azure.com/"
+
+   if ($GroupList) {
+    $AADCount = ($GroupList | Where-Object origin -eq "aad").Count
+
+    $GroupList | Select-Object `
+     @{Name="ProjectRealName";Expression={$ProjectRealName}},
+     @{Name="ProjectName";Expression={$CleanProjectName}},
+     @{Name="PermissionName";Expression={$_.displayName}},
+     @{Name="PermissionID";Expression={$_.descriptor}},
+     origin,
+     isCrossProject,
+     subjectKind,
+     @{Name="AADGroupCount";Expression={$AADCount}}
+   }
+  } catch {
+   Write-Warning "Failed to retrieve permissions for project '$ProjectRealName': $($_.Exception.Message)"
+  }
  }
 }
-Function Get-ADOProjectMembers { # Get all members of a Project (it lists only Groups AAD & ADO)
+Function Get-ADOProjectMembers { # Get all members of a Project (it lists only Groups AAD & ADO) | Uses Az CLI
  Param (
   [Parameter(Mandatory)]$ProjectName,
   $Filter,
@@ -14156,7 +14201,7 @@ Function Get-ADOProjectMembers { # Get all members of a Project (it lists only G
   $Result | Select-Object displayName,principalName,origin,subjectKind,originId,descriptor
  }
 }
-Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requires Group Descriptor in Azure DevOps)
+Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requires Group Descriptor in Azure DevOps) | Uses Az CLI
  Param (
   [Parameter(Mandatory)]$GroupDescriptor,
   [Switch]$ShowAll
@@ -14169,50 +14214,156 @@ Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requir
   $Result | Select-Object displayName,principalName,origin,subjectKind,originId,descriptor
  }
 }
-Function Get-ADO_AuthenticationHeader { # Convert Azure DevOps PAT Token to usable Header Object
+Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops | Uses API Only
+ [CmdletBinding(DefaultParameterSetName = 'Bearer')]
  Param (
-  [Parameter(Mandatory)]$PersonalAccessToken
- )
- $token = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$($PersonalAccessToken)"))
- $header = @{authorization = "Basic $token"}
- return $header
-}
-Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops
- Param (
-  [Parameter(Mandatory)]$RequestURI, # Example : projects
-  $BaseURI="https://dev.azure.com/", # For DevOps Graph the URL is : https://vssps.dev.azure.com/
-  [Parameter(Mandatory)]$Header,
-  [Parameter(Mandatory)]$Organization
+  [Parameter(Mandatory = $true, Position = 0)]
+  [string]$RequestURI, # e.g. "projects?api-version=7.0"
+
+  [Parameter(Mandatory = $true)]
+  [string]$Organization,
+
+  # Parameter Set 1: Standard/OAuth (Default)
+  [Parameter(Mandatory = $true, ParameterSetName = 'Bearer')]
+  [string]$AccessToken,
+
+  # Parameter Set 2: PAT
+  [Parameter(Mandatory = $true, ParameterSetName = 'PAT')]
+  [string]$PersonalAccessToken,
+
+  [string]$BaseURI = "https://dev.azure.com/" # For DevOps Graph the URL is : https://vssps.dev.azure.com/
  )
 
 # Examples :
 # Users on Organization Level :
-# $Users = (Get-ADO_Request -RequestURI "graph/users" -Header $header -Organization 'OrgName' -BaseURI "https://vssps.dev.azure.com/")
+# $Users = Get-ADO_Request -RequestURI "graph/users" -AccessToken $ADOToken -Organization $DevOpsOrganizationName -BaseURI "https://vssps.dev.azure.com/"
 # Groups on Organization level :
-# $Groups = (Get-ADO_Request -RequestURI "graph/groups" -Header $header -Organization 'OrgName' -BaseURI "https://vssps.dev.azure.com/")
+# $Groups = Get-ADO_Request -RequestURI "graph/groups" -AccessToken $ADOToken -Organization $DevOpsOrganizationName -BaseURI "https://vssps.dev.azure.com/"
+# Projects
+# $Projects = Get-ADO_Request -RequestURI "projects" -AccessToken $ADOToken -Organization $DevOpsOrganizationName
 
-
- $FullResult = @()
- $URI = $BaseURI + $Organization + "/_apis/" + $RequestURI
- $Result = Invoke-WebRequest -Uri $Uri -Method Get -ContentType "application/json" -Headers $header
- $FullResult += ($Result.Content | ConvertFrom-Json).Value
- $ContinuationToken = $Result.headers.'x-ms-continuationtoken'
- while ($ContinuationToken) {
-  $ContinuationUri = $URI + "?continuationToken=" + $ContinuationToken
-  $Result = Invoke-WebRequest -Uri $ContinuationUri -Method Get -ContentType "application/json" -Headers $header
-  $FullResult += ($Result.Content | ConvertFrom-Json).Value
-  $ContinuationToken = $Result.headers.'x-ms-continuationtoken'
+# 1. Internal Header Construction
+ if ($PSCmdlet.ParameterSetName -eq 'PAT') {
+  # PAT requires Basic Auth + Base64 encoding of ":PAT"
+  $B64Token = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$($PersonalAccessToken)"))
+  $Header = @{ Authorization = "Basic $B64Token" }
+ } else {
+  # Standard Token is Bearer Auth (Plain text)
+  $Header = @{ Authorization = "Bearer $AccessToken" }
  }
- $FullResult
+
+ # 2. URI Construction
+ $FullResult = @()
+ # Remove trailing slashes from Base/Org to prevent double slashes, but ensure _apis matches
+ $CleanBase = "$($BaseURI.TrimEnd('/'))/$($Organization.Trim('/'))/_apis/"
+ $TargetUri = $CleanBase + $RequestURI.TrimStart('/')
+
+# 3. Request Logic
+ try {
+  $Result = Invoke-WebRequest -Uri $TargetUri -Method Get -ContentType "application/json" -Headers $Header
+  $Payload = $Result.Content | ConvertFrom-Json
+
+  # SMART UNWRAP: Only unwrap if 'value' property exists AND it is an Array (List)
+  if ($Payload.PSObject.Properties.Match('value') -and ($Payload.value -is [System.Array])) {
+   Write-Verbose "Detected List Response (Unwrapping .value)"
+   $FullResult += $Payload.value
+  } else {
+   Write-Verbose "Detected Single Object Response (Keeping as-is)"
+   $FullResult += $Payload
+  }
+
+  # Pagination (Only applicable for Lists)
+  $ContinuationToken = $Result.Headers.'x-ms-continuationtoken'
+  while ($ContinuationToken) {
+   $Separator = if ($TargetUri -match '\?') { '&' } else { '?' }
+   $NextPageUri = "${TargetUri}${Separator}continuationToken=$ContinuationToken"
+
+   $Result = Invoke-WebRequest -Uri $NextPageUri -Method Get -ContentType "application/json" -Headers $Header
+   $Payload = $Result.Content | ConvertFrom-Json
+
+   if ($Payload.PSObject.Properties.Match('value')) {
+    $FullResult += $Payload.value
+   } else {
+    $FullResult += $Payload
+   }
+   $ContinuationToken = $Result.Headers.'x-ms-continuationtoken'
+  }
+ } catch {
+  $Ex = $_.Exception
+  $ErrorMessage = $Ex.Message
+  # PS 7+ Specific Error Handling
+  if ($Ex.Response) {
+   # In PS Core/7, this is an HttpResponseMessage
+   $RawContent = $Ex.Response.Content.ReadAsStringAsync().Result
+   $ErrorMessage = "HTTP Error: $($Ex.Message) | Body: $RawContent"
+  }
+
+  Write-Error "ADO Request Failed for '$TargetUri': $ErrorMessage"
+ }
+
+ return $FullResult
 }
-Function Get-ADOProjectList {
- ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
-}
-Function Get-ADORepositoryList {
- Param (
-  [Parameter(Mandatory)]$ProjectName
+Function Get-ADOProjectList { # Get All Azure DevOps project list | Uses on Get-ADO_Request
+ param (
+  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Organization
  )
- az repos list --project $ProjectName -o json | convertfrom-json | Sort-Object Name | Select-Object name,@{N="Size";E={Format-Filesize $_.Size}},remoteUrl
+ # ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
+ Get-ADO_Request -RequestURI "projects" -AccessToken $AccessToken -Organization $Organization
+}
+Function Get-ADOUsers { # Get All Azure DevOps Users | Uses on Get-ADO_Request
+ param (
+  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Organization
+ )
+ Get-ADO_Request -RequestURI "graph/users" -AccessToken $AccessToken -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
+}
+Function Get-ADOGroups { # Get All Azure DevOps Groups | Uses on Get-ADO_Request
+ param (
+  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Organization
+ )
+ Get-ADO_Request -RequestURI "graph/groups" -AccessToken $AccessToken -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
+}
+Function Get-ADORepositoryList { # Get All Azure DevOps Repository from a single Project | Get-ADO_Request
+ param (
+  [Parameter(Mandatory)]$ProjectName,
+  [Parameter(Mandatory)]$AccessToken,
+  [Parameter(Mandatory)]$Organization
+ )
+
+ # 1. Resolve Project Name to ID
+ # We look up the project first because using the Project ID in the URL is safer than using a name with spaces.
+ $EncodedProject = [Uri]::EscapeDataString($ProjectName)
+ $ProjectReq = Get-ADO_Request -RequestURI "projects/$EncodedProject`?api-version=7.0" -AccessToken $AccessToken -Organization $Organization
+
+ # Handle wrapper return types (Array vs Single Object)
+ $ProjectObj = if ($ProjectReq -is [Array]) { $ProjectReq[0] } else { $ProjectReq }
+
+ if (-not $ProjectObj -or -not $ProjectObj.id) {
+  Write-Warning "Project '$ProjectName' not found. Cannot list repositories."
+  return
+ }
+
+ $ProjectId = $ProjectObj.id
+ Write-Verbose "Resolved Project '$ProjectName' to ID: $ProjectId"
+
+ # 2. Force Project Context using ID
+ # We inject the Project ID into the Organization path. URL becomes: https://dev.azure.com/{Org}/{ProjectID}/_apis/git/repositories
+ $ScopedContext = "$Organization/$ProjectId"
+
+ $Result = Get-ADO_Request -RequestURI "git/repositories?api-version=7.0" -AccessToken $AccessToken -Organization $ScopedContext
+
+ Write-Verbose "Repositories found: $(@($Result).Count)"
+
+ # 3. Output
+ $Result | Sort-Object name | Select-Object name,@{N="Size";E={
+  if (Get-Command "Format-Filesize" -ErrorAction SilentlyContinue) {
+   Format-Filesize $_.size
+  } else {
+   $_.size
+  }
+ }},remoteUrl
 }
 # MFA
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
