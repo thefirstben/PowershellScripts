@@ -599,7 +599,7 @@ Function Format-Date {
   $ReturnValue=get-date -uformat $DateFormat $Date -ErrorAction SilentlyContinue
   if (! ($(get-date $ReturnValue) -eq 0)) { return $ReturnValue }
  } catch {
-  Write-Error "Nothing here"
+  Write-Verbose "Catched error $($_)"
  }
 }
 # Convert Function
@@ -9521,10 +9521,18 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL 
   [String]$Name,
   $Token,
   $APIVersion = "2024-04-01",
-  [switch]$Exact
+  [switch]$Exact,
+  [switch]$Readable
  )
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  if ($Readable) {
+   Write-Verbose "Getting Subscription Information for better read input"
+   # Get Subscriptions Name information
+   $SubscriptionList = get-azuresubscriptions -Token $authDetails.Token
+   $SubscriptionListHash = $SubscriptionList | Group-Object -Property subscriptionId -AsHashTable
+  }
 
   # 1. Base Query Construction
   if ($Name) {
@@ -9630,7 +9638,11 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL 
    Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
   }
 
-  return $GlobalResult
+  if ($Readable) {
+   $GlobalResult | Select-Object resourceGroup,@{Label="SubscriptionName";expression={$SubscriptionListHash[$_.subscriptionId].name}},id,location,tags
+  } else {
+   return $GlobalResult
+  }
  } catch {
   $Exception = $($Error[0])
   if ($Exception.ErrorDetails.message) {
@@ -9650,11 +9662,20 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
   $Token,
   $APIVersion = "2024-04-01",
   $Columns,
-  [switch]$Exact
+  [switch]$Exact,
+  [switch]$Readable
+
  )
  try {
   # Had to make more detailed because of potential issues in resources with incorrect parameters
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  if ($Readable) {
+   Write-Verbose "Getting Subscription Information for better read input"
+   # Get Subscriptions Name information
+   $SubscriptionList = get-azuresubscriptions -Token $authDetails.Token
+   $SubscriptionListHash = $SubscriptionList | Group-Object -Property subscriptionId -AsHashTable
+  }
 
   # 1. Base Query Construction
   $filterClause = ""
@@ -9758,8 +9779,11 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
   }
 
   Write-host -Object "Success: Retrieved $($GlobalResult.Count) of $GlobalTotalExpected expected resources." -ForegroundColor Magenta
-  return $GlobalResult
-
+  if ($Readable) {
+   $GlobalResult | Select-Object name,resourceGroup,@{Label="SubscriptionName";expression={$SubscriptionListHash[$_.subscriptionId].name}},type,kind,id,location,tags
+  } else {
+   return $GlobalResult
+  }
  } catch {
   Write-Error "Script Error: $_"
  }
@@ -10913,8 +10937,8 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
   # == Parameters available in ALL sets ==
   [parameter(Mandatory = $true)]$AzureToken,# Management.Azure.com token => Can be the same app, but it's a different Endpoint
   [parameter(Mandatory = $true)]$UserToken, # Graph Token
-  [Switch]$Readable, # Remove IDs
-  [Switch]$ExactScope,
+  [Switch]$Readable, # Simplified view excluding uneeded data
+  [Switch]$ExactScope, # Check to see what this is used for
   [GUID]$TargetPrincipalId, # To filter by ID, to avoid looking everything
 
   # == SCOPE PARAMETERS (Mutually Exclusive Sets) ==
@@ -10963,7 +10987,7 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
 
  Write-Verbose "Get Subscription List"
  $SubscriptionList = Get-AzureSubscriptions -Token $AzureToken
- $SubscriptionListHash = @{} ; $SubscriptionList | ForEach-Object { $SubscriptionListHash[$_.ID] = $_ }
+ $SubscriptionListHash = @{} ; $SubscriptionList | ForEach-Object { $SubscriptionListHash[$_.SubscriptionID] = $_ }
 
  Write-Verbose "Determining scope(s) based on parameters..."
  switch ($PSCmdlet.ParameterSetName) {
@@ -11030,11 +11054,11 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
    Write-Verbose "Checking RBAC on Scope $Scope"
 
    Write-Verbose "Getting Assignements [Permanent] for scope: $scope"
-   $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion$Filter").properties
+   $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion$Filter" -ErrorAction Stop).properties
    if ($PermanentRequestResultWithGUIDS) { $AllPermanentResults += $PermanentRequestResultWithGUIDS }
 
    Write-Verbose "Getting Assignements [Eligible] for scope: $scope"
-   $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken  -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible$Filter").properties
+   $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken  -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible$Filter" -ErrorAction Stop).properties
    if ($EligibleRequestResultWithGUIDS) { $AllEligibleResults += $EligibleRequestResultWithGUIDS }
   } catch {
    Write-Warning "Could not retrieve assignments for scope '$scope'. You may not have sufficient permissions. Error: $_"
@@ -11167,7 +11191,7 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
    @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }}
 
   if ($Readable) {
-   $RequestResult | Sort-Object Scope,principalName | Select-Object -ExcludeProperty *Id,*DateTime
+   $RequestResult | Sort-Object Scope,principalName | Select-Object AssignmentType,principalType,principalName,roleDefinitionName,roleDefinitionType,ManagementGroup,SubscriptionName,ResourceGroupName,ResourceName,ResourceType,scope
   } else {
    $RequestResult
   }
@@ -14100,10 +14124,110 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  az rest --method PUT --uri "$BaseURL/AI?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
 }
 # DevOps
+Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops | Uses API Only
+ <#
+ .SYNOPSIS
+  Standard Wrapper for Azure DevOps GET Requests (API Only).
+ .DESCRIPTION
+  PS 7+ Compatible. Handles Auth, Pagination, and Error unwrapping.
+  Strictly GET only. Uses Token Object for Auth.
+ #>
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true, Position = 0)]
+  [string]$RequestURI,
+
+  [Parameter(Mandatory = $true)]
+  [string]$Organization,
+
+  [Parameter()]
+  $Token, # Accepts the full Token Object
+
+  [string]$BaseURI = "https://dev.azure.com/"
+ )
+
+ # Global Try/Catch for Auth + Execution
+ try {
+  # 1. Standardized Authentication
+  # We use -TokenOnly to enforce the use of the Token Object (no CLI fallback here)
+  # This ensures the header construction below always has valid token properties.
+  try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  } catch {
+  Throw "Authentication failed: $($_.Exception.Message)"
+  }
+
+  $Header = @{
+  'Authorization' = "$($authDetails.token.token_type) $($authDetails.token.access_token)"
+  }
+
+  # 2. URI Construction
+  $CleanBase = "$($BaseURI.TrimEnd('/'))/$($Organization.Trim('/'))/_apis/"
+  $TargetUri = $CleanBase + $RequestURI.TrimStart('/')
+
+  Write-Verbose "ADO Request: $TargetUri"
+
+  # 3. Execution
+  # Note: We do NOT send Content-Type for GET requests to avoid 400 errors on strict endpoints (Graph).
+  $Result = Invoke-WebRequest -Uri $TargetUri -Method Get -Headers $Header
+
+  # Safety Check: Did we get a Login Page?
+  if ($Result.Headers['Content-Type'] -like "text/html*") {
+  Throw "API returned HTML instead of JSON. Check Permissions/URL."
+  }
+
+  $Payload = $Result.Content | ConvertFrom-Json
+  $FullResult = @()
+
+  # Smart Unwrap (Value vs Single Object)
+  if ($Payload.PSObject.Properties.Match('value') -and ($Payload.value -is [System.Array])) {
+  $FullResult += $Payload.value
+  } else {
+  $FullResult += $Payload
+  }
+
+  # 4. Pagination (Standard ADO Pattern)
+  $ContinuationToken = $Result.Headers.'x-ms-continuationtoken'
+  while ($ContinuationToken) {
+  Write-Verbose "Fetching next page..."
+  $Separator = if ($TargetUri -match '\?') { '&' } else { '?' }
+  $NextPageUri = "${TargetUri}${Separator}continuationToken=$ContinuationToken"
+
+  $Result = Invoke-WebRequest -Uri $NextPageUri -Method Get -Headers $Header
+  $Payload = $Result.Content | ConvertFrom-Json
+
+  if ($Payload.PSObject.Properties.Match('value')) {
+  $FullResult += $Payload.value
+  } else {
+  $FullResult += $Payload
+  }
+  $ContinuationToken = $Result.Headers.'x-ms-continuationtoken'
+  }
+
+  return $FullResult
+
+ } catch {
+  # PS 7+ Robust Error Handling
+  $Ex = $_.Exception
+  $Msg = $Ex.Message
+
+  if ($Ex.Response) {
+  try {
+  $RawContent = $Ex.Response.Content.ReadAsStringAsync().Result
+  $Msg = "HTTP $($Ex.Response.StatusCode) | Body: $RawContent"
+  } catch {
+  $Msg = "HTTP $($Ex.Response.StatusCode) (Body disposed/unreadable)"
+  }
+  }
+
+  Write-Error "Request Failed for '$TargetUri': $Msg"
+  return $null
+ }
+}
 Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects (or a single project) | Uses on Get-ADO_Request
  param (
   [string]$ProjectName,
-  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Token,
   [Parameter(Mandatory = $true)]$Organization
  )
 
@@ -14116,7 +14240,7 @@ Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects 
   Write-Verbose "Fetching single project from: $URI"
 
   # Force result into an array explicitly to prevent null-pipeline issues
-  $RawResult = Get-ADO_Request -RequestURI $URI -AccessToken $AccessToken -Organization $Organization
+  $RawResult = Get-ADO_Request -RequestURI $URI -Token $Token -Organization $Organization
   $ProjectList = @($RawResult)
 
   # Debugging Output
@@ -14127,7 +14251,7 @@ Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects 
   Write-Verbose "Project Lookup Success: Found '$($ProjectList[0].name)' (ID: $($ProjectList[0].id))"
 
  } else {
-  $ProjectList = Get-ADO_Request -RequestURI "projects?api-version=7.0" -AccessToken $AccessToken -Organization $Organization
+  $ProjectList = Get-ADO_Request -RequestURI "projects?api-version=7.0" -Token $Token -Organization $Organization
   $ProjectList = $ProjectList | Sort-Object name
  }
 
@@ -14144,11 +14268,7 @@ Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects 
 
   try {
    # 3. Get Project Descriptor
-   $DescriptorObj = Get-ADO_Request `
-    -RequestURI "graph/descriptors/$ProjectId" `
-    -AccessToken $AccessToken `
-    -Organization $Organization `
-    -BaseURI "https://vssps.dev.azure.com/"
+   $DescriptorObj = Get-ADO_Request -RequestURI "graph/descriptors/$ProjectId" -Token $Token -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
 
    # Handle wrapped vs unwrapped descriptor return
    if ($DescriptorObj -is [Array]) { $Descriptor = $DescriptorObj[0].value }
@@ -14161,11 +14281,7 @@ Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects 
    }
 
    # 4. Get Groups
-   $GroupList = Get-ADO_Request `
-    -RequestURI "graph/groups?scopeDescriptor=$Descriptor" `
-    -AccessToken $AccessToken `
-    -Organization $Organization `
-    -BaseURI "https://vssps.dev.azure.com/"
+   $GroupList = Get-ADO_Request -RequestURI "graph/groups?scopeDescriptor=$Descriptor" -Token $Token -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
 
    if ($GroupList) {
     $AADCount = ($GroupList | Where-Object origin -eq "aad").Count
@@ -14185,157 +14301,39 @@ Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects 
   }
  }
 }
-Function Get-ADOProjectMembers { # Get all members of a Project (it lists only Groups AAD & ADO) | Uses Az CLI
- Param (
-  [Parameter(Mandatory)]$ProjectName,
-  $Filter,
-  [Switch]$ShowAll
- )
- $Result = (az devops security group list --project $ProjectName | convertfrom-json).graphGroups  | Sort-Object displayName
- if ($Filter) {
-  $Result = $Result | Where-Object displayname -like "$Filter"
- }
- if ($ShowAll) {
-  $Result
- } else {
-  $Result | Select-Object displayName,principalName,origin,subjectKind,originId,descriptor
- }
-}
-Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requires Group Descriptor in Azure DevOps) | Uses Az CLI
- Param (
-  [Parameter(Mandatory)]$GroupDescriptor,
-  [Switch]$ShowAll
- )
- # az devops security group membership list --id $GroupDescriptor --relationship members
- $Result = (az devops security group membership list --id $GroupDescriptor --relationship members | ConvertFrom-Json -AsHashtable).values | ConvertTo-Json | convertfrom-json | Sort-Object displayName
- if ($ShowAll) {
-  $Result
- } else {
-  $Result | Select-Object displayName,principalName,origin,subjectKind,originId,descriptor
- }
-}
-Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops | Uses API Only
- [CmdletBinding(DefaultParameterSetName = 'Bearer')]
- Param (
-  [Parameter(Mandatory = $true, Position = 0)]
-  [string]$RequestURI, # e.g. "projects?api-version=7.0"
-
-  [Parameter(Mandatory = $true)]
-  [string]$Organization,
-
-  # Parameter Set 1: Standard/OAuth (Default)
-  [Parameter(Mandatory = $true, ParameterSetName = 'Bearer')]
-  [string]$AccessToken,
-
-  # Parameter Set 2: PAT
-  [Parameter(Mandatory = $true, ParameterSetName = 'PAT')]
-  [string]$PersonalAccessToken,
-
-  [string]$BaseURI = "https://dev.azure.com/" # For DevOps Graph the URL is : https://vssps.dev.azure.com/
- )
-
-# Examples :
-# Users on Organization Level :
-# $Users = Get-ADO_Request -RequestURI "graph/users" -AccessToken $ADOToken -Organization $DevOpsOrganizationName -BaseURI "https://vssps.dev.azure.com/"
-# Groups on Organization level :
-# $Groups = Get-ADO_Request -RequestURI "graph/groups" -AccessToken $ADOToken -Organization $DevOpsOrganizationName -BaseURI "https://vssps.dev.azure.com/"
-# Projects
-# $Projects = Get-ADO_Request -RequestURI "projects" -AccessToken $ADOToken -Organization $DevOpsOrganizationName
-
-# 1. Internal Header Construction
- if ($PSCmdlet.ParameterSetName -eq 'PAT') {
-  # PAT requires Basic Auth + Base64 encoding of ":PAT"
-  $B64Token = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$($PersonalAccessToken)"))
-  $Header = @{ Authorization = "Basic $B64Token" }
- } else {
-  # Standard Token is Bearer Auth (Plain text)
-  $Header = @{ Authorization = "Bearer $AccessToken" }
- }
-
- # 2. URI Construction
- $FullResult = @()
- # Remove trailing slashes from Base/Org to prevent double slashes, but ensure _apis matches
- $CleanBase = "$($BaseURI.TrimEnd('/'))/$($Organization.Trim('/'))/_apis/"
- $TargetUri = $CleanBase + $RequestURI.TrimStart('/')
-
-# 3. Request Logic
- try {
-  $Result = Invoke-WebRequest -Uri $TargetUri -Method Get -ContentType "application/json" -Headers $Header
-  $Payload = $Result.Content | ConvertFrom-Json
-
-  # SMART UNWRAP: Only unwrap if 'value' property exists AND it is an Array (List)
-  if ($Payload.PSObject.Properties.Match('value') -and ($Payload.value -is [System.Array])) {
-   Write-Verbose "Detected List Response (Unwrapping .value)"
-   $FullResult += $Payload.value
-  } else {
-   Write-Verbose "Detected Single Object Response (Keeping as-is)"
-   $FullResult += $Payload
-  }
-
-  # Pagination (Only applicable for Lists)
-  $ContinuationToken = $Result.Headers.'x-ms-continuationtoken'
-  while ($ContinuationToken) {
-   $Separator = if ($TargetUri -match '\?') { '&' } else { '?' }
-   $NextPageUri = "${TargetUri}${Separator}continuationToken=$ContinuationToken"
-
-   $Result = Invoke-WebRequest -Uri $NextPageUri -Method Get -ContentType "application/json" -Headers $Header
-   $Payload = $Result.Content | ConvertFrom-Json
-
-   if ($Payload.PSObject.Properties.Match('value')) {
-    $FullResult += $Payload.value
-   } else {
-    $FullResult += $Payload
-   }
-   $ContinuationToken = $Result.Headers.'x-ms-continuationtoken'
-  }
- } catch {
-  $Ex = $_.Exception
-  $ErrorMessage = $Ex.Message
-  # PS 7+ Specific Error Handling
-  if ($Ex.Response) {
-   # In PS Core/7, this is an HttpResponseMessage
-   $RawContent = $Ex.Response.Content.ReadAsStringAsync().Result
-   $ErrorMessage = "HTTP Error: $($Ex.Message) | Body: $RawContent"
-  }
-
-  Write-Error "ADO Request Failed for '$TargetUri': $ErrorMessage"
- }
-
- return $FullResult
-}
 Function Get-ADOProjectList { # Get All Azure DevOps project list | Uses on Get-ADO_Request
  param (
-  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Token,
   [Parameter(Mandatory = $true)]$Organization
  )
  # ((az devops project list -o json | convertfrom-json).value).Name | Sort-Object
- Get-ADO_Request -RequestURI "projects" -AccessToken $AccessToken -Organization $Organization
+ Get-ADO_Request -RequestURI "projects" -Token $Token -Organization $Organization
 }
 Function Get-ADOUsers { # Get All Azure DevOps Users | Uses on Get-ADO_Request
  param (
-  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Token,
   [Parameter(Mandatory = $true)]$Organization
  )
- Get-ADO_Request -RequestURI "graph/users" -AccessToken $AccessToken -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
+ Get-ADO_Request -RequestURI "graph/users" -Token $Token -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
 }
 Function Get-ADOGroups { # Get All Azure DevOps Groups | Uses on Get-ADO_Request
  param (
-  [Parameter(Mandatory = $true)]$AccessToken,
+  [Parameter(Mandatory = $true)]$Token,
   [Parameter(Mandatory = $true)]$Organization
  )
- Get-ADO_Request -RequestURI "graph/groups" -AccessToken $AccessToken -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
+ Get-ADO_Request -RequestURI "graph/groups" -Token $Token -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
 }
 Function Get-ADORepositoryList { # Get All Azure DevOps Repository from a single Project | Get-ADO_Request
  param (
   [Parameter(Mandatory)]$ProjectName,
-  [Parameter(Mandatory)]$AccessToken,
+  [Parameter(Mandatory)]$Token,
   [Parameter(Mandatory)]$Organization
  )
 
  # 1. Resolve Project Name to ID
  # We look up the project first because using the Project ID in the URL is safer than using a name with spaces.
  $EncodedProject = [Uri]::EscapeDataString($ProjectName)
- $ProjectReq = Get-ADO_Request -RequestURI "projects/$EncodedProject`?api-version=7.0" -AccessToken $AccessToken -Organization $Organization
+ $ProjectReq = Get-ADO_Request -RequestURI "projects/$EncodedProject`?api-version=7.0" -Token $Token -Organization $Organization
 
  # Handle wrapper return types (Array vs Single Object)
  $ProjectObj = if ($ProjectReq -is [Array]) { $ProjectReq[0] } else { $ProjectReq }
@@ -14352,7 +14350,7 @@ Function Get-ADORepositoryList { # Get All Azure DevOps Repository from a single
  # We inject the Project ID into the Organization path. URL becomes: https://dev.azure.com/{Org}/{ProjectID}/_apis/git/repositories
  $ScopedContext = "$Organization/$ProjectId"
 
- $Result = Get-ADO_Request -RequestURI "git/repositories?api-version=7.0" -AccessToken $AccessToken -Organization $ScopedContext
+ $Result = Get-ADO_Request -RequestURI "git/repositories?api-version=7.0" -Token $Token -Organization $ScopedContext
 
  Write-Verbose "Repositories found: $(@($Result).Count)"
 
@@ -14365,6 +14363,351 @@ Function Get-ADORepositoryList { # Get All Azure DevOps Repository from a single
   }
  }},remoteUrl
 }
+Function Get-ADOProjectMembers {# Get all members of a Project (it lists only Groups AAD & ADO) | Uses on Get-ADO_Request
+ <#
+ .SYNOPSIS
+  Lists all Groups (ADO & AAD) in a specific Project.
+ .DESCRIPTION
+  Uses 'Get-AuthMethod' for standardized authentication.
+  1. Validates Token.
+  2. Resolves Project Name to ID (Safe Listing).
+  3. Resolves ID to Scope Descriptor.
+  4. Lists groups in Scope.
+ #>
+ param (
+  [Parameter(Mandatory)][string]$ProjectName,
+  [Parameter(Mandatory)][string]$Organization,
+  $Token,
+  [string]$Filter,
+  [Switch]$ShowAll
+ )
+
+ # 1. Standardized Authentication
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ } catch {
+  Write-Error "Authentication check failed: $($_.Exception.Message)"
+  return
+ }
+
+ $Header = @{
+  'Authorization' = "$($authDetails.token.token_type) $($authDetails.token.access_token)"
+ }
+
+ $CoreUrl = "https://dev.azure.com/$Organization"
+ $VsspsUrl = "https://vssps.dev.azure.com/$Organization"
+
+ # 2. Resolve Project ID (Safe Lookup)
+ Write-Verbose "1. Resolving Project ID for '$ProjectName'..."
+ try {
+  $ProjUrl = "$CoreUrl/_apis/projects?api-version=7.0"
+  $Response = Invoke-RestMethod -Uri $ProjUrl -Method Get -Headers $Header -ErrorAction Stop
+
+  if ($Response.ContentType -like "text/html*") { throw "API returned HTML. Token may be expired or invalid." }
+
+  # Case-insensitive lookup
+  $ProjectObj = $Response.value | Where-Object { $_.name -eq $ProjectName } | Select-Object -First 1
+
+  if (-not $ProjectObj) {
+  Write-Error "Project '$ProjectName' not found in organization '$Organization'."
+  return
+  }
+
+  $ProjectId = $ProjectObj.id
+  Write-Verbose "   Found Project ID: $ProjectId"
+ } catch {
+  Write-Error "Failed to list projects. $($_.Exception.Message)"
+  return
+ }
+
+ # 3. Resolve Scope Descriptor
+ Write-Verbose "2. Resolving Scope Descriptor..."
+ try {
+  $DescUrl = "$VsspsUrl/_apis/graph/descriptors/$ProjectId`?api-version=7.0-preview"
+  $DescRes = Invoke-RestMethod -Uri $DescUrl -Method Get -Headers $Header -ErrorAction Stop
+
+  $ScopeDescriptor = $DescRes.value
+  Write-Verbose "   Scope Descriptor: $ScopeDescriptor"
+ } catch {
+  Write-Error "Failed to get project scope. $($_.Exception.Message)"
+  return
+ }
+
+ # 4. List Groups
+ Write-Verbose "3. Fetching groups..."
+ try {
+  $GroupsUrl = "$VsspsUrl/_apis/graph/groups`?scopeDescriptor=$ScopeDescriptor&api-version=7.0-preview"
+  $Response = Invoke-RestMethod -Uri $GroupsUrl -Method Get -Headers $Header -ErrorAction Stop
+
+  $AllGroups = $Response.value
+ } catch {
+  Write-Error "Failed to list groups. $($_.Exception.Message)"
+  return
+ }
+
+ if (-not $AllGroups) {
+  Write-Verbose "No groups found."
+  return
+ }
+
+ # 5. Filter & Output
+ if ($Filter) {
+  $AllGroups = $AllGroups | Where-Object { $_.displayName -like "*$Filter*" }
+ }
+
+ $Sorted = $AllGroups | Sort-Object displayName
+
+ if ($ShowAll) {
+  $Sorted
+ } else {
+  $Sorted | Select-Object displayName, principalName, origin, subjectKind, descriptor
+ }
+}
+Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requires Group Descriptor in Azure DevOps) | Uses on Get-ADO_Request
+ param (
+  [Parameter(Mandatory)][string]$GroupDescriptor,
+  [Parameter(Mandatory)]$Token,
+  [Parameter(Mandatory)][string]$Organization,
+  [Switch]$ShowAll
+ )
+
+ # 1. Standardized Authentication
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ } catch {
+  Write-Error "Authentication check failed: $($_.Exception.Message)"
+  return
+ }
+
+ $Header = @{
+  'Authorization' = "$($authDetails.token.token_type) $($authDetails.token.access_token)"
+ }
+
+ # 1. Clean Input
+ $CleanDescriptor = ($GroupDescriptor -split '\?')[0].Trim().Trim("'").Trim('"')
+ $EncodedDescriptor = [Uri]::EscapeDataString($CleanDescriptor)
+
+ Write-Verbose "1. Fetching memberships..."
+ $BaseUrl = "https://vssps.dev.azure.com/$Organization"
+
+ # 2. Get Membership List (The IDs)
+ try {
+  $MemUrl = "$BaseUrl/_apis/graph/memberships/$EncodedDescriptor`?direction=down&api-version=7.0-preview"
+  $Response = Invoke-RestMethod -Uri $MemUrl -Method Get -Headers $Header
+  $MembershipLinks = $Response.value
+ } catch {
+  Write-Error "Failed to get members. API Error: $($_.Exception.Message)"
+  return
+ }
+
+ if (-not $MembershipLinks) {
+  Write-Verbose "Group is empty."
+  return
+ }
+
+ Write-Verbose "2. Found $( $MembershipLinks.Count ) member(s). Resolving types..."
+
+ # 3. Universal Resolve (The "Triple Hunter" Logic)
+ $FullMembers = foreach ($Link in $MembershipLinks) {
+  if ($null -eq $Link) { continue }
+
+  $MemberDescriptor = $Link.memberDescriptor
+  $EncodedMember = [Uri]::EscapeDataString($MemberDescriptor)
+  $MemberDetails = $null
+
+  # --- STRATEGY: Try endpoints in order of likelihood ---
+
+  # Attempt A: USER
+  if (-not $MemberDetails) {
+  try {
+   $Url = "$BaseUrl/_apis/graph/users/$EncodedMember`?api-version=7.0-preview"
+   $MemberDetails = Invoke-RestMethod -Uri $Url -Method Get -Headers $Header -ErrorAction Stop
+   $MemberDetails | Add-Member -MemberType NoteProperty -Name "Type" -Value "User" -Force
+  } catch {
+   Write-Verbose "  [$MemberDescriptor] Not a User. Checking Group..."
+  }
+  }
+
+  # Attempt B: GROUP
+  if (-not $MemberDetails) {
+  try {
+   $Url = "$BaseUrl/_apis/graph/groups/$EncodedMember`?api-version=7.0-preview"
+   $MemberDetails = Invoke-RestMethod -Uri $Url -Method Get -Headers $Header -ErrorAction Stop
+   $MemberDetails | Add-Member -MemberType NoteProperty -Name "Type" -Value "Group" -Force
+  } catch {
+   Write-Verbose "  [$MemberDescriptor] Not a Group. Checking Service Principal..."
+  }
+  }
+
+  # Attempt C: SERVICE PRINCIPAL
+  if (-not $MemberDetails) {
+  try {
+   $Url = "$BaseUrl/_apis/graph/serviceprincipals/$EncodedMember`?api-version=7.0-preview"
+   $MemberDetails = Invoke-RestMethod -Uri $Url -Method Get -Headers $Header -ErrorAction Stop
+   $MemberDetails | Add-Member -MemberType NoteProperty -Name "Type" -Value "ServicePrincipal" -Force
+  } catch {
+   Write-Verbose "  [$MemberDescriptor] Not a Service Principal."
+  }
+  }
+
+  # 4. Result Output
+  if ($MemberDetails) {
+  $MemberDetails
+  } else {
+  # If all 3 fail, it's truly unresolvable (e.g. deleted user)
+  [PSCustomObject]@{
+   descriptor = $MemberDescriptor
+   displayName = "Unknown (Lookup Failed)"
+   principalName = "N/A"
+   Type = "Unknown"
+  }
+  }
+ }
+
+ # 5. Output
+ if ($ShowAll) {
+  $FullMembers | Sort-Object displayName
+ } else {
+  $FullMembers | Sort-Object displayName | Select-Object displayName, principalName, Type, descriptor
+ }
+}
+Function New-ADOAADGroup { # Create AAD Group inside Azure DevOps based on AAD GRoup
+ <#
+ .SYNOPSIS
+  Materializes (Links) an AAD Group into Azure DevOps.
+ .DESCRIPTION
+  Replaces 'az devops security group create --origin-id ...'
+  Uses the Graph API to create/sync an AAD group descriptor in ADO.
+ #>
+ param (
+  [Parameter(Mandatory)][string]$AADObjectId, # The Object ID from Azure AD (OriginID)
+  [Parameter(Mandatory)][string]$Organization,
+  [Parameter()]$Token,
+  [Switch]$ShowAll
+ )
+
+ # 1. Standardized Authentication
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ } catch {
+  Write-Error "Authentication check failed: $($_.Exception.Message)"
+  return
+ }
+
+ $Header = @{
+  'Authorization' = "$($authDetails.token.token_type) $($authDetails.token.access_token)"
+ }
+
+ $VsspsUrl = "https://vssps.dev.azure.com/$Organization"
+
+ # 2. Prepare Payload
+ # To add an AAD group, we send its OriginID (The GUID from Azure AD)
+ $Body = @{
+  originId = $AADObjectId
+ } | ConvertTo-Json
+
+ Write-Verbose "Materializing AAD Group ($AADObjectId) in Organization '$Organization'..."
+
+ # 3. Execute Create (POST)
+ try {
+  $CreateUrl = "$VsspsUrl/_apis/graph/groups`?api-version=7.0-preview"
+
+  # We use POST here to create/link the group
+  $Response = Invoke-RestMethod -Uri $CreateUrl -Method Post -Headers $Header -Body $Body -ErrorAction Stop
+
+  Write-Verbose "Success! Group Descriptor: $($Response.descriptor)"
+
+  if ($ShowAll) {
+  $Response
+  } else {
+  $Response | Select-Object displayName, principalName, origin, subjectKind, descriptor
+  }
+
+ } catch {
+  # Handle specific error where group might already exist or permission denied
+  $Msg = $_.Exception.Message
+  if ($_.Exception.Response) {
+  try {
+   $Raw = $_.Exception.Response.Content.ReadAsStringAsync().Result
+   $Msg += " | API Body: $Raw"
+  } catch {
+   $Msg += " (Body unreadable)"
+  }
+  }
+  Write-Error "Failed to add AAD Group. $Msg"
+ }
+}
+Function Add-ADOGroupMember { # Add ADO Group inside and ADO Group
+ <#
+ .SYNOPSIS
+  Adds a Member (User/Group) to an Azure DevOps Group.
+ .DESCRIPTION
+  Replaces 'az devops security group membership add'.
+  Uses Graph API 'PUT' to link a Subject (Child) to a Container (Parent).
+ #>
+ param (
+  [Parameter(Mandatory)][string]$MemberDescriptor, # The Child (e.g. $GroupInfo.descriptor)
+  [Parameter(Mandatory)][string]$GroupDescriptor,  # The Parent (e.g. $_.Descriptor)
+  [Parameter(Mandatory)][string]$Organization,
+  [Parameter()]$Token,
+  [Switch]$ShowAll
+ )
+
+ # 1. Standardized Authentication
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ } catch {
+  Write-Error "Authentication check failed: $($_.Exception.Message)"
+  return
+ }
+
+ # PUT requests generally don't need a body here, but we still define the Auth header.
+ $Header = @{
+  'Authorization' = "$($authDetails.token.token_type) $($authDetails.token.access_token)"
+ }
+
+ $VsspsUrl = "https://vssps.dev.azure.com/$Organization"
+
+ # 2. Clean Inputs (Safety)
+ $CleanMember = $MemberDescriptor.Trim()
+ $CleanGroup = $GroupDescriptor.Trim()
+
+ Write-Verbose "Adding Member ($CleanMember) to Group ($CleanGroup)..."
+
+ # 3. Execute Add (PUT)
+ # API Format: PUT /_apis/graph/memberships/{subjectDescriptor}/{containerDescriptor}
+ try {
+  $LinkUrl = "$VsspsUrl/_apis/graph/memberships/$CleanMember/$CleanGroup`?api-version=7.0-preview"
+
+  $Response = Invoke-RestMethod -Uri $LinkUrl -Method Put -Headers $Header -ErrorAction Stop
+
+  Write-Verbose "Success! Membership created."
+
+  if ($ShowAll) {
+  $Response
+  } else {
+  # Return a clean object showing the relationship
+  [PSCustomObject]@{
+   Action = "Add"
+   MemberDescriptor = $Response.memberDescriptor
+   ContainerDescriptor = $Response.containerDescriptor
+  }
+  }
+
+ } catch {
+  $Msg = $_.Exception.Message
+  if ($_.Exception.Response) {
+  try {
+   $Raw = $_.Exception.Response.Content.ReadAsStringAsync().Result
+   $Msg += " | API Body: $Raw"
+  } catch {
+   $Msg += " (Body unreadable)"
+  }
+  }
+  Write-Error "Failed to add member to group. $Msg"
+ }
+}
+
 # MFA
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
@@ -17356,38 +17699,42 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
   $Token
  )
 
- if (! $From) {
-  $From = $SenderUPN
- }
+ Try {
+  if (! $From) {
+   $From = $SenderUPN
+  }
 
- $AccessToken = $Token.access_token
+  $AccessToken = $Token.access_token
 
- $Headers = @{
-  'Content-Type'  = "application\json"
-  'Authorization' = "Bearer $AccessToken"
- }
+  $Headers = @{
+   'Content-Type'  = "application\json"
+   'Authorization' = "Bearer $AccessToken"
+  }
 
- $MessageParams = @{
-  "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
-  "Headers"     = $Headers
-  "Method"      = "POST"
-  "ContentType" = 'application/json'
-  "Body" = (@{
-   "message" = @{
-    "subject" = $Subject
-    "body"    = @{
-     "contentType" = 'HTML'
-     "content"     = $MessageContent
+  $MessageParams = @{
+   "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
+   "Headers"     = $Headers
+   "Method"      = "POST"
+   "ContentType" = 'application/json'
+   "Body" = (@{
+    "message" = @{
+     "subject" = $Subject
+     "body"    = @{
+      "contentType" = 'HTML'
+      "content"     = $MessageContent
+     }
+    "toRecipients" = @(
+     @{
+      "emailAddress" = @{"address" = $Recipient }
+     })
+    "from" = @{ "emailAddress" = @{"address" = $From } }
     }
-   "toRecipients" = @(
-    @{
-     "emailAddress" = @{"address" = $Recipient }
-    })
-   "from" = @{ "emailAddress" = @{"address" = $From } }
-   }
-  }) | ConvertTo-JSON -Depth 6
+   }) | ConvertTo-JSON -Depth 6
+  }
+  Invoke-RestMethod @Messageparams
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
- Invoke-RestMethod @Messageparams
 }
 Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
  Param (
