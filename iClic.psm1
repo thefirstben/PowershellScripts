@@ -9703,7 +9703,7 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
 
   $TargetSubs = $subResponse.data
   $GlobalTotalExpected = ($TargetSubs | Measure-Object -Property Total -Sum).Sum
-  Write-Host -object "Found $($TargetSubs.Count) subscriptions. Expected Total: $GlobalTotalExpected" -ForegroundColor "Cyan"
+  Write-Verbose "Found $($TargetSubs.Count) subscriptions. Expected Total: $GlobalTotalExpected"
 
   $GlobalResult = @()
   $PageSize = 1000
@@ -9769,7 +9769,7 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
    if (-not $SkipSubscription) {
     if ($SubResult.Count -eq $ExpectedCount) {
      $GlobalResult += $SubResult
-     Write-Host -Object "Subscription $($CurrentSubId) - Found $($SubResult.Count) resources" -ForegroundColor Green
+     Write-verbose "Subscription $($CurrentSubId) - Found $($SubResult.Count) resources"
     } else {
      # If we didn't crash but counts don't match, warn but keep what we got
      Write-Host -Object "Mismatch on Subscription $($CurrentSubId) : Expected $ExpectedCount, Got $($SubResult.Count)" -ForegroundColor Red
@@ -9778,7 +9778,7 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
    }
   }
 
-  Write-host -Object "Success: Retrieved $($GlobalResult.Count) of $GlobalTotalExpected expected resources." -ForegroundColor Magenta
+  Write-verbose "Success: Retrieved $($GlobalResult.Count) of $GlobalTotalExpected expected resources."
   if ($Readable) {
    $GlobalResult | Select-Object name,resourceGroup,@{Label="SubscriptionName";expression={$SubscriptionListHash[$_.subscriptionId].name}},type,kind,id,location,tags
   } else {
@@ -10185,7 +10185,7 @@ Function Get-AzureResourceGroups_CLI { # Get all Azure Resource Groups for all S
  ProgressClear
  return $ExportFileName
 }
-Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (Checks ACLs)
+Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (Checks ACLs) # Uses AZ Cli
  Param (
   [switch]$ShowAccessPolicies # Will add a huge time on the check
  )
@@ -11624,7 +11624,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   Write-Error $_
  }
 }
-Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
+Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration | Uses Az Cli
  Param (
   [parameter(Mandatory=$true,ParameterSetName="UPN")][String]$OwnerUPN,
   [parameter(Mandatory=$true,ParameterSetName="ObjectID")][String]$OwnerObjectID,
@@ -11639,7 +11639,7 @@ Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
   Write-Host -ForegroundColor "Red" "Error adding owner for user $OwnerUPN on AppID $AppRegistrationID : $($Error[0])"
  }
 }
-Function Remove-AzureAppRegistrationOwner { # remove an owner to an App Registration
+Function Remove-AzureAppRegistrationOwner { # remove an owner to an App Registration | Uses Az Cli
  Param (
   [Parameter(Mandatory=$true)]$OwnerUPN,
   [Parameter(Mandatory=$true)]$AppRegistrationID
@@ -11658,7 +11658,7 @@ Function Remove-AzureAppRegistrationOwner { # remove an owner to an App Registra
   Write-Host -ForegroundColor "Red" "Error adding owner for user $OwnerUPN on AppID $AppRegistrationID : $($Error[0])"
  }
 }
-Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Registration
+Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Registration | User Az Cli
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
   [parameter(Mandatory=$true,ParameterSetName="ObjectID")]$AppRegistrationObjectID,
@@ -11832,7 +11832,7 @@ Function Get-AzureAppRegistrationPermissionsGlobal { # Check Permission for All 
   Write-Error $_
  }
 }
-Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to be fully working) - Remove Automated Consent, need to manually consent when all permissions are added
+Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to be fully working)
  [CmdletBinding()]
  Param (
   [parameter(Mandatory=$true)]$AppRegistration, # App to update
@@ -11927,6 +11927,200 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
    Write-Verbose "Granting Consent"
    Grant-AzureAppRegistrationConsent -AppRegistration $AppRegistration -API $API -RightName $RightName -PermissionType $PermissionType -Token $authDetails.Token
   }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Revoke-AzureAppRegistrationConsent { # Remove App Registration Consent
+ [CmdletBinding()]
+ Param (
+  [parameter(Mandatory=$true)]$AppRegistration,
+  [parameter(Mandatory=$true)]$API,
+  [Parameter(Mandatory=$true)]$RightName,
+  [ValidateSet("Application","Delegated")]$PermissionType,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $Header = $authDetails.Header
+
+  # --- 1. Resolve IDs (Mirroring Grant Logic) ---
+
+  # A. Client Service Principal (The one LOSING the permission)
+  if (Assert-IsGUID $AppRegistration) {
+   Write-Verbose "Using App Registration AppID - Checking if proper AppSP ID"
+   $AppSPID = (Get-AzureServicePrincipal -ID $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
+   if (! $AppSPID) {
+    Write-Verbose "Not proper AppSP ID found, searching via AppID..."
+    $AppSPID = (Get-AzureServicePrincipal -AppID $AppRegistration -Token $authDetails.Token).ID
+   }
+  } else {
+   Write-Verbose "Using App Registration Name, will search for AppID"
+   $AppSPID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue
+  }
+  if (!$AppSPID) { Throw "Service Principal for '$AppRegistration' not found. (Check Enterprise Applications)" }
+  Write-Verbose "Using Client Service Principal ID: $AppSPID"
+
+  # B. Resource Service Principal (The API, e.g., Graph)
+  if (Assert-IsGUID $API) {
+   Write-Verbose "Using API ID - Will Search for Service Principal via ID: $API"
+   $ResSP = Get-AzureServicePrincipal -ID $API -Token $authDetails.Token -ErrorAction SilentlyContinue
+   if (! $ResSP) {
+    Write-Verbose "ID not found - Will Search for Service Principal via AppID: $API"
+    $ResSP = Get-AzureServicePrincipal -AppID $API -Token $authDetails.Token -ErrorAction SilentlyContinue
+   }
+  } else {
+   Write-Verbose "Using API Name - Will Search for Service Principal via Name: $API"
+   $ResSP = Get-AzureServicePrincipal -DisplayName $API -Token $authDetails.Token
+  }
+  if (!$ResSP) { Throw "Service Principal for API '$API' not found." }
+  Write-Verbose "Using Resource Service Principal ID: $($ResSP.id)"
+
+  # --- 2. Perform Revocation ---
+
+  if ($PermissionType -eq "Application") {
+   # === Application Permission (AppRole) ===
+
+   # 1. Find the Role UUID from the Resource SP definition
+   $RoleID = ($ResSP.appRoles | Where-Object { $_.value -eq $RightName }).id
+   if (!$RoleID) { Throw "Role '$RightName' not found in API '$API' definition." }
+
+   # 2. Get Assignments (Server-side: Filter only by Resource; Client-side: Filter by Role)
+   # This avoids the "Filtering on more than one resource" error.
+   $Uri = "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments?`$filter=resourceId eq $($ResSP.id)"
+   $AllGrants = (Invoke-RestMethod -Headers $Header -Method Get -Uri $Uri).value
+
+   $AssignmentToRemove = $AllGrants | Where-Object { $_.appRoleId -eq $RoleID }
+
+   if ($AssignmentToRemove) {
+    Write-Verbose "Found Assignment ID: $($AssignmentToRemove.id). Revoking..."
+    Invoke-RestMethod -Headers $Header -Method Delete -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments/$($AssignmentToRemove.id)"
+    Write-Host -ForegroundColor Cyan "Revoked Admin Consent for '$RightName' (Application)"
+   } else {
+    Write-Warning "No active Application consent found for '$RightName' on '$AppRegistration'"
+   }
+
+  } else {
+   # === Delegated Permission (Scope) ===
+
+   # 1. Verify Scope Name (Handle case sensitivity)
+   $OfficialScope = $ResSP.oauth2PermissionScopes | Where-Object { $_.value -eq $RightName } | Select-Object -ExpandProperty value
+   if (!$OfficialScope) { Throw "Scope '$RightName' not found in API definitions." }
+
+   # 2. Get Grants
+   $Uri = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'"
+   $ExistingGrant = (Invoke-RestMethod -Headers $Header -Method Get -Uri $Uri -ErrorAction SilentlyContinue).value
+
+   if ($ExistingGrant) {
+    $CurrentScopes = $ExistingGrant.scope -split " "
+
+    if ($CurrentScopes -contains $OfficialScope) {
+     # Remove the specific scope
+     $NewScopes = $CurrentScopes | Where-Object { $_ -ne $OfficialScope }
+
+     if ($NewScopes.Count -eq 0) {
+      # No scopes left? Delete the entire grant object.
+      Write-Verbose "No scopes remaining. Deleting Grant object..."
+      Invoke-RestMethod -Headers $Header -Method Delete -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($ExistingGrant.id)"
+      Write-Host -ForegroundColor Cyan "Revoked Admin Consent for '$RightName' (Delegated - Grant Deleted)"
+     } else {
+      # Patch the grant with the remaining scopes
+      $NewScopeStr = $NewScopes -join " "
+      Write-Verbose "Updating Grant to remove scope..."
+      $Body = @{ scope = $NewScopeStr } | ConvertTo-Json
+      Invoke-RestMethod -Headers $Header -Method Patch -Body $Body -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($ExistingGrant.id)"
+      Write-Host -ForegroundColor Cyan "Revoked Admin Consent for '$RightName' (Delegated - Scope Removed)"
+     }
+    } else {
+     Write-Warning "Scope '$OfficialScope' was not present in the existing grant."
+    }
+   } else {
+    Write-Warning "No active Delegated grant found for this API."
+   }
+  }
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Remove-AzureAppRegistrationPermission { # Remove Azure App Registration Permission, has a switch to remove Consent as well
+ [CmdletBinding()]
+ Param (
+  [parameter(Mandatory=$true)]$AppRegistration,
+  [parameter(Mandatory=$true)]$API,
+  [Parameter(Mandatory=$true)]$RightName,
+  [ValidateSet("Application","Delegated")]$PermissionType,
+  $Token,
+  [switch]$RevokeConsent
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $header = $authDetails.Header
+
+  # BLOCK 1 - Get App Information
+  if (Assert-IsGUID $AppRegistration ) { $AppID = $AppRegistration }
+  else { $AppID = (Get-AzureAppRegistration -DisplayName $AppRegistration -Token $authDetails.Token -ErrorAction Stop).AppID }
+  if (! $AppID ) { Throw "App $AppRegistration not found" }
+
+  # BLOCK 2 - Find API ID
+  if (Assert-IsGUID $API ) { $ServicePrincipalID = $API }
+  else { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $API }
+  if (! $ServicePrincipalID ) { Throw "API $API not found" }
+
+  # BLOCK 3 - Find Permission Detail
+  $RightsToRemove = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object {
+   ($_.Value -eq $RightName) -and (!$PermissionType -or $_.PermissionType -eq $PermissionType)
+  }
+  if (! $RightsToRemove) { Throw "Permission $RightName not found in API $API" }
+
+  $ApiAppID = $RightsToRemove.PolicyID
+  $PermUUID = $RightsToRemove.RuleID
+  $TypeStr = If ($RightsToRemove.PermissionType -eq 'Delegated') { "Scope" } Else { "Role" }
+
+  # BLOCK 4 - Update App Registration Manifest
+  Write-Verbose "Retrieving current App Registration permissions..."
+  $AppObject = Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/applications(appId='$AppID')?`$select=id,requiredResourceAccess"
+
+  $ModifiedAccessList = New-Object System.Collections.Generic.List[Object]
+  $FoundInManifest = $false
+
+  foreach ($resource in $AppObject.requiredResourceAccess) {
+   if ($resource.resourceAppId -eq $ApiAppID) {
+    # Force array type
+    $currentAccess = @($resource.resourceAccess)
+
+    # Filter the list
+    $filteredAccess = @($currentAccess | Where-Object { -not ($_.id -eq $PermUUID -and $_.type -eq $TypeStr) })
+
+    if ($currentAccess.Count -ne $filteredAccess.Count) { $FoundInManifest = $true }
+
+    # Only keep the API entry if there are permissions left
+    if ($filteredAccess.Count -gt 0) {
+     $ModifiedAccessList.Add(@{
+      resourceAppId = $resource.resourceAppId
+      resourceAccess = $filteredAccess # Standard array assignment
+     })
+    }
+   } else {
+    $ModifiedAccessList.Add($resource)
+   }
+  }
+
+  if ($FoundInManifest) {
+   Write-Verbose "Updating App Registration (Removing permission from manifest)..."
+   $Body = @{ requiredResourceAccess = $ModifiedAccessList } | ConvertTo-Json -Depth 10 -Compress
+
+   Invoke-RestMethod -Headers $Header -Method Patch -Body $Body -Uri "https://graph.microsoft.com/v1.0/applications/$($AppObject.id)"
+   Write-Host -ForegroundColor "Green" "Successfully removed '$RightName' from App Registration Manifest"
+  } else {
+   Write-Verbose "Permission not found in manifest, skipping manifest update."
+  }
+
+  # BLOCK 5 - Call Standalone Consent Revocation
+  if ($RevokeConsent) {
+   Revoke-AzureAppRegistrationConsent -AppRegistration $AppRegistration -API $API -RightName $RightName -PermissionType $PermissionType -Token $Token
+  }
+
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
@@ -12194,7 +12388,7 @@ Function Set-AzureAppRegistrationTags_OLD { # Set Tag on App Registration, can a
  }
 
 }
-Function Set-AzureAppRegistrationTags {
+Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add or overwrite existing (add no tags to list current tags)
  [CmdletBinding(DefaultParameterSetName = "ID")]
  Param (
   [parameter(Mandatory = $true, ParameterSetName = "AppID")][string]$AppID,
@@ -12651,6 +12845,73 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
 
   Write-Verbose "Running Patch command"
   Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationObjectID" -Headers $header -Body $body
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Remove-AzureAppRegistration { # Remove Azure App Registration | Service Principal should be removed at the same time
+ [CmdletBinding(SupportsShouldProcess=$true)]
+ Param (
+  [parameter(Mandatory=$true)]$AppRegistration, # Name or AppID (Client ID)
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $Header = $authDetails.Header
+
+  # BLOCK 1 - Resolve App Registration (Need the 'id' -> Object ID)
+  $AppObj = $null
+
+  if (Assert-IsGUID $AppRegistration) {
+   Write-Verbose "Input is a GUID. Checking if it is an AppID (Client ID)..."
+   # Try to find by AppID first (Most common input)
+   $Uri = "https://graph.microsoft.com/v1.0/applications(appId='$AppRegistration')"
+   $AppObj = Invoke-RestMethod -Headers $Header -Method Get -Uri $Uri -ErrorAction SilentlyContinue
+
+   if (-not $AppObj) {
+    Write-Verbose "Not found by AppID. Checking if it is an Object ID..."
+    $Uri = "https://graph.microsoft.com/v1.0/applications/$AppRegistration"
+    $AppObj = Invoke-RestMethod -Headers $Header -Method Get -Uri $Uri -ErrorAction SilentlyContinue
+   }
+  } else {
+   Write-Verbose "Input is a Name. Searching for DisplayName..."
+   $Uri = "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$AppRegistration'"
+   $Response = Invoke-RestMethod -Headers $Header -Method Get -Uri $Uri
+   if ($Response.value.Count -gt 1) {
+    Throw "Multiple apps found with name '$AppRegistration'. Please use the AppID (GUID)."
+   }
+   $AppObj = $Response.value[0]
+  }
+
+  if (-not $AppObj) { Throw "App Registration '$AppRegistration' not found." }
+
+  $ObjectId = $AppObj.id
+  $AppId = $AppObj.appId
+  $DisplayName = $AppObj.displayName
+
+  Write-Verbose "Found App Registration: '$DisplayName' (AppID: $AppId | ObjectID: $ObjectId)"
+
+  # BLOCK 2 - Check for Service Principal (Informational)
+  # When deleting an App Registration, the SP is deleted automatically.
+  # We just check here to inform the user.
+  $SpUri = "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$AppId')"
+  $SpObj = Invoke-RestMethod -Headers $Header -Method Get -Uri $SpUri -ErrorAction SilentlyContinue
+
+  if ($SpObj) {
+   Write-Verbose "Related Service Principal found (OID: $($SpObj.id)). It will be automatically deleted."
+  } else {
+   Write-Verbose "No related Service Principal found."
+  }
+
+  # BLOCK 3 - Delete
+  if ($PSCmdlet.ShouldProcess("App: $DisplayName ($AppId)", "Delete App Registration and related Service Principal")) {
+   Write-Verbose "Executing Delete request..."
+   $DeleteUri = "https://graph.microsoft.com/v1.0/applications/$ObjectId"
+   Invoke-RestMethod -Headers $Header -Method Delete -Uri $DeleteUri
+
+   Write-Host -ForegroundColor "Green" "Successfully deleted App Registration '$DisplayName'"
+  }
 
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -14981,35 +15242,150 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
  }
 }
 # Access Packages
-Function Get-AzureAccessPackages {
+Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssignementPolicies to expand all policies, takes a while)
  Param (
   [Switch]$ExpandAssignementPolicies,
-  [GUID]$AccessPackageID,
+  $AccessPackage,
   $Token
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $AccessPackages = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/accessPackages/$AccessPackageID"
-  if ($ExpandAssignementPolicies ) {
-   # $AccessPackageWithPolicies = @()
-   $AccessPackages | Sort-Object displayName | ForEach-Object {
-    Progress -Message "Checking Policy of Access Package : " -Value $_.displayName -PrintTime
-    $Policy = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/accessPackages/$($_.ID)?`$expand=assignmentPolicies"
-    $_ | Add-Member -MemberType NoteProperty -Name "LinkedPolicies" -Value $Policy.assignmentPolicies
+
+  # Define the base resource path
+  $ResourcePath = "identityGovernance/entitlementManagement/accessPackages"
+  $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath"
+
+  if ($AccessPackage) {
+   if (Assert-IsGUID -Value $AccessPackage) {
+    # If GUID, append directly to the path
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$AccessPackage"
+   }
+   else {
+    # If Name, append as a query parameter filter
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath`?`$filter=displayName eq '$AccessPackage'"
    }
   }
+
+  $AccessPackages = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl
+
+  if ($ExpandAssignementPolicies) {
+   $AccessPackages | Sort-Object displayName | ForEach-Object {
+    Progress -Message "Checking Policy of Access Package : " -Value $_.displayName -PrintTime
+
+    # We use the ID to expand policies specifically for each package found
+    $ExpandUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$($_.ID)?`$expand=assignmentPolicies"
+    $Policy = Get-AzureGraph -Token $authDetails.Token -GraphRequest $ExpandUrl
+
+    $_ | Add-Member -MemberType NoteProperty -Name "LinkedPolicies" -Value $Policy.assignmentPolicies -Force
+   }
+  }
+
   $AccessPackages
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-AzureAccessPackagesAssignmentPolicies {
+Function Get-AzureAccessPackagesAssignmentPolicies { # Get All Assignement Policies
  Param (
+  $Policy, # Unified parameter for Name or ID
   $Token
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/assignmentPolicies"
+
+  # Define the base resource path
+  $ResourcePath = "identityGovernance/entitlementManagement/assignmentPolicies"
+  $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath"
+
+  if ($Policy) {
+   if (Assert-IsGUID -Value $Policy) {
+    # If GUID, target the specific policy endpoint
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$Policy"
+   }
+   else {
+    # If Name, use the protected OData filter
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath`?`$filter=displayName eq '$Policy'"
+   }
+  }
+
+  get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Add-AzureAccessPackageAssignment { # Provision users to Access Package, can bypass Approval
+ Param (
+  [Parameter(Mandatory=$true)]
+  $TargetId,
+  [Parameter(Mandatory=$true)]
+  $AccessPackage, # Can be Name or GUID
+  [Parameter(Mandatory=$true)]
+  $Policy,        # Can be Name or GUID
+  [String]$Justification = "Automated assignment via script",
+  [Switch]$BypassApproval,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $ResourcePath = "identityGovernance/entitlementManagement"
+
+  $ResolvedPackageId = $null
+  $ResolvedPolicyId = $null
+
+  # --- Step 1: Resolve Access Package ---
+  if (Assert-IsGUID -Value $AccessPackage) {
+   $ResolvedPackageId = $AccessPackage
+  } else {
+   $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages`?`$filter=displayName eq '$AccessPackage'&`$expand=assignmentPolicies"
+   $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
+
+   if ($apResult.count -gt 1) { throw "More than one Access Package found with name '$AccessPackage'" }
+   if (-not $apResult) { throw "Access Package '$AccessPackage' not found." }
+
+   $ResolvedPackageId = $apResult.id
+   $apPolicies = $apResult.assignmentPolicies # Store for step 2 if needed
+  }
+
+  # --- Step 2: Resolve Policy ---
+  if (Assert-IsGUID -Value $Policy) {
+   $ResolvedPolicyId = $Policy
+  } else {
+   # If we didn't search for the package in Step 1 (because ID was provided), we need to find the policy now
+   if ($null -eq $apPolicies) {
+    $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages/$ResolvedPackageId`?`$expand=assignmentPolicies"
+    $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
+    $apPolicies = $apResult.assignmentPolicies
+   }
+
+   $targetPolicy = $apPolicies | Where-Object { $_.displayName -eq $Policy }
+   if ($targetPolicy.count -gt 1) { throw "More than one Policy found with name '$Policy' in this package" }
+   if (-not $targetPolicy) { throw "Policy '$Policy' not found in this package." }
+
+   $ResolvedPolicyId = $targetPolicy.id
+  }
+
+  # --- Step 3: Create the Request ---
+  $requestType = if ($BypassApproval) { "adminAdd" } else { "userAdd" }
+  $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+
+  $body = @{
+   requestType = $requestType
+   justification = $Justification
+   assignment = @{
+    targetId = $TargetId
+    assignmentPolicyId = $ResolvedPolicyId
+    accessPackageId = $ResolvedPackageId
+    schedule = @{
+     startDateTime = $now
+     expiration = @{ type = "noExpiration" }
+    }
+   }
+  } | ConvertTo-Json -Depth 10
+
+  $requestUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignmentRequests"
+  get-azuregraph -Token $authDetails.Token -GraphRequest $requestUrl -Method POST -Body $body -ErrorAction Stop
+
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
@@ -15662,10 +16038,8 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
  } elseif ($Graph) {
   Try {
    $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-   $header = @{
-    'Authorization' = "$($authDetails.Token.token_type) $($authDetails.Token.access_token)"
-    'Content-type'  = "application/json"
-   }
+   $header = $authDetails.Header
+
    # To Add License check
    $SKUList = Get-AzureSKUs -Token $authDetails.Token
 
@@ -16159,9 +16533,14 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
 Function Remove-AzureADUser { # Remove Azure AD User
  Param (
   [Parameter(Mandatory)]$UPNorID,
-  [Parameter(Mandatory)]$Token
+  $Token
  )
- Get-AzureGraph -Token $Token -GraphRequest "/users/$UPNorID" -Method DELETE
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UPNorID" -Method DELETE
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 # Token Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
@@ -17151,7 +17530,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   $EndDuration,
   $WorkspaceID
  )
-  # Example : $Result = get-sentinelappInfo -App $AppName -Readable -Duration '1d' -SimplifiedQuery -StartDuration "datetime(2025-12-19 14:46:33)" -EndDuration "datetime(2025-12-20 14:46:33)"
+  # Example : $Result = get-sentinelappInfo -App $AppName -Duration '1d' -SimplifiedQuery -StartDuration "datetime(2025-12-19 14:46:33)" -EndDuration "datetime(2025-12-20 14:46:33)"
   try {
 
   Write-Verbose "Getting WorkspaceID"
@@ -17251,6 +17630,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
 
   # Stop here if no results where found
   if (! $ResultRaw) { return }
+
   if ($ShowRawResult) { return $ResultRaw }
 
   if ($ShowSecretDetails) {
@@ -17267,7 +17647,11 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   }
 
   if ($SimplifiedQuery) {
-   $Result = $ResultRaw | Select-Object * -ExcludeProperty ServicePrincipalCredentialKeyId
+   $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id,ResourceIdentity
+  }
+
+  if ($SimplifiedQuery) {
+   $Result = $ResultRaw
   } else {
    $Result = $ResultRaw | ForEach-Object {
     # Use Add-Member to create the new properties on the read-only object
@@ -17737,18 +18121,20 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
  }
 }
 Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
+ [CmdletBinding()]
  Param (
   $Token
  )
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+ Try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+ if ($authDetails.Method -eq "Token") {
+  $header = $authDetails.Header
   (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/subscribedSkus").value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber
  } else {
   ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
+ }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-TOR_IP_List { # Will not work with Zscaler
