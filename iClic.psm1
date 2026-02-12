@@ -697,16 +697,23 @@ Function Convert-HexToASCII {
  ($HEX -split " " | ForEach-Object {[char][byte]"0x$_"}) -join ''
 }
 Function Convert-GUIDToImmutableID {
+ [CmdletBinding()]
+ [OutputType([String])]
  Param (
-  [Parameter(Mandatory=$true)]$Guid
+  [Parameter(Mandatory = $true, ValueFromPipeline = $true)]$Guid
  )
- [Convert]::ToBase64String([guid]::New($Guid).ToByteArray())
+ process {
+  [Convert]::ToBase64String([guid]::New($Guid).ToByteArray())
+ }
 }
 Function Convert-ImmutableIDToGUID {
+ [CmdletBinding()]
  Param (
-  [Parameter(Mandatory=$true)]$ImmutableID
+  [Parameter(Mandatory = $true, ValueFromPipeline = $true)]$ImmutableID
  )
- ([Guid]([Convert]::FromBase64String("$ImmutableID"))).GUID
+ process {
+  ([Guid]([Convert]::FromBase64String("$ImmutableID"))).GUID
+ }
 }
 function Convert-SIDToAzureObjectId { # Get Azure ObjectID From SID (based on : https://github.com/okieselbach/Intune/blob/master/Convert-AzureAdSidToObjectId.ps1)
  param(
