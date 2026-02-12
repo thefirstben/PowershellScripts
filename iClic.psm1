@@ -13991,84 +13991,88 @@ Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assig
   [Switch]$HideGUID
  )
 
- # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AzCli with User Authentication. Missing Consent
- # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+  # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AzCli with User Authentication. Missing Consent
+  # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
 
- # Get all role definitions
- Progress -Message "Current Step : " -Value "Get all role definitions" -PrintTime
- $RoleDefinitionList = Get-AzureRoleDefinitions -Token $token
+  # Get all role definitions
+  Progress -Message "Current Step : " -Value "Get all role definitions" -PrintTime
+  $RoleDefinitionList = Get-AzureRoleDefinitions -Token $authDetails.Token
 
- # Get all Administrative Unit
- Progress -Message "Current Step : " -Value "Get all Administrative Unit" -PrintTime
- $AdminUnitList = Get-AzureAdministrativeUnit -Token $token
+  # Get all Administrative Unit
+  Progress -Message "Current Step : " -Value "Get all Administrative Unit" -PrintTime
+  $AdminUnitList = Get-AzureAdministrativeUnit -Token $authDetails.Token
 
- # Get all Permanent Assignement
- Progress -Message "Current Step : " -Value "Get all Permanent Assignement" -PrintTime
- $DirectMembersGUID = Get-AzureRoleAssignements -Token $Token
+  # Get all Permanent Assignement
+  Progress -Message "Current Step : " -Value "Get all Permanent Assignement" -PrintTime
+  $DirectMembersGUID = Get-AzureRoleAssignements -Token $authDetails.Token
 
- # Get all Eligible Assignement
- Progress -Message "Current Step : " -Value "Get all Permanent Assignement" -PrintTime
- $DirectMembersEligibleGUID = Get-AzureRoleAssignementsEligible -Token $Token
+  # Get all Eligible Assignement
+  Progress -Message "Current Step : " -Value "Get all Permanent Assignement" -PrintTime
+  $DirectMembersEligibleGUID = Get-AzureRoleAssignementsEligible -Token $authDetails.Token
 
- # Convert all user ID
- Progress -Message "Current Step : " -Value "Convert all user ID" -PrintTime
- $AllUniquePrincipals = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique
- $PrincipalInfo = Get-AzureADObjectInfo -Token $Token -ObjectIDList $AllUniquePrincipals
+  # Convert all user ID
+  Progress -Message "Current Step : " -Value "Convert all user ID" -PrintTime
+  $AllUniquePrincipals = $DirectMembersGUID.principalId + $DirectMembersEligibleGUID.PrincipalID | Select-Object -Unique
+  $PrincipalInfo = Get-AzureADObjectInfo -ObjectIDList $AllUniquePrincipals -Token $authDetails.Token
 
- Progress -Message "Current Step : " -Value "Check Roles" -PrintTime
- $Result = $DirectMembersGUID + $DirectMembersEligibleGUID | Select-Object *,
-  @{name="roleDefinitionName";expression={
-   if ($RoleDefinitionList.id.contains($_.roleDefinitionId)) {
-    ($RoleDefinitionList[$RoleDefinitionList.id.indexof($_.roleDefinitionId)]).displayName
-   } else {
-    (Get-AzureADObjectInfo -ObjectID $_.roleDefinitionId -Token $token).displayName
-   }
-  }},
-  @{name="directoryScopeInfo";expression={
-   if ($_.directoryScopeID -like "/administrativeUnits/*" ) {
-    $DirectoryScopeID = (($_.directoryScopeID).split('/'))[-1]
-    [pscustomobject]@{Name=$(($AdminUnitList[$AdminUnitList.id.indexof($DirectoryScopeID)]).displayName);Type="Administrative Unit"}
-   } elseif ($_.directoryScopeID -eq "/") {
-    [pscustomobject]@{Name="Directory";Type="Directory"}
-   } else {
-    $ObjectInfo = Get-AzureADObjectInfo -ObjectID (($_.directoryScopeID).split('/'))[-1] -Token $Token
-    if (! $ObjectInfo) {
-     [pscustomobject]@{Name="NOT FOUND Role $($_.roleDefinitionId) | Scope $($_.directoryScopeID) | principalId $($_.principalId) ";Type="NOT FOUND"}
+  Progress -Message "Current Step : " -Value "Check Roles" -PrintTime
+  $Result = $DirectMembersGUID + $DirectMembersEligibleGUID | Select-Object *,
+   @{name="roleDefinitionName";expression={
+    if ($RoleDefinitionList.id.contains($_.roleDefinitionId)) {
+     ($RoleDefinitionList[$RoleDefinitionList.id.indexof($_.roleDefinitionId)]).displayName
     } else {
-     [pscustomobject]@{Name=$($ObjectInfo.DisplayName);Type=$($ObjectInfo.Type)}
+     (Get-AzureADObjectInfo -ObjectID $_.roleDefinitionId -Token $authDetails.Token).displayName
+    }
+   }},
+   @{name="directoryScopeInfo";expression={
+    if ($_.directoryScopeID -like "/administrativeUnits/*" ) {
+     $DirectoryScopeID = (($_.directoryScopeID).split('/'))[-1]
+     [pscustomobject]@{Name=$(($AdminUnitList[$AdminUnitList.id.indexof($DirectoryScopeID)]).displayName);Type="Administrative Unit"}
+    } elseif ($_.directoryScopeID -eq "/") {
+     [pscustomobject]@{Name="Directory";Type="Directory"}
+    } else {
+     $ObjectInfo = Get-AzureADObjectInfo -ObjectID (($_.directoryScopeID).split('/'))[-1] -Token $authDetails.Token
+     if (! $ObjectInfo) {
+      [pscustomobject]@{Name="NOT FOUND Role $($_.roleDefinitionId) | Scope $($_.directoryScopeID) | principalId $($_.principalId) ";Type="NOT FOUND"}
+     } else {
+      [pscustomobject]@{Name=$($ObjectInfo.DisplayName);Type=$($ObjectInfo.Type)}
+     }
+    }
+   }},
+   @{name="PrincipalInfo";expression={
+    if ($PrincipalInfo.id.contains($_.principalId)) { # Added check to ensure that a Principal was found otherwise it will just print the Principal ID
+     $PrincipalInfo[$PrincipalInfo.id.indexof($_.principalId)]
+    } else {
+     $_.principalId
+    }
+   } } | Select-Object -ExcludeProperty directoryScopeInfo,PrincipalInfo *,
+   @{name="directoryScopeName";expression={$_.directoryScopeInfo.Name}},
+   @{name="directoryScopeType";expression={$_.directoryScopeInfo.Type}},
+   @{name="principalName";expression={$_.PrincipalInfo.DisplayName}},
+   @{name="principalType";expression={$_.PrincipalInfo.Type}},
+   @{name="Type";expression={
+    if ($_.SourceID -eq "roleEligibilityScheduleInstances") {
+     'Eligible'
+    } elseif ($_.assignmentType -eq 'Activated') {
+     'Permanent Activated'
+    } elseif (($_.SourceID -eq "roleAssignmentScheduleInstances") -and $_.endDateTime) {
+     'Time Limited Permanent'
+    } else {
+     'Permanent'
     }
    }
-  }},
-  @{name="PrincipalInfo";expression={
-   if ($PrincipalInfo.id.contains($_.principalId)) { # Added check to ensure that a Principal was found otherwise it will just print the Principal ID
-    $PrincipalInfo[$PrincipalInfo.id.indexof($_.principalId)]
-   } else {
-    $_.principalId
-   }
-  } } | Select-Object -ExcludeProperty directoryScopeInfo,PrincipalInfo *,
-  @{name="directoryScopeName";expression={$_.directoryScopeInfo.Name}},
-  @{name="directoryScopeType";expression={$_.directoryScopeInfo.Type}},
-  @{name="principalName";expression={$_.PrincipalInfo.DisplayName}},
-  @{name="principalType";expression={$_.PrincipalInfo.Type}},
-  @{name="Type";expression={
-   if ($_.SourceID -eq "roleEligibilityScheduleInstances") {
-    'Eligible'
-   } elseif ($_.assignmentType -eq 'Activated') {
-    'Permanent Activated'
-   } elseif (($_.SourceID -eq "roleAssignmentScheduleInstances") -and $_.endDateTime) {
-    'Time Limited Permanent'
-   } else {
-    'Permanent'
-   }
   }
- }
 
- if ($HideGUID) {
-  $Result = $Result | Select-Object -ExcludeProperty *ID
+  if ($HideGUID) {
+   $Result = $Result | Select-Object -ExcludeProperty *ID
+  }
+  $Result
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
- $Result
 }
 Function Get-AzureADUserAssignedRole { # Get Role Assignement from ObjectID - Missing Eligible
  Param (
