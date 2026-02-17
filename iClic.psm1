@@ -12973,33 +12973,22 @@ Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using RES
 Function Get-AzureServicePrincipal { # Get Service Principal, either specific or via filter
  [CmdletBinding(DefaultParameterSetName = 'Filter')]
  Param (
-  # These parameters are part of all sets
+  # Parameters part of all sets
   [Parameter(Mandatory = $false, HelpMessage = 'A security token is required.')]
   $Token,
-
   [Switch]$Fast,
 
   # --- Specific Get by AppID Set ---
-  [Parameter(ParameterSetName = 'GetByAppID', Mandatory = $true, HelpMessage = 'Specify the Application ID.')]
-  [string]$AppID,
-
+  [Parameter(ParameterSetName = 'GetByAppID', Mandatory = $true, HelpMessage = 'Specify the Application ID.')][string]$AppID,
   # --- Specific Get by ID Set ---
-  [Parameter(ParameterSetName = 'GetByID', Mandatory = $true, HelpMessage = 'Specify the Object ID.')]
-  [string]$ID,
-
+  [Parameter(ParameterSetName = 'GetByID', Mandatory = $true, HelpMessage = 'Specify the Object ID.')][string]$ID,
   # --- Specific Get by DisplayName Set ---
-  [Parameter(ParameterSetName = 'GetByDisplayName', Mandatory = $true, HelpMessage = 'Specify the Display Name.')]
-  [string]$DisplayName,
+  [Parameter(ParameterSetName = 'GetByDisplayName', Mandatory = $true, HelpMessage = 'Specify the Display Name.')][string]$DisplayName,
 
   # --- Filter Parameter Set ---
-  [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on URL of Service Principals.')]
-  $URLFilter,
-
-  [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on Name of Service Principals.')]
-  $NameFilter, # Filter must not contain wildcards, it will search value automatically
-
-  [Parameter(Mandatory = $false, HelpMessage = 'A comma-separated list of properties to display.')]
-  $ValuesToShow = "*"
+  [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on URL of Service Principals.')]$URLFilter,
+  [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on Name of Service Principals.')]$NameFilter, # Filter must not contain wildcards, it will search value automatically
+  [Parameter(Mandatory = $false, HelpMessage = 'A comma-separated list of properties to display.')]$ValuesToShow = "*"
  )
 
  try {
@@ -13902,7 +13891,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
   Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID"
  }
 }
-Function Add-AzureServicePrincipalAssignments {
+Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service principal, Assignement IDs are recommended, but UserName is possible but will be a lot slower. Uses Rest API with Token
  Param (
   [parameter(Mandatory = $true)]$ServicePrincipalID, # Service Principal To Update
   [parameter(Mandatory = $true)]$ObjectToAddID, # User or group or object to add
@@ -13953,7 +13942,7 @@ Function Add-AzureServicePrincipalAssignments {
   write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $($Error[0])"
  }
 }
-Function Set-AzureServicePrincipalContact {
+Function Set-AzureServicePrincipalContact { # Set Contact on Service Principal, can be used to set an email to receive notification of expiring secrets or certificates. Uses Graph API
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
   [parameter(Mandatory=$true,ParameterSetName="ServicePrincipalID")]$ServicePrincipalID,
@@ -13984,15 +13973,62 @@ Function Set-AzureServicePrincipalContact {
   Write-Error $_
  }
 }
+Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal secrets. Uses MGGraph
+ Param (
+  [switch]$Commit,
+  [Parameter(ParameterSetName = 'GetByAppID', Mandatory = $true, HelpMessage = 'Specify the Application ID.')][string]$AppID,
+  [Parameter(ParameterSetName = 'GetByID', Mandatory = $true, HelpMessage = 'Specify the Object ID.')][string]$ID,
+  [Parameter(ParameterSetName = 'GetByDisplayName', Mandatory = $true, HelpMessage = 'Specify the Display Name.')][string]$DisplayName
+ )
+ Try {
+  # Connect to MgGraph
+  connect-MgGraph
+
+  if ($ParameterSetName -eq "GetByAppID") {
+   $sp = Get-MgServicePrincipal -Filter "appId eq '$AppID'"
+  } elseif ($ParameterSetName -eq "GetByID") {
+   $sp = Get-MgServicePrincipal -ServicePrincipalId $ID
+  } elseif ($ParameterSetName -eq "GetByDisplayName") {
+   $sp = Get-MgServicePrincipal -Filter "DisplayName eq '$DisplayName'"
+  } else {
+   Throw "No valid parameter set found"
+  }
+
+  # Get all current keys
+  $allKeys = $sp.KeyCredentials
+
+  # Filter: Keep only keys where EndDateTime is in the future
+  $validKeys = $allKeys | Where-Object { $_.EndDateTime -gt (Get-Date) }
+
+  # Check what we are about to do
+  Write-Host "Found $( $allKeys.Count ) total keys." -ForegroundColor Cyan
+  Write-Host "Keeping $( $validKeys.Count ) valid keys." -ForegroundColor Green
+  Write-Host "Removing $( $allKeys.Count - $validKeys.Count ) expired keys." -ForegroundColor Yellow
+
+  if (! $Commit) {
+   Write-Host "This is a dry run. No keys will be removed. Use -Commit to apply changes." -ForegroundColor Magenta
+  } else {
+   if ($validKeys.Count -eq $allKeys.Count) {
+    Write-Host "No expired keys to remove. Exiting." -ForegroundColor Green
+   } elseif ($validKeys.Count -eq 0) {
+    Write-Host "All keys are expired. Cannot use this to remove the last key (requires proof)" -ForegroundColor Red
+   } else {
+    Update-MgServicePrincipal -ServicePrincipalId $sp.Id -KeyCredentials $validKeys
+   }
+  }
+ } Catch {
+  Write-Error $_
+ }
+}
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
-  [parameter(Mandatory = $true)]$Token,
+  $Token,
   [Switch]$HideGUID
  )
 
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   # Eligible value available here https://graph.microsoft.com/beta/roleManagement/directory/roleAssignmentScheduleInstances, but does not work with AzCli with User Authentication. Missing Consent
   # Would work with App registration login with the following value : RoleEligibilitySchedule.Read.Directory
@@ -17096,8 +17132,8 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   Write-Verbose "Return Result for $URL"
   return $GlobalResult
  } catch {
-  if ($($Error[0].ErrorDetails.Message)) {
-   $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json).error.message
+  if ($($Error[0].ErrorDetails.Message -contains "{")) {
+   $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue).error.message
   } else {
    $ConvertedErrorMessage = $Error[0]
   }
