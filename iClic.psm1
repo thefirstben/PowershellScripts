@@ -13447,7 +13447,8 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
 
   if ($authDetails.Method -eq "Token") {
-   $AppAssigments = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $URI).Value
+   # $AppAssigments = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $URI).Value
+   $AppAssigments = get-azuregraph -GraphRequest $URI -Token $authDetails.Token
   } else {
    $AppAssigments = (az rest --method GET --uri $URI --header Content-Type=application/json | ConvertFrom-Json).Value
   }
