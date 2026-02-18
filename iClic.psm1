@@ -9646,7 +9646,7 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL 
   }
 
   if ($Readable) {
-   $GlobalResult | Select-Object resourceGroup,@{Label="SubscriptionName";expression={$SubscriptionListHash[$_.subscriptionId].name}},id,location,tags
+   $GlobalResult | Select-Object resourceGroup,@{Label="SubscriptionName";expression={$SubscriptionListHash[$_.subscriptionId].name}},SubscriptionID,id,location,tags
   } else {
    return $GlobalResult
   }
@@ -10946,6 +10946,7 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
   [parameter(Mandatory = $true)]$UserToken, # Graph Token
   [Switch]$Readable, # Simplified view excluding uneeded data
   [Switch]$ExactScope, # Check to see what this is used for
+  [Switch]$ExcludeHigher, # Check to see what this is used for
   [GUID]$TargetPrincipalId, # To filter by ID, to avoid looking everything
 
   # == SCOPE PARAMETERS (Mutually Exclusive Sets) ==
@@ -11196,6 +11197,8 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
     }
    }},
    @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }}
+
+  if ($ExcludeHigher) { $RequestResult = $RequestResult | Where-Object { $_.ResourceType -notin "managementGroups","subscriptions" } }
 
   if ($Readable) {
    $RequestResult | Sort-Object Scope,principalName | Select-Object AssignmentType,principalType,principalName,roleDefinitionName,roleDefinitionType,ManagementGroup,SubscriptionName,ResourceGroupName,ResourceName,ResourceType,scope
@@ -14260,19 +14263,22 @@ Function Get-AzureDeviceObjectIDFromName {
 Function Get-AzureDeviceInfo {
  param(
   [parameter(Mandatory=$true)][GUID]$DeviceID,
-  [parameter(Mandatory=$true)]$Token
+  $Token
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/devices/$DeviceID"
+
+  if ($Result) {
+   return $Result
+  } else {
+   Write-host -ForegroundColor Red "Device $DeviceID not found"
+  }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
- $Result = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceID"
- if ($Result.Value) {
-  return $Result.Value
- } else {
-  Write-host -ForegroundColor Red "Device $DeviceID not found"
- }
+
 }
 Function Get-AzureDevices {
  param(
