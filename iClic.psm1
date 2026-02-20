@@ -10684,11 +10684,15 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
   $IDConversionTable, #Send Conversion Table for faster treatment
   $Token
  )
+
+ try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
  # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
  if ( ! $IDConversionTable ) {
   $IDConversionTable = @()
-  if ($Token) {
-   $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ -Token $Token }
+  if ($authDetails.Method -eq "Token") {
+   $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ -Token $authDetails.Token }
   } else {
    $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ }
   }
@@ -10714,6 +10718,9 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
    PermissionType=$Policy.PermissionType
    Description=$Policy.Description
   }
+ }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Convert-AzureServicePrincipalPermissionsGUIDToReadable { #Converts all GUID of Object containing Service Principal Permission List with GUID to Readable Names
@@ -13290,17 +13297,18 @@ Function Get-AzureServicePrincipalPolicyPermissions { # Used to convert ID to na
   $Token
  )
  Try {
-  if ($Token) {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($authDetails.Method -eq "Token") {
     # Search for ID
-    $PolicyListJson = Get-AzureServicePrincipal -Token $Token -ID $ServicePrincipalAppID -ErrorAction SilentlyContinue
+    $PolicyListJson = Get-AzureServicePrincipal -Token $authDetails.Token -ID $ServicePrincipalAppID -ErrorAction SilentlyContinue
     # If not found search for AppID instead
     if (! $PolicyListJson) {
      Write-Verbose "Not found using ID, searching with AppID"
-     $PolicyListJson = Get-AzureServicePrincipal -Token $Token -AppID $ServicePrincipalAppID
+     $PolicyListJson = Get-AzureServicePrincipal -Token $authDetails.Token -AppID $ServicePrincipalAppID
     }
     if (! $PolicyListJson) {
      Write-Verbose "Not found using ID and AppID, searching with App Registration Instead Of Service Principal (Happens for App Registration with Service Principals)"
-     $PolicyListJson = get-azureappregistration -Token $Token -AppID $ServicePrincipalAppID -ValuesToShow "createdDateTime,displayName,appId,id,description,notes,
+     $PolicyListJson = get-azureappregistration -Token $authDetails.Token -AppID $ServicePrincipalAppID -ValuesToShow "createdDateTime,displayName,appId,id,description,notes,
       tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient,
       api" | Select-Object * -ExpandProperty api
     }
@@ -13487,14 +13495,11 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
   $Token
  )
   Try {
-  if ($Token) {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $headers = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+   if ($authDetails.Method -eq "Token") {
+   $headers = $authDetails.Header
    if ( ! $AssignmentID) {
-    $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID -Token $Token | Where-Object principalDisplayName -eq $UserDisplayName
+    $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID -Token $authDetails.Token | Where-Object principalDisplayName -eq $UserDisplayName
     if ( ! $PermissionInfo) { Throw "$UserDisplayName was not found" } else { $AssignmentID = $PermissionInfo.id }
    }
    Invoke-RestMethod -Method DELETE -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
@@ -13584,7 +13589,7 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
   }
  }
 }
-Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST. Uses AzCli
+Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST
  Param (
   [parameter(Mandatory=$true,ParameterSetName="SP_ID")]
   [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]
@@ -14308,14 +14313,20 @@ Function Get-AzureDevices {
 
 # Administrative Unit Management
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
+ [CmdletBinding()]
  Param (
   $Filter,
   $Token
  )
- if ($Token) {
-  (get-AzureGraph -Token $token -GraphRequest "/directory/administrativeUnits$Filter" -Method GET).value
- } else {
-  (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits$Filter" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  if ($authDetails.Method -eq "Token") {
+   get-AzureGraph -Token $authDetails.Token -GraphRequest "/directory/administrativeUnits$Filter" -Method GET
+  } else {
+   (az rest --method GET --uri "https://graph.microsoft.com/v1.0/directory/administrativeUnits$Filter" --header Content-Type=application/json | ConvertFrom-Json).value | Select-Object displayName,id,description,membershipType,membershipRule | Sort-Object DisplayName
+  }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 # Schema Extensions
@@ -16556,33 +16567,32 @@ Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a
   [Parameter(Mandatory)]$UPNorID,
   $Token
  )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
- if ($Token) {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
- }
-
- if (Assert-IsGUID $UPNorID) {
-  $UserGUID = $UPNorID
- } else {
-  if ($Token) {
-   $UserGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'").value.id
+  if (Assert-IsGUID $UPNorID) {
+   $UserGUID = $UPNorID
   } else {
-   $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+   if ($authDetails.Method -eq "Token") {
+    $UserGUID = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" -ErrorAction Stop | Select-Object -ExpandProperty id
+    Write-Verbose "User GUID obtained using Graph API Token Authentication : $UserGUID"
+   } else {
+    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
+    Write-Verbose "User GUID obtained using Azure CLI : $UserGUID"
+   }
   }
- }
 
- if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
+  if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
 
- if ($Token) {
-  $RestResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments"
- } else {
-  $RestResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments" --headers Content-Type=application/json | ConvertFrom-Json
+  if ($authDetails.Method -eq "Token") {
+   $RestResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UserGUID/appRoleAssignments" -ErrorAction Stop
+  } else {
+   $RestResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments" --headers Content-Type=application/json | ConvertFrom-Json
+  }
+  $RestResult
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
- $RestResult
 }
 Function Remove-AzureADUser { # Remove Azure AD User
  Param (
