@@ -16606,6 +16606,23 @@ Function Remove-AzureADUser { # Remove Azure AD User
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function Set-AzureADUserLeaveDateTime {
+ [CmdletBinding()]
+ Param(
+  [Parameter(Mandatory=$true)]$UserPrincipalNameOrId,
+  [Parameter(Mandatory=$true)]$EmployeeLeaveDateTime,
+  $Token
+ )
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+ $GraphRequest = "https://graph.microsoft.com/v1.0/users/$UserPrincipalNameOrId"
+ $Body = @{ employeeLeaveDateTime = $EmployeeLeaveDateTime } | ConvertTo-Json
+ try {
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphRequest -Method PATCH -Body $Body
+  return $Result
+ } catch {
+  Write-Error "Failed to set employeeLeaveDateTime: $($_.Exception.Message)"
+ }
+}
 # Token Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
