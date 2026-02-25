@@ -11069,11 +11069,15 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
    Write-Verbose "Checking RBAC on Scope $Scope"
 
    Write-Verbose "Getting Assignements [Permanent] for scope: $scope"
-   $PermanentRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion$Filter" -ErrorAction Stop).properties
+   $PermanentResults = Get-AzureGraph -Token $AzureToken -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleAssignments?api-version=$APIVersion$Filter" -ErrorAction Stop
+   # Expand properties but keep the assignment ID
+   $PermanentRequestResultWithGUIDS = $PermanentResults | Select-Object -Property @{Name='assignmentId';Expression={$_.id}},@{Name='assignmentName';Expression={$_.name}} -ExpandProperty properties
    if ($PermanentRequestResultWithGUIDS) { $AllPermanentResults += $PermanentRequestResultWithGUIDS }
 
    Write-Verbose "Getting Assignements [Eligible] for scope: $scope"
-   $EligibleRequestResultWithGUIDS = (Get-AzureGraph -Token $AzureToken  -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible$Filter" -ErrorAction Stop).properties
+   $EligibleResults = Get-AzureGraph -Token $AzureToken  -GraphRequest "https://management.azure.com/$scope/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=$APIVersionEligible$Filter" -ErrorAction Stop
+   # Expand properties but keep the assignment ID
+   $EligibleRequestResultWithGUIDS = $EligibleResults | Select-Object -Property @{Name='assignmentId';Expression={$_.id}},@{Name='assignmentName';Expression={$_.name}} -ExpandProperty properties
    if ($EligibleRequestResultWithGUIDS) { $AllEligibleResults += $EligibleRequestResultWithGUIDS }
   } catch {
    Write-Warning "Could not retrieve assignments for scope '$scope'. You may not have sufficient permissions. Error: $_"
@@ -11208,7 +11212,7 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
   if ($ExcludeHigher) { $RequestResult = $RequestResult | Where-Object { $_.ResourceType -notin "managementGroups","subscriptions" } }
 
   if ($Readable) {
-   $RequestResult | Sort-Object Scope,principalName | Select-Object AssignmentType,principalType,principalName,roleDefinitionName,roleDefinitionType,ManagementGroup,SubscriptionName,ResourceGroupName,ResourceName,ResourceType,scope
+   $RequestResult | Sort-Object Scope,principalName | Select-Object AssignmentType,principalType,principalName,roleDefinitionName,roleDefinitionType,ManagementGroup,SubscriptionName,ResourceGroupName,ResourceName,ResourceType,scope,assignmentId
   } else {
    $RequestResult
   }
@@ -11223,7 +11227,7 @@ Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one 
  $CurrentRights = Get-AzureRBACRightsAzCLI -UserPrincipalName $UserPrincipalName
  $CurrentRights | Where-Object Type -eq User | ForEach-Object {
   Progress -Message "Removing permission " -Value "$($_.roleDefinitionName) from user $($UserPrincipalName) from scope $($_.scope)"
-  Remove-AzureADRBACRights -AssignmentID $_.AssignmentID
+  Remove-AzureRBACRights -AssignmentID $_.AssignmentID
  }
  $CurrentRights | Where-Object Type -ne User | ForEach-Object { "User $($UserPrincipalName) has permission to Scope $($_.scope) because of the Principal $($_.PrincipalName)" }
 }
@@ -11358,20 +11362,90 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   }
   }
  }
-Function Remove-AzureADRBACRights { # Remove rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
+Function Remove-AzureRBACRights { # Remove rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
  Param (
-  [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$UserName,
-  [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Role,
+  [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")][GUID]$Id, # Principal ID (User, Group, or Service Principal Object ID)
+  [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Role, # Role name or ID
   [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Scope,
-  [parameter(Mandatory = $true, ParameterSetName="ID")]$AssignmentID,
-  [switch]$ShowProgress
+  [parameter(Mandatory = $true, ParameterSetName="ID")]$AssignmentID, # Full assignment ID or just the GUID
+  [Switch]$ShowProgress,
+  $Token, # Must be Azure Management Token
+  $APIVersion = "2022-04-01"
  )
-  if ($ShowProgress) {Progress -Message "Removing permission from " -Value $AssignmentID}
-  if (! $AssignmentID) {
-   az role assignment delete --assignee $UserName --role $Role --scope $Scope
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  if ($AssignmentID) {
+   # Direct deletion using Assignment ID
+   if ($ShowProgress) { Progress -Message "Removing permission" -Value $AssignmentID }
+
+   # If AssignmentID is a full path, use it directly; otherwise construct the URL
+   if ($AssignmentID -match "^/") {
+    $DeleteUrl = "https://management.azure.com$($AssignmentID)?api-version=$APIVersion"
+   } else {
+    # AssignmentID is just a GUID, need scope to construct full path
+    Throw "When using AssignmentID as GUID only, please provide the full assignment ID path (e.g., /subscriptions/.../providers/Microsoft.Authorization/roleAssignments/{guid})"
+   }
+
+   Write-Verbose "Deleting role assignment: $AssignmentID"
+   Get-AzureGraph -Token $authDetails.Token -GraphRequest $DeleteUrl -Method DELETE -ErrorAction Stop
+   Write-Host -ForegroundColor Green "Successfully removed role assignment: $AssignmentID"
+
   } else {
-   az role assignment delete --ids $AssignmentID
+   # Find the assignment based on Id, Role, and Scope, then delete it
+   if ($ShowProgress) { Progress -Message "Finding role assignment" -Value "$Id on $Scope" }
+
+   Write-Verbose "Searching for role assignment with PrincipalId: $Id, Role: $Role, Scope: $Scope"
+
+   # Resolve Role Definition ID if role name is provided
+   $roleDefId = $null
+   if ($Role -match "^/subscriptions/") {
+    $roleDefId = $Role
+   } else {
+    # Search for role by name
+    $roleSearchUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleDefinitions?`$filter=roleName eq '$Role'&api-version=$APIVersion"
+    $roleResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest $roleSearchUrl -ErrorAction Stop
+    if ($roleResult.Count -eq 0) { Throw "Role '$Role' not found at scope '$Scope'." }
+    if ($roleResult.Count -gt 1) { Throw "Role '$Role' was found multiple times at scope '$Scope'." }
+    $roleDefId = $roleResult[0].id
+   }
+
+   # Find the assignment
+   $Filter = "principalId eq '$Id'"
+   $ListUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleAssignments?`$filter=$Filter&api-version=$APIVersion"
+   $assignments = Get-AzureGraph -Token $authDetails.Token -GraphRequest $ListUrl -ErrorAction Stop
+
+   # Filter by role definition
+   $matchingAssignment = $assignments | Where-Object { $_.properties.roleDefinitionId -eq $roleDefId }
+
+   if (-not $matchingAssignment) {
+    Throw "No role assignment found for Principal '$Id' with Role '$Role' at Scope '$Scope'"
+   }
+
+   if ($matchingAssignment.Count -gt 1) {
+    Write-Warning "Multiple matching assignments found. Deleting all of them."
+   }
+
+   # Delete each matching assignment
+   $matchingAssignment | ForEach-Object {
+    $DeleteUrl = "https://management.azure.com$($_.id)?api-version=$APIVersion"
+    Write-Verbose "Deleting role assignment: $($_.id)"
+    Get-AzureGraph -Token $authDetails.Token -GraphRequest $DeleteUrl -Method DELETE -ErrorAction Stop
+    Write-Host -ForegroundColor Green "Successfully removed role assignment: $($_.properties.roleDefinitionId) for principal $Id"
+   }
   }
+
+  if ($ShowProgress) { ProgressClear }
+
+ } Catch {
+  if ($ShowProgress) { ProgressClear }
+  if ($_.ErrorDetails.Message) {
+   $ErrorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $($ErrorDetails.error.message)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
 }
 # App Registration / Service Principal creation
 Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions from App Registration
@@ -14346,19 +14420,30 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
 }
 # Defender for Cloud (MDC)
 Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AzCli rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
+ [CmdletBinding()]
+ Param (
+  $Token,
+  $Subscription
+ )
+ Try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ If ($Subscription) {
+  $Subscriptions = Get-AzureSubscriptions -Subscription $Subscription -Token $authDetails.Token
+ } else {
+  $Subscriptions = Get-AzureSubscriptions -Token $authDetails.Token
+ }
  $APIVersion = "2024-01-01"
  $GlobalResult = $()
- $Subscriptions = Get-AzureSubscriptions
- #Variable to follow up the columns without having to rebuild the entire object (Otherwise export-csv only export columns depending on the first object created)
+
+ #Variable to follow up the columns without having to rebuild the entire object (Otherwise export-csv only exports columns depending on the first object created)
  $MemberList = $('id','name','SubscriptionName','SubscriptionID','pricingTier','EnabledOn')
  $Subscriptions | ForEach-Object {
   $SubscriptionName = $_.Name
   $SubscriptionID = $_.ID
-  Progress -PrintTime -Message "Checking subscription " -Value "$($_.ID) ($($_.Name))"
+  Progress -PrintTime -Message "Checking subscription " -Value "$($_.subscriptionId) ($($_.Name))"
 
   # Export all information of MDC in current subscription
-  $Result = (az rest --method GET --uri "https://management.azure.com/subscriptions/$SubscriptionID/providers/Microsoft.Security/pricings?api-version=$APIVersion"  `
-   --headers "Content-Type=application/json" | ConvertFrom-Json).Value `
+  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/subscriptions/$($_.subscriptionId)/providers/Microsoft.Security/pricings?api-version=$APIVersion" `
    | Select-Object id,Name,
    @{Name="SubscriptionName";Expression={$SubscriptionName}},
    @{Name="SubscriptionID";Expression={$SubscriptionID}},
@@ -14389,7 +14474,12 @@ Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) co
  # Remove duplicate values
  $MemberList = $MemberList | Select-Object -Unique
  ProgressClear
- $GlobalResult | Select-Object $MemberList | Export-Csv "$iClic_TempPath\MDCConfiguration_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+ $GlobalResult | Select-Object $MemberList
+ # $GlobalResult | Select-Object $MemberList | Export-Csv "$iClic_TempPath\MDCConfiguration_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  Param (
