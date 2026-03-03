@@ -13876,6 +13876,37 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
   az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
  }
 }
+Function Set-AzureServicePrincipalCustomSecurityAttribute { # Set Custom Security Attribute on enterprise app
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory=$true)]$ServicePrincipalID,
+  [Parameter(Mandatory=$true)]$AttributeName,
+  [Parameter(Mandatory=$true)]$AttributeValue,
+  [Parameter(Mandatory=$true)]$AttributeSetName,
+  $Token
+ )
+
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  $graphUrl = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID"
+
+  $payload = @{
+   customSecurityAttributes = @{
+    "$AttributeSetName" = @{
+     "@odata.type" = "#Microsoft.DirectoryServices.CustomSecurityAttributeValue"
+     "$AttributeName" = "$AttributeValue"
+    }
+   }
+  }
+
+  $jsonBody = $payload | ConvertTo-Json -Depth 6
+
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest $graphUrl -Method PATCH -Body $jsonBody -ErrorAction Stop
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
 Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration) - Used to get SAML certificate Expiration
  Param (
   [switch]$PrintOnly,
