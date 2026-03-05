@@ -17191,7 +17191,8 @@ Function Test-MsGraphDelegated { # Function to test MS Graph Delegated Access wi
   Write-Error "Error reading mail: $($_.Exception.Message)"
  }
 }
-# Graph Management
+
+# API Call Management
 Function Get-AzureGraph { # Send base graph request without any requirements
  [CmdletBinding()]
  Param (
@@ -17295,21 +17296,25 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   Write-Error -Message "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
  }
 }
+
 # Conditional Access
-Function Get-AzureConditionalAccessLocations {
+Function Get-AzureConditionalAccessLocations { # Get all conditional Access Policies Locations
+ [CmdletBinding()]
  Param (
-  [Parameter(Mandatory)]$Token
+  $Token
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $header = $authDetails.Header
+  Write-Verbose "Getting all Conditional Access Policies Locations"
+  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations").value | Select-Object `
+  id,displayName,@{name="Location_Type";expression={($'@odata.type' -split('.'))[-1]}},isTrusted,@{name="Country";expression={$_.countriesAndRegions -join(";")}},
+  countryLookupMethod,@{name="IP_Range";expression={$_.iPRanges.cidrAddress -join(";")}}
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
- (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations").value | Select-Object `
- id,displayName,@{name="Location_Type";expression={($'@odata.type' -split('.'))[-1]}},isTrusted,@{name="Country";expression={$_.countriesAndRegions -join(";")}},
- countryLookupMethod,@{name="IP_Range";expression={$_.iPRanges.cidrAddress -join(";")}}
 }
-Function Get-AzureConditionalAccessPolicies {
+Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Policies with details of Users/Groups/Apps and more
  [CmdletBinding()]
  Param (
   $Token,
@@ -17477,6 +17482,7 @@ Function Get-AzureConditionalAccessPolicies {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
 # Log Analytics
 Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
  Param (
@@ -18119,6 +18125,70 @@ Function Get-SentinelAuditInfo {
    $Result
   }
 }
+Function Get-SentinelAppLastLogin {
+ [CmdletBinding()]
+ param (
+  [Parameter(Mandatory = $true)]$App,
+  [Parameter(Mandatory = $true)]$AllUserInfo,
+  [Parameter(Mandatory = $true)]$ParameterToCheck,
+  $Token,
+  $Duration = '30d',
+  $WorkspaceID
+ )
+
+  try {
+
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+  Write-Verbose "Getting WorkspaceID"
+  if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
+  if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
+
+  # Create User Map Table to easily get user type based on UPN from the Azure AD Export
+  $AllUserInfoHash = $AllUserInfo | Group-Object -Property UserPrincipalName -AsHashTable
+
+ # Get Application Logins
+ $AppLogs = get-sentinelAppInfo -App $App -Duration $Duration -ShowOnlySuccess -SimplifiedQuery -Token $authDetails.Token -WorkspaceID $WorkspaceID
+
+ # Merge info
+ $userConnectionSummary = $AppLogs | Group-Object {
+  if ([string]::IsNullOrWhiteSpace($_.UserPrincipalName)) { $_.ServicePrincipalName } else { $_.UserPrincipalName }
+ } | ForEach-Object {
+  # Sort the group by TimeGenerated to ensure we get the most recent login
+  $sortedLogs = $_.Group | Sort-Object TimeGenerated -Descending
+  $latestLog = $sortedLogs[0]
+  $identifier = $_.Name
+
+  # Check if this group is a Service Principal (empty UPN)
+  if ([string]::IsNullOrWhiteSpace($latestLog.UserPrincipalName)) {
+   $displayName = $latestLog.AppDisplayName
+   $userType = 'ServicePrincipal'
+  } else {
+   $displayName = $latestLog.UserDisplayName
+   $userType = $AllUserInfoHash[$identifier].$ParameterToCheck # Get the user type from the Azure AD export based on UPN
+
+   # Catch users who exist in logs but weren't found in the Azure AD export
+   if ([string]::IsNullOrWhiteSpace($userType)) {
+    $userType = 'Unknown'
+   }
+  }
+
+  [PSCustomObject]@{
+   UserDisplayName   = $displayName
+   UserPrincipalName = $identifier
+   ConnectionCount   = $_.Count
+   LastLogin         = $latestLog.TimeGenerated
+   UserType          = $userType
+  }
+ } | Sort-Object ConnectionCount -Descending
+
+ $userConnectionSummary
+
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+
 # Misc
 Function Get-AzureADUserOwnedDevice {
  Param (
