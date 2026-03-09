@@ -16573,15 +16573,13 @@ Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates
   [Parameter(Mandatory)][GUID]$DeviceObjectID,
   [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
   [Parameter(Mandatory)]$Value,
-  [Parameter(Mandatory)]$Token,
+  $Token,
   [Switch]$ShowResult
  )
   Try {
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
    if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $header = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = "application/json"
-   }
+   $header = $authDetails.Header
 
    $params = @{
     "extensionAttributes" = @{
@@ -16603,7 +16601,7 @@ Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates
    $StatusMessageJson = $Exception.ErrorDetails.message
    if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
    if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error $($Error[0].TargetObject)" ; $StatusMessage = $($Error[0])}
-   Write-host -ForegroundColor Red "Error setting extension attribute $ExtensionAttributeNumber for Device $DeviceObjectID ($StatusCode | $StatusMessage))"
+   Write-host -ForegroundColor Red -Object "Error setting extension attribute $ExtensionAttributeNumber for Device $DeviceObjectID ($StatusCode | $StatusMessage))"
   }
 }
 Function Get-AzureADRiskyUsers { # Can only get 500 users at the time
