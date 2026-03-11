@@ -80,7 +80,7 @@ if ( ($host.Name -match 'consolehost') ) {
 }
 
 if ($env:LOCALAPPDATA) {
- $iClic_TempPath = "$($env:LOCALAPPDATA)\iClic\"
+ $iClic_TempPath = "$($env:USERPROFILE)\iClic\"
 } else {
  $iClic_TempPath = "C:\Temp\"
 }
@@ -17564,6 +17564,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [Parameter(Mandatory = $true)]$User,
   [switch]$ConditionalAccessShowOnlySuccess,
   [switch]$ShowOnlySuccess,
+  [switch]$ShowOnlyFailures,
   [switch]$ShowOnlyInteractive,
   [switch]$ConditionalAccessIgnoreNotApplied,
   [switch]$SimplifiedQuery,
@@ -17644,6 +17645,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($ConditionalAccessIgnoreNotApplied) { $QueryStart += '| where ConditionalAccessStatus != "notApplied"' }
   if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature == "SUCCESS"' }
   if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
+  if ($ShowOnlyFailures) { $QueryStart += '| where ResultSignature == "FAILURE"' }
 
   # Add Unified Values
   $QueryStart += '| extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
