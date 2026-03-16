@@ -12667,7 +12667,7 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
   write-host -foregroundcolor "Red" -Object "Error getting secret from $AppRegistrationID$AppRegistrationName$AppRegistrationObjectID : $($Error[0])"
  }
 }
-Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Token)
+Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
  [CmdletBinding(DefaultParameterSetName = 'AppRegistrationID')]
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
@@ -12679,28 +12679,16 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
   $Token
  )
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if ($authDetails.Method -eq "Token") {
-   $header = $authDetails.Header
-   if ($AppRegistrationName) {
-    $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $authDetails.Token
-   } else {
-    $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $authDetails.Token
-   }
-   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $authDetails.Token) -gt 1) {
-    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
-    if (! $Force) { return }
-   }
-  } else { # If not using Token
-   if ($AppRegistrationName) {
-    $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName
-   } else {
-    $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID
-   }
-   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count) -gt 1) {
-    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
-    if (! $Force) { return }
-   }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $header = $authDetails.Header
+  if ($AppRegistrationName) {
+   $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $authDetails.Token
+  } else {
+   $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $authDetails.Token
+  }
+  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $authDetails.Token) -gt 1) {
+   write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $AppRegistrationName ($AppRegistrationID), remove existing keys to have maximum 1 before renewing"
+   if (! $Force) { return }
   }
 
   # Parameters
@@ -12709,20 +12697,14 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
 
   $GraphURL = "https://graph.microsoft.com/v1.0/applications/$AppObjectId/addPassword"
 
-  if ($authDetails.Method -eq "Token") {
-   $params = @{
-    passwordCredential = @{
-     "displayName" = $SecretDescription
-     "endDateTime" = Format-Date($((Get-Date).AddMonths($AppMonths)))
-    }
+  $params = @{
+   passwordCredential = @{
+    "displayName" = $SecretDescription
+    "endDateTime" = Format-Date($((Get-Date).AddMonths($AppMonths)))
    }
-   $ParamJson = $params | ConvertTo-Json
-   $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
-  } else {
-   $body = '"{\"passwordCredential\": {\"displayName\": \"' + $SecretDescription + '\",\"endDateTime\": \"' + $((Get-Date).AddMonths($AppMonths)) + '\"}}"'
-   $ResultJson = az rest --method POST --uri $GraphURL --headers "Content-Type=application/json" --body $body
-   $Result = $ResultJson | ConvertFrom-Json
   }
+  $ParamJson = $params | ConvertTo-Json
+  $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
 
   $Result | Add-Member -Name ApplicationID -Value $AppInfo.AppID -MemberType NoteProperty
   $Result | Add-Member -Name ApplicationObjectID -Value $AppObjectId -MemberType NoteProperty
@@ -12733,7 +12715,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (uses AzCli or Tok
 
   # Remove uneeded data
   $Result = $Result | Select-Object -ExcludeProperty customKeyIdentifier,'@odata.context',hint,keyId -Property TenantID,ApplicationDisplayName,
-   ApplicationID,ApplicationObjectID,secretText, @{Name="Secret_Start_Date";Expression={$_.startDateTime}}, @{Name="Secret_End_Date";Expression={$_.endDateTime}}
+   ApplicationID,ApplicationObjectID,@{Name="Secret";Expression={$_.secretText}}, @{Name="Secret_Start_Date";Expression={$_.startDateTime}}, @{Name="Secret_End_Date";Expression={$_.endDateTime}}
   if ( ! $ShowObjectID) { $Result = $Result | Select-Object -ExcludeProperty ApplicationObjectID }
 
   # Print Result
@@ -16086,13 +16068,30 @@ Function Add-AzureADGroupMember { # Add  Azure Ad Group Member (TokenOnly)
   }
 
  } catch {
-  $Exception = $($Error[0])
-  $StatusCodeJson = $Exception.ErrorDetails.message
-  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+  $Exception = $_
+  $StatusCode = "Catch Error"
+  $StatusMessage = $Exception.Exception.Message
+  $RequestId = $null
+
   $StatusMessageJson = $Exception.ErrorDetails.message
-  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error adding user $Member in group $Group ($StatusCode | $StatusMessage))"
+  if ($StatusMessageJson) {
+   try {
+    $GraphError = $StatusMessageJson | ConvertFrom-json -ErrorAction Stop
+    if ($GraphError.error.code) { $StatusCode = $GraphError.error.code }
+    if ($GraphError.error.message) { $StatusMessage = $GraphError.error.message }
+    if ($GraphError.error.innerError.'request-id') { $RequestId = $GraphError.error.innerError.'request-id' }
+   } catch {
+    # Some errors are plain text and not JSON.
+    $StatusMessage = $StatusMessageJson
+   }
+  }
+
+  if (! $StatusMessage) { $StatusMessage = $Exception.ToString() }
+  if ($RequestId) {
+   Write-host -ForegroundColor Red "Error adding user $Member in group $Group ($StatusCode | $StatusMessage | RequestId: $RequestId)"
+  } else {
+   Write-host -ForegroundColor Red "Error adding user $Member in group $Group ($StatusCode | $StatusMessage)"
+  }
   # Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
@@ -17188,6 +17187,98 @@ Function Test-MsGraphDelegated { # Function to test MS Graph Delegated Access wi
  } catch {
   Write-Error "Error reading mail: $($_.Exception.Message)"
  }
+}
+
+# App Registration Secret Renewal
+Function New-EmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body.
+ param (
+  [string]$TenantID,
+  [string]$ApplicationDisplayName,
+  [string]$ApplicationID,
+  [string]$secret,
+  [datetime]$Secret_Start_Date,
+  [datetime]$Secret_End_Date,
+  $Result
+ )
+
+ if ($Result) {
+  $TenantID = $Result.TenantID
+  $ApplicationDisplayName = $Result.ApplicationDisplayName
+  $ApplicationID = $Result.ApplicationID
+  $secret = $Result.secret
+  $Secret_Start_Date = $Result.Secret_Start_Date
+  $Secret_End_Date = $Result.Secret_End_Date
+ }
+
+ $result = [ordered]@{
+  "Tenant ID" = $TenantID
+  "Application Name" = $ApplicationDisplayName
+  "Application ID" = $ApplicationID
+  "Secret" = $secret
+  "Secret Start Date" = $Secret_Start_Date
+  "Secret End Date" = $Secret_End_Date
+ }
+
+# Create Base CSS
+$Header = @"
+<style>
+ table { border-collapse: collapse; width: 60%; font-family: Arial, sans-serif; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; width: 30%; }
+ td { border: 1px solid #dddddd; padding: 8px; }
+ tr:nth-child(even) { background-color: #f2f2f2; }
+</style>
+"@
+
+# Build vertical table HTML (Property | Value)
+$TableHtml = "<table>"
+$TableHtml += "<tr><th>Property</th><th>Value</th></tr>"
+foreach ($key in $result.Keys) {
+ $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($key) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($result[$key]) )</td></tr>"
+}
+$TableHtml += "</table>"
+
+# 3. Build the full HTML Body
+$FullBody = @"
+<html>
+ <head>$Header</head>
+ <body>
+  <p>Hello,</p>
+  <p>The following application secret has been generated/rotated:</p>
+  $TableHtml
+  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
+ </body>
+</html>
+"@
+
+ return $FullBody
+}
+Function Send-EncryptedEmail { # Will send an encrypted email using Outlook COM object (Encrypt-Only). Requires Outlook to be installed and configured on the machine running the script.
+ param (
+  [Parameter(Mandatory)][string]$Recipient,
+  [Parameter(Mandatory)][string]$Subject,
+  [Parameter(Mandatory)][string]$Body,
+  $SentOnBehalfOfName,
+  [switch]$SendNow
+ )
+ $Outlook = New-Object -ComObject Outlook.Application
+ $Mail = $Outlook.CreateItem(0)
+
+ # Send from a M365 Group Mailbox
+ if ($SentOnBehalfOfName) {
+  $Mail.SentOnBehalfOfName = $SentOnBehalfOfName
+ }
+
+ # 2. Basic Metadata
+ $Mail.To = $Recipient
+ $Mail.Subject = $Subject
+ $Mail.HTMLBody = $Body
+
+ # 3. Apply Encryption (Encrypt-Only)
+ $Mail.Permission = 3
+
+ $Mail.Display()
+
+ if ($SendNow) { $Mail.Send() }
 }
 
 # API Call Management
