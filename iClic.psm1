@@ -5080,7 +5080,7 @@ Function Get-WSUSUpdatesWaitingForApproval { # List all updates waiting for appr
 }
 
 # DNSManagement
-Function CheckDNS {
+Function Test-DNS { # Check DNS resolution and reverse for a server or IP
 Param (
  $Server=$($env:computername)
 )
@@ -5104,7 +5104,7 @@ try { $IP=[IPAddress]$Server } catch { Write-Error "Nothing here" }
   New-Object PSObject -Property @{"Name (Ping)"=$Server;"IPAddress (Ping)"=$Error[0];"Reverse"=$Error[0]}
  }
 }
-Function CheckVLAN {
+Function Test-VLAN { # Check if a Gateway is responding to ping and if reverse zone is defined on DNS
  Param (
   $GatewayIP
  )
@@ -9428,7 +9428,6 @@ Function Get-VPNInfoFromUser {
  Get-EventLogNPSDetailed -ServerName $VPNServerName -StartTime $(Get-Date).addDays(-$NumberOfDay)  | Where-Object UPN -eq $UPN
 }
 
-# Azure
 #Azure Connection
 Function Connect-AzureCli {
  Param (
@@ -9456,69 +9455,246 @@ Function Open-MgGraphConnection {
   }
  }
 }
-Function Get-AuthMethod { # Used to replace in all scripts a standard method check to see if Az CLI / Global Token / Token variable
- <#
- .SYNOPSIS
-  Determines and validates the correct authentication method based on a prioritized order.
- .DESCRIPTION
-  This function checks for a passed token, a global token, and the Az CLI.
-  If a token is found, it is validated using Assert-IsTokenLifetimeValid.
-  It returns an object with the determined method and the associated token.
- #>
+
+# Get Azure Resource Data using Azure Resource Graph API with KQL Queries
+Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups
+  [CmdletBinding()]
+ Param (
+  $Token,
+  $APIVersion = "2024-04-01"
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # $baseQuery = "ResourceContainers | where type == 'microsoft.management/managementgroups'"
+  $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions'" # Get All subscriptions better to find details on Management Group
+
+  # 2. Get Total Count First
+  # We run a lightweight query just to get the number of records.
+  $countQuery = "$baseQuery | count"
+
+  $bodyHashtable = @{
+   query = $countQuery
+   options = @{ resultFormat = "objectArray" }
+  }
+  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+  Write-Verbose "Checking total count..."
+  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+  # Extract the integer from the response (usually { "count": 123 })
+  if ($countResponse.data) {
+   # Access dynamically because property name is usually 'count_' or 'count'
+   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
+  } else {
+   $TotalRecords = 0
+  }
+
+  Write-Verbose "Total Resources found: $TotalRecords"
+
+  if ($TotalRecords -eq 0) {
+   Throw "$Name not found"
+  }
+
+  # 3. Fetch Data
+  $GlobalResult = @()
+  $PageSize = 1000
+
+  # OPTIMIZATION: If data fits in one page, don't use the complex loop
+  if ($TotalRecords -le $PageSize) {
+   Write-Verbose "Fetching all $TotalRecords records in a single call..."
+
+   $query = "$baseQuery | order by id asc | take $PageSize"
+
+   $bodyHashtable = @{
+    query = $query
+    options = @{ resultFormat = "objectArray" }
+   }
+   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+   if ($response.data) { $GlobalResult += $response.data }
+
+  } else {
+   # PAGINATION LOOP: Use strcmp for > 1000 items
+   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
+
+   $LastId = $null
+   $loopCount = 0
+
+   do {
+    $currentQuery = $baseQuery
+
+    # Keyset Filter
+    if (-not [string]::IsNullOrEmpty($LastId)) {
+     $currentQuery += " | where strcmp(id, '$LastId') > 0"
+    }
+
+    $currentQuery += " | order by id asc | take $PageSize"
+
+    $bodyHashtable = @{
+     query = $currentQuery
+     options = @{ resultFormat = "objectArray" }
+    }
+    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+    # Retry logic or simple execute
+    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+    if ($response.data) {
+     $count = $response.data.Count
+     $GlobalResult += $response.data
+     $LastId = $response.data[-1].id
+     $loopCount++
+
+     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
+    } else {
+     $count = 0
+    }
+
+   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
+  }
+
+  # 4. Final Validation
+  if ($GlobalResult.Count -ne $TotalRecords) {
+   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
+  }
+
+  $GlobalResult | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
+Function Get-AzureSubscriptions { # Get Azure Subscriptions using API with KQL
  [CmdletBinding()]
  Param (
-  [Parameter(Mandatory)][System.Collections.IDictionary]$BoundParameters,
-  $PassedToken,
-  [Switch]$TokenOnly # Used to force Token Only
+  [String]$Subscription,
+  $Token,
+  $APIVersion = "2024-04-01",
+  [switch]$Exact
  )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
- # This variable will hold the token we find
- $foundToken = $null
+  # Check Requested Value
+  if (Assert-IsGUID -Value $Subscription) { $ValueToSearch = "subscriptionId" } else { $ValueToSearch = "name" }
+  if ($Exact) { $ComparisonValue = "=~" } else {$ComparisonValue = "contains"}
 
- # Priority 1: Check if -Token parameter was explicitly used.
- if ($BoundParameters.ContainsKey('Token')) {
-   Write-Verbose "Auth Method: Found token provided via parameter."
-   $foundToken = $PassedToken
-  } elseif ($global:token) { # Priority 2: Check if a global token variable exists.
-   Write-Verbose "Auth Method: Found token in `$global:token."
-   $foundToken = $global:token
+  # 1. Base Query Construction
+  if ($Subscription) {
+   $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions' | where $ValueToSearch $ComparisonValue '$Subscription'"
+  } else {
+   $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions'"
   }
 
- # If a token was found, validate it and construct the return object
- if ($null -ne $foundToken) {
-  # VALIDATE THE TOKEN
-  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
-  Write-Verbose "Token lifetime is valid."
+  Write-Verbose "Using Base Query $baseQuery"
 
-  # Assumes your token object has .token_type and .access_token properties
-  $apiHeader = @{
-   'Authorization' = "$($foundToken.token_type) $($foundToken.access_token)"
-   'Content-type'  = 'application/json'
+# 2. Get Total Count First
+  # We run a lightweight query just to get the number of records.
+  $countQuery = "$baseQuery | count"
+
+  $bodyHashtable = @{
+   query = $countQuery
+   options = @{ resultFormat = "objectArray" }
+  }
+  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body -ErrorAction Stop
+
+  # Extract the integer from the response (usually { "count": 123 })
+  if ($countResponse.data) {
+   # Access dynamically because property name is usually 'count_' or 'count'
+   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
+  } else {
+   $TotalRecords = 0
   }
 
-  # Return a custom object
-  return [PSCustomObject]@{
-   Method = 'Token'
-   Token  = $foundToken
-   Header = $apiHeader # create a base Header Property as it is often used
-  }
+  Write-Verbose "Total Resources found: $TotalRecords"
 
- }
+  if ($TotalRecords -eq 0) { Throw "$Subscription not found" }
 
- if ($TokenOnly) {
-  # The switch was used, so we must fail immediately.
-  Throw "The -TokenOnly switch was specified, but no token was provided (via parameter or `$global:token)."
- } else {  # Priority 3: Fallback to Az CLI (no token to validate here).
-  Write-Verbose "Auth Method: No token found, attempting to use Az CLI."
-  if (Get-Command az -ErrorAction SilentlyContinue) {
-   return [PSCustomObject]@{ # Keep the object shape consistent
-    Method = 'AzCLI'
-    Token  = $null
-    Header = $null
+  # 3. Fetch Data
+  $GlobalResult = @()
+  $PageSize = 1000
+
+  # OPTIMIZATION: If data fits in one page, don't use the complex loop
+  if ($TotalRecords -le $PageSize) {
+   Write-Verbose "Fetching all $TotalRecords records in a single call..."
+
+   $query = "$baseQuery | order by id asc | take $PageSize"
+
+   $bodyHashtable = @{
+    query = $query
+    options = @{ resultFormat = "objectArray" }
    }
+   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+   if ($response.data) { $GlobalResult += $response.data }
+
+  } else {
+   # PAGINATION LOOP: Use strcmp for > 1000 items
+   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
+
+   $LastId = $null
+   $loopCount = 0
+
+   do {
+    $currentQuery = $baseQuery
+
+    # Keyset Filter
+    if (-not [string]::IsNullOrEmpty($LastId)) {
+     $currentQuery += " | where strcmp(id, '$LastId') > 0"
+    }
+
+    $currentQuery += " | order by id asc | take $PageSize"
+
+    $bodyHashtable = @{
+     query = $currentQuery
+     options = @{ resultFormat = "objectArray" }
+    }
+    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+
+    # Retry logic or simple execute
+    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
+
+    if ($response.data) {
+     $count = $response.data.Count
+     $GlobalResult += $response.data
+     $LastId = $response.data[-1].id
+     $loopCount++
+
+     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
+    } else {
+     $count = 0
+    }
+
+   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
   }
-  else {
-   Throw "Authentication failed: A token was not provided or was invalid, and the Az CLI is not available."
+
+  # 4. Final Validation
+  if ($GlobalResult.Count -ne $TotalRecords) {
+   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
+  }
+
+  $GlobalResult | Select-Object -ExpandProperty properties -ExcludeProperty properties | Sort-Object name
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
   }
  }
 }
@@ -9795,121 +9971,34 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
   Write-Error "Script Error: $_"
  }
 }
-Function Get-AzureSubscriptions { # Get Azure Subscriptions using API with KQL
+Function New-AzureResourceGroup { # Create new Azure Resource Group user API
  [CmdletBinding()]
  Param (
-  [String]$Subscription,
+  [Parameter(Mandatory)][String]$ResourceGroupName,
+  [Parameter(Mandatory)]$Subscription,
+  [Parameter(Mandatory)]$Location,
+  $Tags, # Format of Tags : @{ "Environment" = "Production" ; "CostCenter"  = "12345" ; "ManagedBy"   = "PowerShell" }
   $Token,
-  $APIVersion = "2024-04-01",
-  [switch]$Exact
+  $APIVersion = "2025-04-01"
  )
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
-  # Check Requested Value
-  if (Assert-IsGUID -Value $Subscription) { $ValueToSearch = "subscriptionId" } else { $ValueToSearch = "name" }
-  if ($Exact) { $ComparisonValue = "=~" } else {$ComparisonValue = "contains"}
-
-  # 1. Base Query Construction
-  if ($Subscription) {
-   $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions' | where $ValueToSearch $ComparisonValue '$Subscription'"
-  } else {
-   $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions'"
+  # Build Body
+  $BodyParams = @{
+  "location" = $Location
+  "tags"     = $Tags
   }
+ $JsonBody = $BodyParams | ConvertTo-Json -Depth 15
 
-  Write-Verbose "Using Base Query $baseQuery"
+ Write-Verbose "Using Body $JsonBody"
 
-# 2. Get Total Count First
-  # We run a lightweight query just to get the number of records.
-  $countQuery = "$baseQuery | count"
+[guid]$SubscriptionID = (Get-AzureSubscriptions -Subscription $Subscription -Token $authDetails.Token).SubscriptionID
+if (! $SubscriptionID) { Throw "Subscription $Subscription does not exist"}
 
-  $bodyHashtable = @{
-   query = $countQuery
-   options = @{ resultFormat = "objectArray" }
-  }
-  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
+Get-AzureGraph -Token $authDetails.Token -Method "PUT" -Body $JsonBody -GraphRequest "https://management.azure.com/subscriptions/$SubscriptionID/resourcegroups/$ResourceGroupName`?api-version=$APIVersion" -ErrorAction Stop
 
-  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body -ErrorAction Stop
-
-  # Extract the integer from the response (usually { "count": 123 })
-  if ($countResponse.data) {
-   # Access dynamically because property name is usually 'count_' or 'count'
-   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
-  } else {
-   $TotalRecords = 0
-  }
-
-  Write-Verbose "Total Resources found: $TotalRecords"
-
-  if ($TotalRecords -eq 0) { Throw "$Subscription not found" }
-
-  # 3. Fetch Data
-  $GlobalResult = @()
-  $PageSize = 1000
-
-  # OPTIMIZATION: If data fits in one page, don't use the complex loop
-  if ($TotalRecords -le $PageSize) {
-   Write-Verbose "Fetching all $TotalRecords records in a single call..."
-
-   $query = "$baseQuery | order by id asc | take $PageSize"
-
-   $bodyHashtable = @{
-    query = $query
-    options = @{ resultFormat = "objectArray" }
-   }
-   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
-
-   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
-
-   if ($response.data) { $GlobalResult += $response.data }
-
-  } else {
-   # PAGINATION LOOP: Use strcmp for > 1000 items
-   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
-
-   $LastId = $null
-   $loopCount = 0
-
-   do {
-    $currentQuery = $baseQuery
-
-    # Keyset Filter
-    if (-not [string]::IsNullOrEmpty($LastId)) {
-     $currentQuery += " | where strcmp(id, '$LastId') > 0"
-    }
-
-    $currentQuery += " | order by id asc | take $PageSize"
-
-    $bodyHashtable = @{
-     query = $currentQuery
-     options = @{ resultFormat = "objectArray" }
-    }
-    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
-
-    # Retry logic or simple execute
-    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
-
-    if ($response.data) {
-     $count = $response.data.Count
-     $GlobalResult += $response.data
-     $LastId = $response.data[-1].id
-     $loopCount++
-
-     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
-    } else {
-     $count = 0
-    }
-
-   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
-  }
-
-  # 4. Final Validation
-  if ($GlobalResult.Count -ne $TotalRecords) {
-   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
-  }
-
-  $GlobalResult | Select-Object -ExpandProperty properties -ExcludeProperty properties | Sort-Object name
- } catch {
+ } Catch {
   $Exception = $($Error[0])
   if ($Exception.ErrorDetails.message) {
    $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
@@ -9920,6 +10009,8 @@ Function Get-AzureSubscriptions { # Get Azure Subscriptions using API with KQL
   }
  }
 }
+
+# Get Azure Resource Data user Azure CLI (Legacy)
 Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
 [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
@@ -9982,169 +10073,17 @@ Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot
   }
  }
 }
-Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups
-  [CmdletBinding()]
- Param (
-  $Token,
-  $APIVersion = "2024-04-01"
- )
- try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-
-  # $baseQuery = "ResourceContainers | where type == 'microsoft.management/managementgroups'"
-  $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions'" # Get All subscriptions better to find details on Management Group
-
-  # 2. Get Total Count First
-  # We run a lightweight query just to get the number of records.
-  $countQuery = "$baseQuery | count"
-
-  $bodyHashtable = @{
-   query = $countQuery
-   options = @{ resultFormat = "objectArray" }
-  }
-  $Body = $bodyHashtable | ConvertTo-Json -Depth 5
-
-  Write-Verbose "Checking total count..."
-  $countResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
-
-  # Extract the integer from the response (usually { "count": 123 })
-  if ($countResponse.data) {
-   # Access dynamically because property name is usually 'count_' or 'count'
-   $TotalRecords = $countResponse.data[0].PSObject.Properties.Value
-  } else {
-   $TotalRecords = 0
-  }
-
-  Write-Verbose "Total Resources found: $TotalRecords"
-
-  if ($TotalRecords -eq 0) {
-   Throw "$Name not found"
-  }
-
-  # 3. Fetch Data
-  $GlobalResult = @()
-  $PageSize = 1000
-
-  # OPTIMIZATION: If data fits in one page, don't use the complex loop
-  if ($TotalRecords -le $PageSize) {
-   Write-Verbose "Fetching all $TotalRecords records in a single call..."
-
-   $query = "$baseQuery | order by id asc | take $PageSize"
-
-   $bodyHashtable = @{
-    query = $query
-    options = @{ resultFormat = "objectArray" }
-   }
-   $Body = $bodyHashtable | ConvertTo-Json -Depth 5
-
-   $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
-
-   if ($response.data) { $GlobalResult += $response.data }
-
-  } else {
-   # PAGINATION LOOP: Use strcmp for > 1000 items
-   Write-Verbose "Large dataset detected ($TotalRecords). Starting pagination..."
-
-   $LastId = $null
-   $loopCount = 0
-
-   do {
-    $currentQuery = $baseQuery
-
-    # Keyset Filter
-    if (-not [string]::IsNullOrEmpty($LastId)) {
-     $currentQuery += " | where strcmp(id, '$LastId') > 0"
-    }
-
-    $currentQuery += " | order by id asc | take $PageSize"
-
-    $bodyHashtable = @{
-     query = $currentQuery
-     options = @{ resultFormat = "objectArray" }
-    }
-    $Body = $bodyHashtable | ConvertTo-Json -Depth 5
-
-    # Retry logic or simple execute
-    $response = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion" -Method POST -Body $Body
-
-    if ($response.data) {
-     $count = $response.data.Count
-     $GlobalResult += $response.data
-     $LastId = $response.data[-1].id
-     $loopCount++
-
-     Write-Verbose "Page $loopCount : Fetched $count rows... (Total: $($GlobalResult.Count) / $TotalRecords)"
-    } else {
-     $count = 0
-    }
-
-   } while ($count -eq $PageSize -and $GlobalResult.Count -lt $TotalRecords)
-  }
-
-  # 4. Final Validation
-  if ($GlobalResult.Count -ne $TotalRecords) {
-   Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
-  }
-
-  $GlobalResult | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
- } catch {
-  $Exception = $($Error[0])
-  if ($Exception.ErrorDetails.message) {
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
-  } else {
-   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
-  }
- }
-}
 Function Get-AzureManagementGroups_AzCLI { # Get all subscription and associated Management Groups Using AzCli
  $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
  (az graph query -q $Query -o json --first 200 | ConvertFrom-Json).data | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
 }
-Function New-AzureResourceGroup { # Create new Azure Resource Group user API
- [CmdletBinding()]
- Param (
-  [Parameter(Mandatory)][String]$ResourceGroupName,
-  [Parameter(Mandatory)]$Subscription,
-  [Parameter(Mandatory)]$Location,
-  $Tags, # Format of Tags : @{ "Environment" = "Production" ; "CostCenter"  = "12345" ; "ManagedBy"   = "PowerShell" }
-  $Token,
-  $APIVersion = "2025-04-01"
- )
- try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
-  # Build Body
-  $BodyParams = @{
-  "location" = $Location
-  "tags"     = $Tags
-  }
- $JsonBody = $BodyParams | ConvertTo-Json -Depth 15
-
- Write-Verbose "Using Body $JsonBody"
-
-[guid]$SubscriptionID = (Get-AzureSubscriptions -Subscription $Subscription -Token $authDetails.Token).SubscriptionID
-if (! $SubscriptionID) { Throw "Subscription $Subscription does not exist"}
-
-Get-AzureGraph -Token $authDetails.Token -Method "PUT" -Body $JsonBody -GraphRequest "https://management.azure.com/subscriptions/$SubscriptionID/resourcegroups/$ResourceGroupName`?api-version=$APIVersion" -ErrorAction Stop
-
- } Catch {
-  $Exception = $($Error[0])
-  if ($Exception.ErrorDetails.message) {
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
-  } else {
-   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
-  }
- }
-}
 # AzCli Env Management
 Function Get-AzureCliEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
+
 # Global Extracts
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptionsAZCLI | foreach-object {
@@ -10655,6 +10594,7 @@ Function Get-AzureApplicationGateway { # Check all Azure Application Gateway
    | Select-Object -ExcludeProperty properties *,@{Name="Listeners";Expression={($_.properties.httpListeners.properties.hostName + $_.properties.httpListeners.properties.hostNames) -join ";"}}
  }
 }
+
 # Convert Methods
 Function Convert-Tag { # Convert Tags to a usable value
  Param (
@@ -10772,6 +10712,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret+=[pscustomobject]@{Cert=$TLSCERT;Key=$TLSKEY}
  $Secret
 }
+
 # User Rights Management
 Function Get-AzureRBACRightsAzCLI { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
  [CmdletBinding(DefaultParameterSetName='ShowAll')]
@@ -12990,6 +12931,144 @@ Function Remove-AzureAppRegistration { # Remove Azure App Registration | Service
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function New-AppRegistrationEmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body.
+ param (
+  [string]$TenantID,
+  [string]$ApplicationDisplayName,
+  [string]$ApplicationID,
+  [string]$secret,
+  [datetime]$Secret_Start_Date,
+  [datetime]$Secret_End_Date,
+  $Result
+ )
+
+ if ($Result) {
+  $TenantID = $Result.TenantID
+  $ApplicationDisplayName = $Result.ApplicationDisplayName
+  $ApplicationID = $Result.ApplicationID
+  $secret = $Result.secret
+  $Secret_Start_Date = $Result.Secret_Start_Date
+  $Secret_End_Date = $Result.Secret_End_Date
+ }
+
+ $result = [ordered]@{
+  "Tenant ID" = $TenantID
+  "Application Name" = $ApplicationDisplayName
+  "Application ID" = $ApplicationID
+  "Secret" = $secret
+  "Secret Start Date" = $Secret_Start_Date
+  "Secret End Date" = $Secret_End_Date
+ }
+
+# Create Base CSS
+$Header = @"
+<style>
+ table { border-collapse: collapse; width: 60%; font-family: Arial, sans-serif; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; width: 30%; }
+ td { border: 1px solid #dddddd; padding: 8px; }
+ tr:nth-child(even) { background-color: #f2f2f2; }
+</style>
+"@
+
+# Build vertical table HTML (Property | Value)
+$TableHtml = "<table>"
+$TableHtml += "<tr><th>Property</th><th>Value</th></tr>"
+foreach ($key in $result.Keys) {
+ $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($key) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($result[$key]) )</td></tr>"
+}
+$TableHtml += "</table>"
+
+# 3. Build the full HTML Body
+$FullBody = @"
+<html>
+ <head>$Header</head>
+ <body>
+  <p>Hello,</p>
+  <p>The following application secret has been generated/rotated:</p>
+  $TableHtml
+  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
+ </body>
+</html>
+"@
+
+ return $FullBody
+}
+Function New-UserEmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body. It supports both single user and multiple users (in case of bulk creation) by accepting either individual parameters or a result object containing an array of users.
+ param (
+  [string]$DisplayName,
+  [string]$UserPrincipalName,
+  [string]$Secret,
+  [string]$Owner,
+  [string]$ID,
+  $Result
+ )
+
+ $UserRows = @()
+
+ if ($Result) {
+  # Support a single object, an array of objects, or a Graph-style object containing a .value array.
+  $ResultItems = if ($Result.PSObject.Properties.Name -contains 'value' -and $Result.value) { @($Result.value) } else { @($Result) }
+
+  foreach ($Item in $ResultItems) {
+   $UserRows += [pscustomobject]@{
+    DisplayName = $Item.DisplayName
+    UserPrincipalName = $Item.UserPrincipalName
+    Password = $Item.Password
+    Owner = $Item.Owner
+    ID = $Item.ID
+   }
+  }
+ } else {
+  $UserRows += [pscustomobject]@{
+   DisplayName = $DisplayName
+   UserPrincipalName = $UserPrincipalName
+   Password = $Secret
+   Owner = $Owner
+   ID = $ID
+  }
+ }
+
+ # Create Base CSS
+ $Header = @"
+<style>
+ table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
+ td { border: 1px solid #dddddd; padding: 8px; }
+ tr:nth-child(even) { background-color: #f2f2f2; }
+</style>
+"@
+
+ # Build horizontal table HTML (1 row per user)
+ $TableHtml = "<table>"
+ $TableHtml += "<tr><th>Display Name</th><th>User Principal Name</th><th>Password</th><th>Owner</th><th>ID</th></tr>"
+ foreach ($User in $UserRows) {
+  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($User.DisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.UserPrincipalName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Password) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Owner) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.ID) )</td></tr>"
+ }
+ $TableHtml += "</table>"
+
+ $UserCount = $UserRows.Count
+ if ($UserCount -eq 1) {
+  $CreatedMessage = "The following user has been created:"
+ } else {
+  $CreatedMessage = "The following $UserCount users have been created:"
+ }
+
+ # Build the full HTML Body
+ $FullBody = @"
+<html>
+ <head>$Header</head>
+ <body>
+  <p>Hello,</p>
+  <p>$CreatedMessage</p>
+  $TableHtml
+  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
+ </body>
+</html>
+"@
+
+ return $FullBody
+}
+
 # Service Principal (Enterprise Applications) [Only]
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AzCli AzAD Cmdlet are 5 times slower than AzRest
  Param (
@@ -13581,7 +13660,7 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $header = $authDetails.Header
+  # $header = $authDetails.Header
 
   # Get Required values to get a full object
   if (!$principalId) {$CheckedValue = $principalName ; $principalId = (Get-AzureServicePrincipal -Token $authDetails.Token -DisplayName $principalName -ErrorAction Stop).ID}
@@ -13589,7 +13668,12 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
 
   ########## APPLICATION ROLES ##########
   # Get all App Roles [ Application ]
-  $ResultAppRole = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments").value
+  # $ResultAppRole = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments").value
+  $ResultAppRole = Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" -Token $authDetails.Token
+  # $ResultAppRole | ForEach-Object {
+  #  $_ | Add-Member -MemberType NoteProperty -Name "principalDisplayName" -Value "$principalName"
+  #  $_ | Add-Member -MemberType NoteProperty -Name "principalType" -Value "ServicePrincipal"
+  # }
   # Add a column for PermissionType
   $ResultAppRole | ForEach-Object { $_ | Add-Member -MemberType NoteProperty -Name PermissionType -Value "Application" }
   $ResultAppRole | ForEach-Object {
@@ -13601,7 +13685,8 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
 
   ########## DELEGATED ROLES ##########
   # Get all App Roles [ Delegated ]
-  $ResultPermissionGrantTMP = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants").value
+  # $ResultPermissionGrantTMP = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants").value
+  $ResultPermissionGrantTMP = Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants" -Token $authDetails.Token
 
   # Set all the Delegated Permissions as a clean object
   $ResultPermissionGrantTMP | ForEach-Object {
@@ -14116,6 +14201,7 @@ Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal
   Write-Error $_
  }
 }
+
 # User Role Assignement (Not RBAC)
 Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
@@ -14333,6 +14419,7 @@ Function Add-AzureRole {
   Write-host -ForegroundColor Red "Error Adding Role ($($Error[0]))"
  }
 }
+
 # Devices
 Function Get-AzureDeviceObjectIDFromName {
  param(
@@ -14431,6 +14518,7 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
   $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  }
 }
+
 # Defender for Cloud (MDC)
 Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AzCli rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
  [CmdletBinding()]
@@ -14552,6 +14640,7 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  $Body = '{\"properties\":{\"extensions\": [ {\"isEnabled\": \"True\", \"name\": \"AIPromptEvidence\" }, { \"isEnabled\": \"False\", \"name\": \"AIPromptSharingWithPurview\" }],\"freeTrialRemainingTime\": \"P29DT22H11M\",\"pricingTier\": \"Standard\", \"resourcesCoverageStatus\": \"FullyCovered\"}}'
  az rest --method PUT --uri "$BaseURL/AI?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
 }
+
 # DevOps
 Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops | Uses API Only
  <#
@@ -15407,155 +15496,6 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
   Write-host -ForegroundColor Red "Error getting default MFA Method for user $UPNorID ($StatusCode | $StatusMessage))"
- }
-}
-# Access Packages
-Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssignementPolicies to expand all policies, takes a while)
- Param (
-  [Switch]$ExpandAssignementPolicies,
-  $AccessPackage,
-  $Token
- )
- Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-
-  # Define the base resource path
-  $ResourcePath = "identityGovernance/entitlementManagement/accessPackages"
-  $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath"
-
-  if ($AccessPackage) {
-   if (Assert-IsGUID -Value $AccessPackage) {
-    # If GUID, append directly to the path
-    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$AccessPackage"
-   }
-   else {
-    # If Name, append as a query parameter filter
-    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath`?`$filter=displayName eq '$AccessPackage'"
-   }
-  }
-
-  $AccessPackages = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl
-
-  if ($ExpandAssignementPolicies) {
-   $AccessPackages | Sort-Object displayName | ForEach-Object {
-    Progress -Message "Checking Policy of Access Package : " -Value $_.displayName -PrintTime
-
-    # We use the ID to expand policies specifically for each package found
-    $ExpandUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$($_.ID)?`$expand=assignmentPolicies"
-    $Policy = Get-AzureGraph -Token $authDetails.Token -GraphRequest $ExpandUrl
-
-    $_ | Add-Member -MemberType NoteProperty -Name "LinkedPolicies" -Value $Policy.assignmentPolicies -Force
-   }
-  }
-
-  $AccessPackages
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-Function Get-AzureAccessPackagesAssignmentPolicies { # Get All Assignement Policies
- Param (
-  $Policy, # Unified parameter for Name or ID
-  $Token
- )
- Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-
-  # Define the base resource path
-  $ResourcePath = "identityGovernance/entitlementManagement/assignmentPolicies"
-  $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath"
-
-  if ($Policy) {
-   if (Assert-IsGUID -Value $Policy) {
-    # If GUID, target the specific policy endpoint
-    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$Policy"
-   }
-   else {
-    # If Name, use the protected OData filter
-    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath`?`$filter=displayName eq '$Policy'"
-   }
-  }
-
-  get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl
-
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-Function Add-AzureAccessPackageAssignment { # Provision users to Access Package, can bypass Approval
- Param (
-  [Parameter(Mandatory=$true)]
-  $TargetId,
-  [Parameter(Mandatory=$true)]
-  $AccessPackage, # Can be Name or GUID
-  [Parameter(Mandatory=$true)]
-  $Policy,        # Can be Name or GUID
-  [String]$Justification = "Automated assignment via script",
-  [Switch]$BypassApproval,
-  $Token
- )
- Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $ResourcePath = "identityGovernance/entitlementManagement"
-
-  $ResolvedPackageId = $null
-  $ResolvedPolicyId = $null
-
-  # --- Step 1: Resolve Access Package ---
-  if (Assert-IsGUID -Value $AccessPackage) {
-   $ResolvedPackageId = $AccessPackage
-  } else {
-   $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages`?`$filter=displayName eq '$AccessPackage'&`$expand=assignmentPolicies"
-   $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
-
-   if ($apResult.count -gt 1) { throw "More than one Access Package found with name '$AccessPackage'" }
-   if (-not $apResult) { throw "Access Package '$AccessPackage' not found." }
-
-   $ResolvedPackageId = $apResult.id
-   $apPolicies = $apResult.assignmentPolicies # Store for step 2 if needed
-  }
-
-  # --- Step 2: Resolve Policy ---
-  if (Assert-IsGUID -Value $Policy) {
-   $ResolvedPolicyId = $Policy
-  } else {
-   # If we didn't search for the package in Step 1 (because ID was provided), we need to find the policy now
-   if ($null -eq $apPolicies) {
-    $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages/$ResolvedPackageId`?`$expand=assignmentPolicies"
-    $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
-    $apPolicies = $apResult.assignmentPolicies
-   }
-
-   $targetPolicy = $apPolicies | Where-Object { $_.displayName -eq $Policy }
-   if ($targetPolicy.count -gt 1) { throw "More than one Policy found with name '$Policy' in this package" }
-   if (-not $targetPolicy) { throw "Policy '$Policy' not found in this package." }
-
-   $ResolvedPolicyId = $targetPolicy.id
-  }
-
-  # --- Step 3: Create the Request ---
-  $requestType = if ($BypassApproval) { "adminAdd" } else { "userAdd" }
-  $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-
-  $body = @{
-   requestType = $requestType
-   justification = $Justification
-   assignment = @{
-    targetId = $TargetId
-    assignmentPolicyId = $ResolvedPolicyId
-    accessPackageId = $ResolvedPackageId
-    schedule = @{
-     startDateTime = $now
-     expiration = @{ type = "noExpiration" }
-    }
-   }
-  } | ConvertTo-Json -Depth 10
-
-  $requestUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignmentRequests"
-  get-azuregraph -Token $authDetails.Token -GraphRequest $requestUrl -Method POST -Body $body -ErrorAction Stop
-
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 
@@ -16741,6 +16681,28 @@ Function Set-AzureADUserLeaveDateTime {
   Write-Error "Failed to set employeeLeaveDateTime: $($_.Exception.Message)"
  }
 }
+Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
+ Param (
+  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$UserUPN
+ )
+ $GraphURL = "https://graph.microsoft.com/v1.0/users/" + "$UserUPN"
+
+ $params = @{
+  mail = $UserUPN
+ }
+
+ $ParamJson = $params | convertto-json
+
+ $header = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+
+ write-host "Setting Mail as UserUPN for user $UserUPN"
+ Invoke-RestMethod -Method PATCH -headers $header -Uri $GraphURL -Body $ParamJson
+}
+
 # Token Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
@@ -17188,97 +17150,71 @@ Function Test-MsGraphDelegated { # Function to test MS Graph Delegated Access wi
   Write-Error "Error reading mail: $($_.Exception.Message)"
  }
 }
-
-# App Registration Secret Renewal
-Function New-EmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body.
- param (
-  [string]$TenantID,
-  [string]$ApplicationDisplayName,
-  [string]$ApplicationID,
-  [string]$secret,
-  [datetime]$Secret_Start_Date,
-  [datetime]$Secret_End_Date,
-  $Result
+Function Get-AuthMethod { # Used to replace in all scripts a standard method check to see if Az CLI / Global Token / Token variable
+ <#
+ .SYNOPSIS
+  Determines and validates the correct authentication method based on a prioritized order.
+ .DESCRIPTION
+  This function checks for a passed token, a global token, and the Az CLI.
+  If a token is found, it is validated using Assert-IsTokenLifetimeValid.
+  It returns an object with the determined method and the associated token.
+ #>
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory)][System.Collections.IDictionary]$BoundParameters,
+  $PassedToken,
+  [Switch]$TokenOnly # Used to force Token Only
  )
 
- if ($Result) {
-  $TenantID = $Result.TenantID
-  $ApplicationDisplayName = $Result.ApplicationDisplayName
-  $ApplicationID = $Result.ApplicationID
-  $secret = $Result.secret
-  $Secret_Start_Date = $Result.Secret_Start_Date
-  $Secret_End_Date = $Result.Secret_End_Date
+ # This variable will hold the token we find
+ $foundToken = $null
+
+ # Priority 1: Check if -Token parameter was explicitly used.
+ if ($BoundParameters.ContainsKey('Token')) {
+   Write-Verbose "Auth Method: Found token provided via parameter."
+   $foundToken = $PassedToken
+  } elseif ($global:token) { # Priority 2: Check if a global token variable exists.
+   Write-Verbose "Auth Method: Found token in `$global:token."
+   $foundToken = $global:token
+  }
+
+ # If a token was found, validate it and construct the return object
+ if ($null -ne $foundToken) {
+  # VALIDATE THE TOKEN
+  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
+  Write-Verbose "Token lifetime is valid."
+
+  # Assumes your token object has .token_type and .access_token properties
+  $apiHeader = @{
+   'Authorization' = "$($foundToken.token_type) $($foundToken.access_token)"
+   'Content-type'  = 'application/json'
+  }
+
+  # Return a custom object
+  return [PSCustomObject]@{
+   Method = 'Token'
+   Token  = $foundToken
+   Header = $apiHeader # create a base Header Property as it is often used
+  }
+
  }
 
- $result = [ordered]@{
-  "Tenant ID" = $TenantID
-  "Application Name" = $ApplicationDisplayName
-  "Application ID" = $ApplicationID
-  "Secret" = $secret
-  "Secret Start Date" = $Secret_Start_Date
-  "Secret End Date" = $Secret_End_Date
+ if ($TokenOnly) {
+  # The switch was used, so we must fail immediately.
+  Throw "The -TokenOnly switch was specified, but no token was provided (via parameter or `$global:token)."
+ } else {  # Priority 3: Fallback to Az CLI (no token to validate here).
+  Write-Verbose "Auth Method: No token found, attempting to use Az CLI."
+  if (Get-Command az -ErrorAction SilentlyContinue) {
+   return [PSCustomObject]@{ # Keep the object shape consistent
+    Method = 'AzCLI'
+    Token  = $null
+    Header = $null
+   }
+  }
+  else {
+   Throw "Authentication failed: A token was not provided or was invalid, and the Az CLI is not available."
+  }
  }
-
-# Create Base CSS
-$Header = @"
-<style>
- table { border-collapse: collapse; width: 60%; font-family: Arial, sans-serif; }
- th { background-color: #0078D4; color: white; padding: 8px; text-align: center; width: 30%; }
- td { border: 1px solid #dddddd; padding: 8px; }
- tr:nth-child(even) { background-color: #f2f2f2; }
-</style>
-"@
-
-# Build vertical table HTML (Property | Value)
-$TableHtml = "<table>"
-$TableHtml += "<tr><th>Property</th><th>Value</th></tr>"
-foreach ($key in $result.Keys) {
- $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($key) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($result[$key]) )</td></tr>"
-}
-$TableHtml += "</table>"
-
-# 3. Build the full HTML Body
-$FullBody = @"
-<html>
- <head>$Header</head>
- <body>
-  <p>Hello,</p>
-  <p>The following application secret has been generated/rotated:</p>
-  $TableHtml
-  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
- </body>
-</html>
-"@
-
- return $FullBody
-}
-Function Send-EncryptedEmail { # Will send an encrypted email using Outlook COM object (Encrypt-Only). Requires Outlook to be installed and configured on the machine running the script.
- param (
-  [Parameter(Mandatory)][string]$Recipient,
-  [Parameter(Mandatory)][string]$Subject,
-  [Parameter(Mandatory)][string]$Body,
-  $SentOnBehalfOfName,
-  [switch]$SendNow
- )
- $Outlook = New-Object -ComObject Outlook.Application
- $Mail = $Outlook.CreateItem(0)
-
- # Send from a M365 Group Mailbox
- if ($SentOnBehalfOfName) {
-  $Mail.SentOnBehalfOfName = $SentOnBehalfOfName
- }
-
- # 2. Basic Metadata
- $Mail.To = $Recipient
- $Mail.Subject = $Subject
- $Mail.HTMLBody = $Body
-
- # 3. Apply Encryption (Encrypt-Only)
- $Mail.Permission = 3
-
- $Mail.Display()
-
- if ($SendNow) { $Mail.Send() }
 }
 
 # API Call Management
@@ -17572,6 +17508,156 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
  }
 }
 
+# Access Packages
+Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssignementPolicies to expand all policies, takes a while)
+ Param (
+  [Switch]$ExpandAssignementPolicies,
+  $AccessPackage,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Define the base resource path
+  $ResourcePath = "identityGovernance/entitlementManagement/accessPackages"
+  $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath"
+
+  if ($AccessPackage) {
+   if (Assert-IsGUID -Value $AccessPackage) {
+    # If GUID, append directly to the path
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$AccessPackage"
+   }
+   else {
+    # If Name, append as a query parameter filter
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath`?`$filter=displayName eq '$AccessPackage'"
+   }
+  }
+
+  $AccessPackages = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl
+
+  if ($ExpandAssignementPolicies) {
+   $AccessPackages | Sort-Object displayName | ForEach-Object {
+    Progress -Message "Checking Policy of Access Package : " -Value $_.displayName -PrintTime
+
+    # We use the ID to expand policies specifically for each package found
+    $ExpandUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$($_.ID)?`$expand=assignmentPolicies"
+    $Policy = Get-AzureGraph -Token $authDetails.Token -GraphRequest $ExpandUrl
+
+    $_ | Add-Member -MemberType NoteProperty -Name "LinkedPolicies" -Value $Policy.assignmentPolicies -Force
+   }
+  }
+
+  $AccessPackages
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-AzureAccessPackagesAssignmentPolicies { # Get All Assignement Policies
+ Param (
+  $Policy, # Unified parameter for Name or ID
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Define the base resource path
+  $ResourcePath = "identityGovernance/entitlementManagement/assignmentPolicies"
+  $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath"
+
+  if ($Policy) {
+   if (Assert-IsGUID -Value $Policy) {
+    # If GUID, target the specific policy endpoint
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/$Policy"
+   }
+   else {
+    # If Name, use the protected OData filter
+    $GraphUrl = "https://graph.microsoft.com/v1.0/$ResourcePath`?`$filter=displayName eq '$Policy'"
+   }
+  }
+
+  get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Add-AzureAccessPackageAssignment { # Provision users to Access Package, can bypass Approval
+ Param (
+  [Parameter(Mandatory=$true)]
+  $TargetId,
+  [Parameter(Mandatory=$true)]
+  $AccessPackage, # Can be Name or GUID
+  [Parameter(Mandatory=$true)]
+  $Policy,        # Can be Name or GUID
+  [String]$Justification = "Automated assignment via script",
+  [Switch]$BypassApproval,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $ResourcePath = "identityGovernance/entitlementManagement"
+
+  $ResolvedPackageId = $null
+  $ResolvedPolicyId = $null
+
+  # --- Step 1: Resolve Access Package ---
+  if (Assert-IsGUID -Value $AccessPackage) {
+   $ResolvedPackageId = $AccessPackage
+  } else {
+   $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages`?`$filter=displayName eq '$AccessPackage'&`$expand=assignmentPolicies"
+   $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
+
+   if ($apResult.count -gt 1) { throw "More than one Access Package found with name '$AccessPackage'" }
+   if (-not $apResult) { throw "Access Package '$AccessPackage' not found." }
+
+   $ResolvedPackageId = $apResult.id
+   $apPolicies = $apResult.assignmentPolicies # Store for step 2 if needed
+  }
+
+  # --- Step 2: Resolve Policy ---
+  if (Assert-IsGUID -Value $Policy) {
+   $ResolvedPolicyId = $Policy
+  } else {
+   # If we didn't search for the package in Step 1 (because ID was provided), we need to find the policy now
+   if ($null -eq $apPolicies) {
+    $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages/$ResolvedPackageId`?`$expand=assignmentPolicies"
+    $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
+    $apPolicies = $apResult.assignmentPolicies
+   }
+
+   $targetPolicy = $apPolicies | Where-Object { $_.displayName -eq $Policy }
+   if ($targetPolicy.count -gt 1) { throw "More than one Policy found with name '$Policy' in this package" }
+   if (-not $targetPolicy) { throw "Policy '$Policy' not found in this package." }
+
+   $ResolvedPolicyId = $targetPolicy.id
+  }
+
+  # --- Step 3: Create the Request ---
+  $requestType = if ($BypassApproval) { "adminAdd" } else { "userAdd" }
+  $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+
+  $body = @{
+   requestType = $requestType
+   justification = $Justification
+   assignment = @{
+    targetId = $TargetId
+    assignmentPolicyId = $ResolvedPolicyId
+    accessPackageId = $ResolvedPackageId
+    schedule = @{
+     startDateTime = $now
+     expiration = @{ type = "noExpiration" }
+    }
+   }
+  } | ConvertTo-Json -Depth 10
+
+  $requestUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignmentRequests"
+  get-azuregraph -Token $authDetails.Token -GraphRequest $requestUrl -Method POST -Body $body -ErrorAction Stop
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+
 # Log Analytics
 Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
  Param (
@@ -17649,7 +17735,8 @@ Function Get-AzureLogAnalyticsRequest { # Run cmd towards Log Analytics Workspac
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-# Sentinel Functions
+
+# Sentinel Specific Functions
 Function Get-SentinelUserInfo { # Get user logs from Sentinel
  Param (
   [Parameter(Mandatory = $true)]$User,
@@ -18280,6 +18367,108 @@ Function Get-SentinelAppLastLogin {
  }
 }
 
+# Mail Management
+Function Send-EncryptedEmail { # Will send an encrypted email using Outlook COM object (Encrypt-Only). Requires Outlook to be installed and configured on the machine running the script.
+ param (
+  [Parameter(Mandatory)][string]$Recipient,
+  [Parameter(Mandatory)][string]$Subject,
+  [Parameter(Mandatory)][string]$Body,
+  $SentOnBehalfOfName,
+  [switch]$SendNow
+ )
+ $Outlook = New-Object -ComObject Outlook.Application
+ $Mail = $Outlook.CreateItem(0)
+
+ # Send from a M365 Group Mailbox
+ if ($SentOnBehalfOfName) {
+  $Mail.SentOnBehalfOfName = $SentOnBehalfOfName
+ }
+
+ # 2. Basic Metadata
+ $Mail.To = $Recipient
+ $Mail.Subject = $Subject
+ $Mail.HTMLBody = $Body
+
+ # 3. Apply Encryption (Encrypt-Only)
+ $Mail.Permission = 3
+
+ $Mail.Display()
+
+ if ($SendNow) { $Mail.Send() }
+}
+Function Send-MailMGGraph {  # To make automated Email, it requires an account with a mailbox | Should add a "From" Option | Requires MG Graph
+ Param (
+  [Parameter(Mandatory)]$UserMail,
+  [Parameter(Mandatory)]$SenderUPN,
+  [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
+  [Parameter(Mandatory)]$Subject,
+  $From
+ )
+
+ $CurrentConnection = Get-MgContext | where-object { ($_.ContextScope -eq "Process") -and ($_.Scopes -contains "Mail.Send") }
+ if (!$CurrentConnection) { Open-MgGraphConnection -Scopes 'Mail.Send' -ContextScope 'Process' }
+
+ $params = @{
+  Message = @{
+   Subject = $Subject
+   Body = @{ ContentType = "HTML" ; Content = $MessageContent }
+   ToRecipients = @( @{ EmailAddress = @{ Address = $UserMail } } )
+  }
+  SaveToSentItems = "true"
+ }
+ if ($From) {
+  $params.Message.Add("From",@( @{ From = @{ Address = $From } } ))
+ }
+ Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
+}
+Function Send-Mail { # Send Email using Azure Graph without any external modules
+ Param (
+  [Parameter(Mandatory)]$Recipient,
+  [Parameter(Mandatory)]$SenderUPN,
+  [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
+  [Parameter(Mandatory)]$Subject,
+  $From,
+  $Token
+ )
+
+ Try {
+  if (! $From) {
+   $From = $SenderUPN
+  }
+
+  $AccessToken = $Token.access_token
+
+  $Headers = @{
+   'Content-Type'  = "application\json"
+   'Authorization' = "Bearer $AccessToken"
+  }
+
+  $MessageParams = @{
+   "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
+   "Headers"     = $Headers
+   "Method"      = "POST"
+   "ContentType" = 'application/json'
+   "Body" = (@{
+    "message" = @{
+     "subject" = $Subject
+     "body"    = @{
+      "contentType" = 'HTML'
+      "content"     = $MessageContent
+     }
+    "toRecipients" = @(
+     @{
+      "emailAddress" = @{"address" = $Recipient }
+     })
+    "from" = @{ "emailAddress" = @{"address" = $From } }
+    }
+   }) | ConvertTo-JSON -Depth 6
+  }
+  Invoke-RestMethod @Messageparams
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+
 # Misc
 Function Get-AzureADUserOwnedDevice {
  Param (
@@ -18411,78 +18600,6 @@ Function Get-AzureADObjectInfo { # Get Object GUID Info
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Send-MailMGGraph {  # To make automated Email, it requires an account with a mailbox | Should add a "From" Option | Requires MG Graph
- Param (
-  [Parameter(Mandatory)]$UserMail,
-  [Parameter(Mandatory)]$SenderUPN,
-  [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
-  [Parameter(Mandatory)]$Subject,
-  $From
- )
-
- $CurrentConnection = Get-MgContext | where-object { ($_.ContextScope -eq "Process") -and ($_.Scopes -contains "Mail.Send") }
- if (!$CurrentConnection) { Open-MgGraphConnection -Scopes 'Mail.Send' -ContextScope 'Process' }
-
- $params = @{
-  Message = @{
-   Subject = $Subject
-   Body = @{ ContentType = "HTML" ; Content = $MessageContent }
-   ToRecipients = @( @{ EmailAddress = @{ Address = $UserMail } } )
-  }
-  SaveToSentItems = "true"
- }
- if ($From) {
-  $params.Message.Add("From",@( @{ From = @{ Address = $From } } ))
- }
- Send-MgUserMail -UserId $SenderUPN -BodyParameter $params
-}
-Function Send-Mail { # Send Email using Azure Graph without any external modules
- Param (
-  [Parameter(Mandatory)]$Recipient,
-  [Parameter(Mandatory)]$SenderUPN,
-  [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
-  [Parameter(Mandatory)]$Subject,
-  $From,
-  $Token
- )
-
- Try {
-  if (! $From) {
-   $From = $SenderUPN
-  }
-
-  $AccessToken = $Token.access_token
-
-  $Headers = @{
-   'Content-Type'  = "application\json"
-   'Authorization' = "Bearer $AccessToken"
-  }
-
-  $MessageParams = @{
-   "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
-   "Headers"     = $Headers
-   "Method"      = "POST"
-   "ContentType" = 'application/json'
-   "Body" = (@{
-    "message" = @{
-     "subject" = $Subject
-     "body"    = @{
-      "contentType" = 'HTML'
-      "content"     = $MessageContent
-     }
-    "toRecipients" = @(
-     @{
-      "emailAddress" = @{"address" = $Recipient }
-     })
-    "from" = @{ "emailAddress" = @{"address" = $From } }
-    }
-   }) | ConvertTo-JSON -Depth 6
-  }
-  Invoke-RestMethod @Messageparams
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
 Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
  [CmdletBinding()]
  Param (
@@ -18551,7 +18668,7 @@ Set-Alias -Name npp -Value "notepad++.exe" -Option AllScope
 Set-Alias -Name su -Value "pselevate" -Option AllScope
 Set-Alias -Name du -Value "Get-DiskUsage" -Option AllScope
 Set-Alias -Name df -Value "Get-PartitionInfo" -Option AllScope
-Set-Alias -Name dns -Value "checkdns" -Option AllScope
+Set-Alias -Name dns -Value "Test-DNS" -Option AllScope
 Set-Alias -Name grep -Value "Select-String"
 Function Start-Jdownloader { get-job | remove-job ;  invoke-expression -Command "java -jar C:\JDownloader\JDownloader.jar &" }
 Function LoadMMC { mmc "$env:OneDriveCommercial\RootConsole.msc" }
