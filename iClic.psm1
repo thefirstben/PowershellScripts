@@ -9702,6 +9702,7 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL 
  [CmdletBinding()]
  Param (
   [String]$Name,
+  [String]$Subscription,
   $Token,
   $APIVersion = "2024-04-01",
   [switch]$Exact,
@@ -9726,6 +9727,20 @@ Function Get-AzureResourceGroup { # Get Azure Resource Group using API with KQL 
    }
   } else {
    $baseQuery = "ResourceContainers | where type == 'microsoft.resources/subscriptions/resourcegroups'"
+  }
+
+  if ($Subscription) {
+   if (Assert-IsGUID -Value $Subscription) {
+    $baseQuery += " | where subscriptionId =~ '$Subscription'"
+   } else {
+    $SubscriptionIdList = @(Get-AzureSubscriptions -Subscription $Subscription -Token $authDetails.Token | Select-Object -ExpandProperty subscriptionId -Unique)
+
+    if (! $SubscriptionIdList) {
+     Throw "Subscription $Subscription not found"
+    }
+
+    $baseQuery += " | where subscriptionId in~ ('$($SubscriptionIdList -join "','")')"
+   }
   }
 
 # 2. Get Total Count First
