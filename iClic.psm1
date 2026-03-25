@@ -54,7 +54,8 @@
 # Console history found here : (Get-PSReadLineOption).HistorySavePath
 # To generate Self Signed Certificate : $Certificate=New-SelfSignedCertificate -Subject "$($env:username)" -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy NonExportable -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
 # To generate Self Signed Certificate for App Registration : $Certificate=New-SelfSignedCertificate -Subject "$AppName" -CertStoreLocation "Cert:\CurrentUser\My" -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
-# Export Cert : $Certificate | Export-Certificate -Type CERT -FilePath $PATH
+# Export Cert : $Certificate | Export-Certificate -Type CERT -FilePath "$iClic_TempPath\$AppName.cer"
+# Export PFX : $Password = New-Password ;  $Certificate | Export-PfxCertificate -FilePath "$iClic_TempPath\$AppName.pfx" -Password (ConvertTo-SecureString -String $Password -Force -AsPlainText)
 # Default Catch : Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
 # Catch with Graph : $_.ErrorDetails.Message
 # Query in Azure without any specific module, check example : Get-AzureManagementGroups
@@ -11310,12 +11311,7 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   if ($Verbose) { return $response }
 
   } Catch {
-  if ($_.ErrorDetails.Message) {
-   $ErrorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
-   Write-Error $ErrorDetails.error.Message
-  } else {
    Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
-  }
   }
  }
 Function Remove-AzureRBACRights { # Remove rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope
@@ -16781,8 +16777,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     $headers = @{ 'secret' = $env:IDENTITY_HEADER }
     # Use the API version compatible with the /msi/token endpoint
     $apiVersion = "2017-09-01"
-   }
-   else {
+   } else {
     # Running in a VM or other IMDS environment
     Write-Verbose "Azure VM (IMDS) environment detected."
     $endpoint = "http://169.254.169.254/metadata/identity/oauth2/token"
