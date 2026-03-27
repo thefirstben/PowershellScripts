@@ -17970,10 +17970,17 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   # Pepare TimeFrame :
   if (! $EndDuration) {
    $EndDuration = "now()"
+  } else {
+   $EndDuration = "datetime(" + $(get-date $EndDuration).ToString("yyyy-MM-dd HH:mm:ss") + ")"
+   Write-Verbose "Using EndDuration $EndDuration"
   }
   if (! $StartDuration) {
    $StartDuration = "ago($Duration)"
+  } else {
+   $StartDuration = "datetime(" + $(get-date $StartDuration).ToString("yyyy-MM-dd HH:mm:ss") + ")"
+   Write-Verbose "Using StartDuration $StartDuration"
   }
+
   $TimeFrame = "$StartDuration .. $EndDuration"
 
   Write-Verbose "Using TimeFrame $TimeFrame"
