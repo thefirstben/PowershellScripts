@@ -16518,42 +16518,6 @@ Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expir
   Write-host -ForegroundColor Red "Error setting Password Never Expires for user $UPNorID ($StatusCode | $StatusMessage))"
  }
 }
-Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates for Devices vs Users
- Param (
-  [Parameter(Mandatory)][GUID]$DeviceObjectID,
-  [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
-  [Parameter(Mandatory)]$Value,
-  $Token,
-  [Switch]$ShowResult
- )
-  Try {
-   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $header = $authDetails.Header
-
-   $params = @{
-    "extensionAttributes" = @{
-     $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
-    }
-   }
-
-   $ParamJson = $params | convertto-json
-   Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID"  -Body $ParamJson | Out-Null
-   if ($ShowResult) {
-    $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
-    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID" | Select-Object displayName,userPrincipalName,
-     @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
-   }
-  } catch {
-   $Exception = $($Error[0])
-   $StatusCodeJson = $Exception.ErrorDetails.message
-   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-   $StatusMessageJson = $Exception.ErrorDetails.message
-   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error $($Error[0].TargetObject)" ; $StatusMessage = $($Error[0])}
-   Write-host -ForegroundColor Red -Object "Error setting extension attribute $ExtensionAttributeNumber for Device $DeviceObjectID ($StatusCode | $StatusMessage))"
-  }
-}
 Function Get-AzureADRiskyUsers { # Can only get 500 users at the time
  Param (
   [Parameter(Mandatory)]$Token
@@ -18486,8 +18450,8 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
  }
 }
 
-# Misc
-Function Get-AzureADUserOwnedDevice {
+# Azure Device management
+Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
  Param (
   [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$UserID,
@@ -18500,6 +18464,65 @@ Function Get-AzureADUserOwnedDevice {
  }
  (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/users/$UserID/ownedDevices?`$select=$ValuesToShow").Value
 }
+Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates for Devices vs Users
+ Param (
+  [Parameter(Mandatory)][GUID]$DeviceObjectID,
+  [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
+  [Parameter(Mandatory)]$Value,
+  $Token,
+  [Switch]$ShowResult
+ )
+  Try {
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+   $header = $authDetails.Header
+
+   $params = @{
+    "extensionAttributes" = @{
+     $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
+    }
+   }
+
+   $ParamJson = $params | convertto-json
+   Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID"  -Body $ParamJson | Out-Null
+   if ($ShowResult) {
+    $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
+    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID" | Select-Object displayName,userPrincipalName,
+     @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
+   }
+  } catch {
+   $Exception = $($Error[0])
+   $StatusCodeJson = $Exception.ErrorDetails.message
+   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
+   $StatusMessageJson = $Exception.ErrorDetails.message
+   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
+   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error $($Error[0].TargetObject)" ; $StatusMessage = $($Error[0])}
+   Write-host -ForegroundColor Red -Object "Error setting extension attribute $ExtensionAttributeNumber for Device $DeviceObjectID ($StatusCode | $StatusMessage))"
+  }
+}
+Function Get-AzureDeviceIntuneAssignementGroups {
+ Param (
+  [Parameter(Mandatory)]$Group,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  if (! (Assert-IsGUID -Value $Group -ErrorAction Stop)) {
+   $GroupID = (Get-AzureADGroup -Group $Group -Token $authDetails.Token -ErrorAction Stop).id
+  } else {
+   $GroupID = $Group
+  }
+  if (! $GroupID) { Throw "Group not found with provided value: $Group" }
+  $AllIntunePoliciesWithAssignements = Get-AzureGraph -Token $authDetails.Token -GraphRequest 'https://graph.microsoft.com/v1.0/deviceManagement/deviceConfigurations?$expand=assignments' -ErrorAction Stop
+  Write-Verbose "Found $($AllIntunePoliciesWithAssignements.Count) Intune Device Configurations with Assignments, filtering for GroupID $GroupID"
+  $AllIntunePoliciesWithAssignements | Where-Object {$_.assignments.target.GroupID -eq $GroupID}
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+
+# Misc
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
  Param (
   [Parameter(Mandatory)]$Access_Policy_Name,
