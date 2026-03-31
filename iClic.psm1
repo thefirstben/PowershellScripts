@@ -13873,19 +13873,54 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
  }
 }
 Function Remove-AzureServicePrincipalPermissions { # Remove rights on Service Principal - Uses Rest API with Token
+ [CmdletBinding(DefaultParameterSetName = "Direct")]
  Param (
-  [Parameter(Mandatory=$true)]$PermissionID,
+  [Parameter(Mandatory=$true, ParameterSetName = "Direct", ValueFromPipelineByPropertyName = $true)]
+  [Alias("id")]
+  $PermissionID,
+  [Parameter(Mandatory=$true, ParameterSetName = "Pipeline", ValueFromPipeline = $true)]
+  $PermissionObject,
+  [Parameter(ParameterSetName = "Direct", ValueFromPipelineByPropertyName = $true)]
+  [Parameter(ParameterSetName = "Pipeline")]
+  [Alias("principalId")]
+  $ServicePrincipalID,
+  [Parameter(ParameterSetName = "Direct", ValueFromPipelineByPropertyName = $true)]
+  [Parameter(ParameterSetName = "Pipeline")]
+  [ValidateSet("Application","Delegated")]
+  $PermissionType,
   [parameter(Mandatory = $true)]$Token
  )
- Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-  $headers = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
+ Process {
+  Try {
+   $ResolvedPermissionID = $PermissionID
+   $ResolvedPermissionType = $PermissionType
+   $ResolvedServicePrincipalID = $ServicePrincipalID
+
+   if ($PSCmdlet.ParameterSetName -eq "Pipeline") {
+    $ResolvedPermissionID = $PermissionObject.id
+    if (! $ResolvedPermissionID) { $ResolvedPermissionID = $PermissionObject.PermissionID }
+    if (! $ResolvedPermissionType) { $ResolvedPermissionType = $PermissionObject.PermissionType }
+    if (! $ResolvedServicePrincipalID) { $ResolvedServicePrincipalID = $PermissionObject.principalId }
+   }
+
+   if (! $ResolvedPermissionID) { Throw "PermissionID not found" }
+   if (! $ResolvedPermissionType) { $ResolvedPermissionType = "Delegated" }
+
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+   $header = $authDetails.Header
+
+   if ($ResolvedPermissionType -eq "Application") {
+    if (! $ResolvedServicePrincipalID) {
+     Throw "ServicePrincipalID is required to remove Application permissions. Pass -ServicePrincipalID with -PermissionID or pipe the object from Get-AzureServicePrincipalPermissions."
+    }
+
+    Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ResolvedServicePrincipalID/appRoleAssignments/$ResolvedPermissionID"
+   } else {
+    Invoke-RestMethod -Method DELETE -headers $header -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$ResolvedPermissionID"
+   }
+  } Catch {
+   write-host -foregroundcolor "Red" -Object "Error removing $ResolvedPermissionType permissions $ResolvedPermissionID : $($Error[0])"
   }
-  Invoke-RestMethod -Method DELETE -headers $headers -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$PermissionID"
- } Catch {
-  write-host -foregroundcolor "Red" -Object "Error removing permissions $PermissionID : $($Error[0])"
  }
 }
 Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignement Status
