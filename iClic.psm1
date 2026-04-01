@@ -2358,7 +2358,7 @@ Function Get-EventLogNPSDetailed {
  )
  Get-WinEvent -ComputerName $ServerName -FilterHashtable @{LogName='System';ID='20272';StartTime=$StartTime;EndTime=$EndTime} | Select-Object `
   @{Name="UPN";Expression={$_.Properties[2].value}},
-  @{Name="UserName";Expression={(Get-ADUserFromUPN $_.Properties[2].value).Name}},
+  @{Name="UserName";Expression={(Get-AzureAduserinfo -UPNorID $_.Properties[2].value).displayName}},
   @{Name="DateConnection";Expression={Convert-DateSpecific $("$($_.Properties[4].value) $($_.Properties[5].value)")}},
   @{Name="DateDisconnection";Expression={Convert-DateSpecific $("$($_.Properties[6].value) $($_.Properties[7].value)")}},
   @{Name="Duration";Expression={ [timespan]::fromseconds($([int]$_.Properties[8].value*60)+$([int]$_.Properties[9].value)) }} ,
@@ -4112,13 +4112,6 @@ Function AreUsersInOUInGroup {
   $G_List | Export-Csv -Path "$GROUP.csv" -NoClobber -Encoding UTF8 -Delimiter ";" -NoTypeInformation
  }
  return $G_List
-}
-Function Get-ADUserFromUPN {
- Param (
-  $UPN
- )
- Write-Verbose "Filtering on $UPN"
- Get-ADUser -Filter {UserPrincipalName -eq $UPN}
 }
 Function Get-ADUserFromName {
  Param (
@@ -9404,7 +9397,7 @@ Function Get-VPNUserFromIP {
   $IP,
   [Parameter(Mandatory)]$VPNServerName
  )
- Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object {$_.VPN_IP -eq $IP} | Select-Object DateTime,Status,UserUPN,@{Name="UserName";Expression={(Get-ADUserFromUPN $_.UserUPN).Name}},VPN_IP
+ Invoke-Command -ScriptBlock ${function:Get-EventLogNPSSystem} -ComputerName $VPNServerName | Where-Object {$_.VPN_IP -eq $IP} | Select-Object DateTime,Status,UserUPN,@{Name="UserName";Expression={(Get-AzureAduserinfo -UPNorID  $_.UserUPN).displayName}},VPN_IP
 }
 Function Get-VPNIPFromUser {
  Param (
@@ -10089,10 +10082,6 @@ Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot
   }
  }
 }
-Function Get-AzureManagementGroups_AzCLI { # Get all subscription and associated Management Groups Using AzCli
- $Query = "resourcecontainers | where type == 'microsoft.resources/subscriptions'"
- (az graph query -q $Query -o json --first 200 | ConvertFrom-Json).data | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
-}
 
 # AzCli Env Management
 Function Get-AzureCliEnvironment { # Get Current Environment used by AzCli
@@ -10100,52 +10089,12 @@ Function Get-AzureCliEnvironment { # Get Current Environment used by AzCli
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
 
-# Global Extracts
+# Get Azure Resource Information
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptionsAZCLI | foreach-object {
   $SubscriptionName = $_.Name
   az network public-ip list --subscription $_.id -o json | convertfrom-json | Select-Object @{Name="SubscriptionName";Expression={$SubscriptionName}},location,resourceGroup,ipAddress,linkedPublicIpAddress
  }
-}
-Function Get-AzureResourceAZCLI { # Get all Azure Resources for all Subscriptions
- Get-AzureSubscriptionsAZCLI | ForEach-Object {
-  $subscriptionId = $_.id
-  $subscriptionName = $_.name
-  Progress -Message "Checking resources of subscription : " -Value $subscriptionName -PrintTime
-  az account set --subscription $subscriptionId
-  $CurrentSubscriptionResourcesJson = az resource list --output json
-  try {
-   $CurrentSubscriptionResources = $CurrentSubscriptionResourcesJson | ConvertFrom-Json -ErrorAction Stop
-   $CurrentSubscriptionResources | ForEach-Object {
-    $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
-    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
-   }
-  } Catch {
-   Write-host -ForegroundColor Red -Object "Error in Subscription $subscriptionName ($subscriptionId)"
-   "$subscriptionName;$subscriptionId;$($Error[0])" | Out-File "$iClic_TempPath\AzureAllResources_Error_$([DateTime]::Now.ToString("yyyyMMdd")).log" -Append
-  }
-  $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllResources_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
- }
- ProgressClear
-}
-Function Get-AzureResourceGroups_CLI { # Get all Azure Resource Groups for all Subscriptions
- Param (
-  $ExportFileName = "$iClic_TempPath\AzureAllResourceGroups_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
- )
- Get-AzureSubscriptionsAZCLI | ForEach-Object {
-  $subscriptionId = $_.id
-  $subscriptionName = $_.name
-  Progress -Message "Checking resource groups of subscription : " -Value $subscriptionName -PrintTime
-  az account set --subscription $subscriptionId
-  $CurrentSubscriptionRG = az group list --output json | ConvertFrom-Json
-  $CurrentSubscriptionRG | ForEach-Object {
-   $_ | Add-Member -NotePropertyName SubscriptionId -NotePropertyValue $subscriptionId
-   $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
-  }
-  $CurrentSubscriptionRG | Export-Csv $ExportFileName -Append
- }
- ProgressClear
- return $ExportFileName
 }
 Function Get-AzureKeyvaults { # Get all Azure Keyvaults for all Subscriptions (Checks ACLs) # Uses AZ Cli
  Param (
@@ -10393,23 +10342,6 @@ Function Get-AzureVMs { # Get all Azure VM and linked Extensions # TO DO : Add a
    $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
   }
   $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\AzureAllVMs_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
- }
-}
-Function Get-AzurePolicyExemptionsAZCLI { # Get All Azure Policy Exemptions using Az Cli
- Get-AzureSubscriptionsAZCLI | Where-Object State -eq Enabled | ForEach-Object {
-  $CurrentSubscriptionID = $_.id
-  $CurrentSubscriptionName = $_.name
-  az account set -n $CurrentSubscriptionID
-  az policy exemption list -i --only-show-errors | convertfrom-json | Select-Object -ExcludeProperty policyDefinitionReferenceIds,systemData,metadata -Property *,
-   @{N="PolicyName";E={Progress -Message "Checking Policy of subscription $CurrentSubscriptionName : " -Value $_.displayName ; ($_.policyAssignmentId -split("/"))[-1]}},
-   @{N="Scope";E={($_.id.Split("/providers/Microsoft.Authorization/"))[0]}},
-   @{N="Sys_createdAt";E={$_.systemData.createdAt}},
-   @{N="Sys_createdBy";E={$_.systemData.createdBy}},
-   @{N="Sys_createdByDisplay";E={Get-AzureADUserStartingWith -SearchValue $_.systemData.createdBy -Type userPrincipalName}},
-   @{N="Sys_createdByType";E={$_.systemData.createdByType}},
-   @{N="Sys_lastModifiedAt";E={$_.systemData.lastModifiedAt}},
-   @{N="Sys_lastModifiedBy";E={$_.systemData.lastModifiedBy}},
-   @{N="Sys_lastModifiedByType";E={$_.systemData.lastModifiedByType}} | Export-Csv "$iClic_TempPath\AzurePolicyExemptions_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
 Function Get-AzurePolicyExemption { # Get All Azure Policy Exemption using Graph
@@ -11647,16 +11579,20 @@ Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SP
 }
 Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationObjectID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
+  [Parameter(Mandatory=$true)]$Application, # App Registration AppID (client ID) or Display Name
   $Token
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
- if ($AppRegistrationID) { $AppInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -Token $authDetails.Token -ErrorAction Stop }
- if ($AppRegistrationName) { $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $authDetails.Token -ErrorAction Stop }
- if ($AppRegistrationObjectID) { $AppInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -Token $authDetails.Token -ErrorAction Stop }
+  if (Assert-IsGUID $Application) {
+   $AppInfo = Get-AzureAppRegistration -AppID $Application -Token $authDetails.Token -ErrorAction SilentlyContinue
+   if (! $AppInfo.ID) {
+    $AppInfo = Get-AzureAppRegistration -ID $Application -Token $authDetails.Token -ErrorAction Stop
+   }
+  } else {
+   $AppInfo = Get-AzureAppRegistration -DisplayName $Application -Token $authDetails.Token -ErrorAction Stop
+  }
+
  if (! $AppInfo.ID) { Throw "Application not found with AppID : $AppRegistrationID, Object ID : $AppRegistrationObjectID and AppName : $AppRegistrationName" }
 
  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest /applications/$($AppInfo.ID)/owners
@@ -11667,53 +11603,78 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   Write-Error $_
  }
 }
-Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration | Uses Az Cli
+Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="UPN")][String]$OwnerUPN,
-  [parameter(Mandatory=$true,ParameterSetName="ObjectID")][String]$OwnerObjectID,
-  [Parameter(Mandatory=$true,ParameterSetName='UPN')]
-  [Parameter(Mandatory=$true,ParameterSetName='ObjectID')]$AppRegistrationID  #Owner or App Registration ID is required, both param cannot be set, UPN will be slower
+  [Parameter(Mandatory=$true)]$Owner,  # UPN or Object ID of the user to add as owner
+  [Parameter(Mandatory=$true)]$Application, # App Registration AppID (client ID) or Display Name
+  $Token
  )
- if ($OwnerUPN) { $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).ID } else { $UserObjectID = $OwnerObjectID }
- Write-Host -ForegroundColor "Cyan" "Adding owner for user $UserObjectID on App Registration $AppRegistrationID"
  Try {
-  az ad app owner add --id $AppRegistrationID --owner-object-id $UserObjectID --only-show-errors
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  Write-Verbose "Adding user $Owner as owner of App Registration $Application"
+  if (Assert-IsGUID $Owner) {
+   $UserObjectID = $Owner
+  } else {
+   $UserObjectID = (Get-AzureADUserInfo -UPNorID $Owner -Token $authDetails.Token -ErrorAction Stop).ID
+  }
+  Write-Verbose "Found user with Object ID $UserObjectID"
+  if (Assert-IsGUID $Application) {
+   $AppInfo = Get-AzureAppRegistration -AppID $Application -Token $authDetails.Token -ErrorAction Stop
+  } else {
+   $AppInfo = Get-AzureAppRegistration -DisplayName $Application -Token $authDetails.Token -ErrorAction Stop
+  }
+  Write-Verbose "Found App with Object ID $($AppInfo.ID)"
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" }
+  Write-Host -ForegroundColor "Cyan" "Adding owner $Owner on App Registration $($AppInfo.displayName)"
+  $Body = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserObjectID" } | ConvertTo-Json
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest "/applications/$($AppInfo.ID)/owners/`$ref" -Method POST -Body $Body -ErrorAction Stop
+  Write-Host -ForegroundColor "Green" "Successfully added owner $Owner to App Registration $($AppInfo.displayName)"
  } Catch {
-  Write-Host -ForegroundColor "Red" "Error adding owner for user $OwnerUPN on AppID $AppRegistrationID : $($Error[0])"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Remove-AzureAppRegistrationOwner { # remove an owner to an App Registration | Uses Az Cli
+Function Remove-AzureAppRegistrationOwner { # Remove an owner from an App Registration
  Param (
-  [Parameter(Mandatory=$true)]$OwnerUPN,
-  [Parameter(Mandatory=$true)]$AppRegistrationID
+  [Parameter(Mandatory=$true)]$Owner,  # UPN or Object ID of the user to add as owner
+  [Parameter(Mandatory=$true)]$Application, # App Registration AppID (client ID) or Display Name
+  $Token
  )
- $Verbose = $PSCmdlet.MyInvocation.BoundParameters["Verbose"].IsPresent
  Try {
-  $UserObjectID = (Get-AzureADUserInfo $OwnerUPN).ID
-  if ($Verbose) {
-   Write-Host -ForegroundColor "Cyan" "Removing user $OwnerUPN as owner of AppID $AppRegistrationID"
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  Write-Verbose "Adding user $Owner as owner of App Registration $Application"
+  if (Assert-IsGUID $Owner) {
+   $UserObjectID = $Owner
+  } else {
+   $UserObjectID = (Get-AzureADUserInfo -UPNorID $Owner -Token $authDetails.Token -ErrorAction Stop).ID
   }
-  az ad app owner remove --id $AppRegistrationID --owner-object-id $UserObjectID --only-show-errors
-  if ($Verbose) {
-   Write-Host -ForegroundColor "Green" "Removed user $OwnerUPN as owner of AppID $AppRegistrationID"
+  Write-Verbose "Found user with Object ID $UserObjectID"
+  if (Assert-IsGUID $Application) {
+   $AppInfo = Get-AzureAppRegistration -AppID $Application -Token $authDetails.Token -ErrorAction Stop
+  } else {
+   $AppInfo = Get-AzureAppRegistration -DisplayName $Application -Token $authDetails.Token -ErrorAction Stop
   }
+  Write-Verbose "Found App with Object ID $($AppInfo.ID)"
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" }
+  Write-Host -ForegroundColor "Cyan" "Adding owner $Owner on App Registration $($AppInfo.displayName)"
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest "/applications/$($AppInfo.ID)/owners/$UserObjectID/`$ref" -Method DELETE -ErrorAction Stop
+  Write-Host -ForegroundColor "Green" "Successfully added owner $Owner to App Registration $($AppInfo.displayName)"
  } Catch {
-  Write-Host -ForegroundColor "Red" "Error adding owner for user $OwnerUPN on AppID $AppRegistrationID : $($Error[0])"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Registration | User Az Cli
+Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Registration
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
-  [parameter(Mandatory=$true,ParameterSetName="ObjectID")]$AppRegistrationObjectID,
-  [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName
+  [Parameter(Mandatory=$true)]$Application, # App Registration AppID (client ID) or Display Name
+  $Token # Token for authentication
  )
-
- if ($AppRegistrationID) { $AppRegistrationObjectID = (Get-AzureAppRegistration -AppID $AppRegistrationID).ID }
- if ($AppRegistrationName) { $AppRegistrationObjectID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).ID }
-
- Get-AzureAppRegistrationOwner -AppRegistrationObjectID $AppRegistrationObjectID | ForEach-Object {
-  Write-Host "Removing Owners from App Registration $AppRegistrationObjectID : $($_.displayName)"
-  az ad app owner remove --id $AppRegistrationObjectID --owner-object-id $_.id
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  Get-AzureAppRegistrationOwner -Application $Application -Token $authDetails.Token | ForEach-Object {
+   Write-Host "Removing Owners from App Registration $Application : $($_.displayName)"
+   Remove-AzureAppRegistrationOwner -Application $Application -Owner $_.id -Token $authDetails.Token
+  }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Rights of ONE or Multiple Subscriptions
@@ -18483,6 +18444,7 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
 
 # Azure Device management
 Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
