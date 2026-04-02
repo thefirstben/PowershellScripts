@@ -18401,43 +18401,54 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
  Param (
   [Parameter(Mandatory)]$Recipient,
   [Parameter(Mandatory)]$SenderUPN,
-  [Parameter(Mandatory)]$MessageContent, # Format @"TEXT"@
+  [Parameter(Mandatory)][Alias("Body")]$MessageContent, # Format @"TEXT"@
   [Parameter(Mandatory)]$Subject,
   $From,
-  $Token
+  $Token,
+  [Alias("SendInCopy")]$ccRecipients
  )
 
  Try {
-  if (! $From) {
-   $From = $SenderUPN
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $Header = $authDetails.Header
+
+  $MessageBody = @{
+   "subject" = $Subject
+   "body"    = @{
+    "contentType" = 'HTML'
+    "content"     = $MessageContent
+   }
+   "toRecipients" = @(
+    @{
+     "emailAddress" = @{"address" = $Recipient }
+    }
+   )
   }
 
-  $AccessToken = $Token.access_token
+  if ($From) {
+   $MessageBody["from"] = @{ "emailAddress" = @{"address" = $From } }
+  }
 
-  $Headers = @{
-   'Content-Type'  = "application\json"
-   'Authorization' = "Bearer $AccessToken"
+  if ($ccRecipients) {
+   $CCList = @($ccRecipients)
+   if ($ccRecipients -is [string]) {
+    $CCList = $ccRecipients -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+   }
+   $MessageBody["ccRecipients"] = @(
+    $CCList | ForEach-Object {
+     @{ "emailAddress" = @{ "address" = $_ } }
+    }
+   )
   }
 
   $MessageParams = @{
    "URI"         = "https://graph.microsoft.com/v1.0/users/$SenderUPN/sendMail"
-   "Headers"     = $Headers
+   "Headers"     = $Header
    "Method"      = "POST"
    "ContentType" = 'application/json'
    "Body" = (@{
-    "message" = @{
-     "subject" = $Subject
-     "body"    = @{
-      "contentType" = 'HTML'
-      "content"     = $MessageContent
-     }
-    "toRecipients" = @(
-     @{
-      "emailAddress" = @{"address" = $Recipient }
-     })
-    "from" = @{ "emailAddress" = @{"address" = $From } }
-    }
-   }) | ConvertTo-JSON -Depth 6
+    "message" = $MessageBody
+   }) | ConvertTo-JSON -Depth 8
   }
   Invoke-RestMethod @Messageparams
  } Catch {
