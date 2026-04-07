@@ -17831,13 +17831,26 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
 
   if ($ResultRaw) {
    if ($Readable) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
+
+   # Convert TimeGenerated from UTC to the local user timezone (WEBSITE_TIME_ZONE for FunctionApps)
+   $localTz = if ($env:WEBSITE_TIME_ZONE) { [System.TimeZoneInfo]::FindSystemTimeZoneById($env:WEBSITE_TIME_ZONE) } else { [System.TimeZoneInfo]::Local }
+   $ResultRaw = $ResultRaw | ForEach-Object {
+    $_ | Add-Member -MemberType NoteProperty -Name 'Local_TimeGenerated' -Value ([System.TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind($_.TimeGenerated, [System.DateTimeKind]::Utc), $localTz))
+    $_ | Add-Member -MemberType NoteProperty -Name 'Local_Timezone' -Value $localTz.Id
+    $_
+
+   }
   } else {
    # Stop here if no results where found
    return
   }
 
+  # Build ordered column list: time columns first, then everything else
+  $timeColumns = @('TimeGenerated', 'Local_TimeGenerated', 'Local_Timezone')
+
   if ($SimplifiedQuery -or $ShowRawResult) {
-   return $ResultRaw
+   $colOrder = $timeColumns + ($ResultRaw[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
+   return ($ResultRaw | Select-Object -Property $colOrder)
   } else {
    $Result = $ResultRaw | ForEach-Object {
     # Use Add-Member to create the new properties on the read-only object
@@ -17855,12 +17868,16 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
     $_ | Add-Member -MemberType NoteProperty -Name 'Authentication_Requirement_Policies' -Value ($_.AuthenticationRequirementPolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Network_Details' -Value ($_.NetworkLocationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Session_Lifetime_Policies' -Value ($_.SessionLifetimePolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
+    # Conditional Access Details
+    $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Success' -Value (($_.UnifiedConditionalAccessPolicies | Where-Object result -eq "success" | Select-Object -Property displayName).displayName -Join ";")
+    $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Failure' -Value (($_.UnifiedConditionalAccessPolicies | Where-Object result -eq "failure" | Select-Object -Property displayName).displayName -Join ";")
     # Output the modified object down the pipeline
     $_
    } | Select-Object -Property * -ExcludeProperty *STRING,*_dynamic,*_string, # UNIFIED
    AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
 
-   return $Result
+   $colOrder = $timeColumns + ($Result[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
+   return ($Result | Select-Object -Property $colOrder)
 
   }
  } catch {
