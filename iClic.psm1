@@ -17809,6 +17809,21 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
  | extend UnifiedConditionalAccessPoliciesSTRING = tostring(CAP_List)
  | project-away UnifiedCAP_TEMP, CAP_List
  '
+
+ $QueryStart += '
+ | extend CAP = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
+ | mv-apply p = CAP on (
+  where tostring(p.result) in ("success", "failure")
+  | summarize
+   Conditional_Access_Success = make_set_if(tostring(p.displayName), tostring(p.result) == "success"),
+   Conditional_Access_Failure = make_set_if(tostring(p.displayName), tostring(p.result) == "failure")
+ )
+ | extend
+  Conditional_Access_Success = strcat_array(Conditional_Access_Success, ";"),
+  Conditional_Access_Failure = strcat_array(Conditional_Access_Failure, ";")
+ | project-away CAP
+'
+
  # $QueryStart += '| extend UnifiedConditionalAccessPoliciesSTRING = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))'
 
 
@@ -17817,7 +17832,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
    ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
-   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType'
+   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,
+   Conditional_Access_Success, Conditional_Access_Failure'
   }
 
   # Query will always end with this
@@ -17869,9 +17885,9 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
     $_ | Add-Member -MemberType NoteProperty -Name 'Network_Details' -Value ($_.NetworkLocationDetails | ConvertFrom-Json -ErrorAction SilentlyContinue)
     $_ | Add-Member -MemberType NoteProperty -Name 'Session_Lifetime_Policies' -Value ($_.SessionLifetimePolicies | ConvertFrom-Json -ErrorAction SilentlyContinue)
     # Conditional Access Details
-    $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Success' -Value (($_.UnifiedConditionalAccessPolicies | Where-Object result -eq "success" | Select-Object -Property displayName).displayName -Join ";")
-    $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Failure' -Value (($_.UnifiedConditionalAccessPolicies | Where-Object result -eq "failure" | Select-Object -Property displayName).displayName -Join ";")
-    # Output the modified object down the pipeline
+    # $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Success' -Value (($_.UnifiedConditionalAccessPolicies | Where-Object result -eq "success" | Select-Object -Property displayName).displayName -Join ";")
+    # $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Failure' -Value (($_.UnifiedConditionalAccessPolicies | Where-Object result -eq "failure" | Select-Object -Property displayName).displayName -Join ";")
+    # # Output the modified object down the pipeline
     $_
    } | Select-Object -Property * -ExcludeProperty *STRING,*_dynamic,*_string, # UNIFIED
    AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
