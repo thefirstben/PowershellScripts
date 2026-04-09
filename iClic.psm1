@@ -17842,6 +17842,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   # Merge Start & End
   $Query = $QueryStart + $QueryEnd
 
+  write-verbose "Final Query : $Query"
+
   # Launch Query
   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
 
