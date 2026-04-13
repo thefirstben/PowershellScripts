@@ -11841,7 +11841,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
  Param (
   [parameter(Mandatory=$true)]$AppRegistration, # App to update
   [parameter(Mandatory=$true)]$API, # Service Principal Object ID that holds the Permission - Example : 'Microsoft Graph'
-  [Parameter(Mandatory=$true)]$RightName,
+  [Parameter(Mandatory=$true)]$Permission, # Permission to add (Example : User.Read.All) / Can use the GUID of the permission for faster processing but less user friendly
   [ValidateSet("Application","Delegated")]$PermissionType,
   $Token,
   [switch]$Consent
@@ -11875,14 +11875,27 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   # BLOCK 3 - Find Permission Detail
   Write-Verbose "Searching for Permissions Type $PermissionType"
   if ($PermissionType) {
-   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object {($_.Value -eq $RightName) -and ($_.PermissionType -eq $PermissionType) }
+   if (Assert-IsGUID -Value $Permission) {
+    write-Verbose "Permission provided as GUID, searching for $Permission in API $ServicePrincipalID with type $PermissionType"
+    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object {($_.RuleID -eq $Permission) -and ($_.PermissionType -eq $PermissionType) }
+   } else {
+    write-Verbose "Permission provided as Name, searching for $Permission in API $ServicePrincipalID with type $PermissionType"
+    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object {($_.Value -eq $Permission) -and ($_.PermissionType -eq $PermissionType) }
+   }
   } else {
-   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object "Value" -eq $RightName
+   if (Assert-IsGUID -Value $Permission)
+   {
+    write-Verbose "Permission provided as GUID, searching for $Permission in API $ServicePrincipalID with no specific type"
+    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object { $_.RuleID -eq $Permission }
+   } else {
+    write-Verbose "Permission provided as Name, searching for $Permission in API $ServicePrincipalID with no specific type"
+    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object { $_.Value -eq $Permission }
+   }
   }
   if (! $RightsToAdd) {
-   Throw "$RightName ($PermissionType) was not found in API $ServicePrincipalID, please check"
+   Throw "$Permission ($PermissionType) was not found in API $ServicePrincipalID, please check"
   } elseif ($RightsToAdd.Count -gt 1) {
-   Throw "$RightName contains multiple values in API $ServicePrincipalID, please check or force the permission type"
+   Throw "$Permission contains multiple values in API $ServicePrincipalID, please check or force the permission type"
   }
 
   # BLOCK 4 - Add Permission to App Registration (Graph API)
@@ -11899,6 +11912,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
 
   # Logic to merge permissions (RequiredResourceAccess is a list)
   $CurrentAccessList = $AppObject.requiredResourceAccess
+  $PermissionAlreadyPresent = $false
 
   # Check if the API (Resource) is already listed in the app
   $ApiEntry = $CurrentAccessList | Where-Object { $_.resourceAppId -eq $ApiAppID }
@@ -11918,18 +11932,20 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
     $ApiEntry.resourceAccess += @{ id = $PermUUID; type = $TypeStr }
    } Else {
     Write-Host -ForegroundColor "Magenta" -Object "Permission '$($RightsToAdd.Value) [$($RightsToAdd.PermissionType)]' already exists on the App Registration '$AppRegistration'"
-    Return
+    $PermissionAlreadyPresent = $true
    }
   }
 
-  # Commit the Update (PATCH)
-  Write-Verbose "Applying new permissions (Patch Method)"
-  $Body = @{ requiredResourceAccess = $CurrentAccessList } | ConvertTo-Json -Depth 5 -Compress
-  Invoke-RestMethod -Headers $Header -Method Patch -Body $Body -Uri "https://graph.microsoft.com/v1.0/applications/$($AppObject.id)"
+  if (-not $PermissionAlreadyPresent) {
+   # Commit the Update (PATCH)
+   Write-Verbose "Applying new permissions (Patch Method)"
+   $Body = @{ requiredResourceAccess = $CurrentAccessList } | ConvertTo-Json -Depth 5 -Compress
+   Invoke-RestMethod -Headers $Header -Method Patch -Body $Body -Uri "https://graph.microsoft.com/v1.0/applications/$($AppObject.id)"
+  }
 
   if ($Consent) {
    Write-Verbose "Granting Consent"
-   Grant-AzureAppRegistrationConsent -AppRegistration $AppRegistration -API $API -RightName $RightName -PermissionType $PermissionType -Token $authDetails.Token
+    Grant-AzureAppRegistrationConsent -AppRegistration $AppRegistration -API $API -Permission $Permission -PermissionType $PermissionType -Token $authDetails.Token
   }
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -12134,7 +12150,7 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
  Param (
   [parameter(Mandatory=$true)]$AppRegistration,
   [parameter(Mandatory=$true)]$API,
-  [Parameter(Mandatory=$true)]$RightName,
+  [Alias("RightName")][Parameter(Mandatory=$true)]$Permission,
   [ValidateSet("Application","Delegated")]$PermissionType,
   $Token
  )
@@ -12173,6 +12189,25 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
   }
   if (!$ResSP) { Throw "Service Principal for API '$API' not found." } else { Write-Verbose "Using API ID : $($ResSP.id)" }
 
+  Write-Verbose "Resolving permission details"
+  if (Assert-IsGUID -Value $Permission) {
+   $PermissionToGrant = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ResSP.appId -Token $authDetails.Token | Where-Object {
+    ($_.RuleID -eq $Permission) -and ($_.PermissionType -eq $PermissionType)
+   }
+  } else {
+   $PermissionToGrant = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ResSP.appId -Token $authDetails.Token | Where-Object {
+    ($_.Value -eq $Permission) -and ($_.PermissionType -eq $PermissionType)
+   }
+  }
+  if (!$PermissionToGrant) {
+   Throw "Permission '$Permission' ($PermissionType) not found in API '$API'."
+  } elseif ($PermissionToGrant.Count -gt 1) {
+   Throw "Permission '$Permission' contains multiple values in API '$API', please force the permission type."
+  }
+
+  $PermissionValue = $PermissionToGrant.Value
+  $PermissionId = $PermissionToGrant.RuleID
+
   # --- 2. Perform Grant ---
 
   if ($PermissionType -eq "Application") {
@@ -12180,8 +12215,8 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
 
    # 1. Find the Role UUID inside the API definition
    Write-Verbose "Find Role UUID on the API"
-   $RoleID = ($ResSP.appRoles | Where-Object { $_.value -eq $RightName }).id
-   if (!$RoleID) { Throw "Role '$RightName' not found in API '$API'." }
+   $RoleID = ($ResSP.appRoles | Where-Object { $_.id -eq $PermissionId }).id
+   if (!$RoleID) { Throw "Role '$Permission' not found in API '$API'." }
 
    # 2. Check Existing Grants # Grant on App Registration are seen by the appRoleAssigneTo (whereas permission only show permissions not if it's Assigned)
    Write-Verbose "Get current Grants"
@@ -12190,7 +12225,7 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
    $AlreadyGranted = $AllGrants | Where-Object { $_.appRoleId -eq $RoleID }
 
    if (!$AlreadyGranted) {
-    Write-Verbose "Granting App Role: $RightName"
+    Write-Verbose "Granting App Role: $PermissionValue"
     $Body = @{
      principalId = $AppSPID  # The Client (You)
      resourceId  = $ResSP.id     # The API (Graph)
@@ -12200,7 +12235,7 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
     Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
     Write-Verbose "Success: Permission Granted."
    } else {
-    Write-Host -ForegroundColor Magenta -Object "App Role $RightName from API $API already granted for App $AppRegistration ($PermissionType)"
+      Write-Host -ForegroundColor Magenta -Object "App Role $PermissionValue from API $API already granted for App $AppRegistration ($PermissionType)"
    }
   } else {
    # === Delegated Permission (Scope) ===
@@ -12208,17 +12243,17 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
    Write-Verbose "Get Current Delegated Grants"
    # $ExistingGrant = (Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue).value
    # Used the Get-AzureGraph to avoid Error as the ErrorAction SilentlyContinue on the Invoke-RestMethod was still failing when not finding existing grants
-   $ExistingGrant = get-azuregraph -Token $Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue
+  $ExistingGrant = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue
 
    Write-Verbose "Searching for API Scope Name"
-   # Look up the OFFICIAL case-sensitive name from the API # This fixes the "Profile" vs "profile" issue.
-   $OfficialScope = $ResSP.oauth2PermissionScopes | Where-Object { $_.value -eq $RightName } | Select-Object -ExpandProperty value
-   if (!$OfficialScope) { Throw "Scope '$RightName' not found in API definitions." }
-   if ($OfficialScope -cne $RightName) { Write-Warning "Case mismatch detected. Auto-correcting '$RightName' to '$OfficialScope'." }
+  # Look up the OFFICIAL case-sensitive name from the API # This fixes the "Profile" vs "profile" issue.
+  $OfficialScope = $ResSP.oauth2PermissionScopes | Where-Object { $_.id -eq $PermissionId } | Select-Object -ExpandProperty value
+  if (!$OfficialScope) { Throw "Scope '$Permission' not found in API definitions." }
+  if (($Permission -is [string]) -and (-not (Assert-IsGUID -Value $Permission)) -and ($OfficialScope -cne $Permission)) { Write-Warning "Case mismatch detected. Auto-correcting '$Permission' to '$OfficialScope'." }
 
    if (!$ExistingGrant) {
     # Create New
-    Write-Verbose "Creating new Grant for Scope: $RightName"
+   Write-Verbose "Creating new Grant for Scope: $OfficialScope"
     $Body = @{
      clientId = $AppSPID
      consentType = "AllPrincipals"
@@ -12236,12 +12271,12 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
      $Body = @{ scope = $NewScopes } | ConvertTo-Json
      Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($ExistingGrant.id)" -Headers $Header -Method Patch -Body $Body -ContentType $ContentType
     } else {
-     Write-Host -ForegroundColor Magenta -Object "App Role $OfficialScope from API $API already granted for App $AppRegistration ($PermissionType)"
+    Write-Host -ForegroundColor Magenta -Object "Scope $OfficialScope from API $API already granted for App $AppRegistration ($PermissionType)"
     }
    }
   }
  } Catch {
-  Write-Error "Error in Grant-AzureAppRegistrationConsent : $_"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret - Does not see Federated Credential, as the data is not seen in the JSON
@@ -17439,6 +17474,9 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
  }},
  @{name="clientAppTypes";expression={
   $_.conditions.clientAppTypes -Join(";")
+ }},
+ @{name="authenticationProtocolFilter";expression={
+  $_.conditions.authenticationFlows.transferMethods -Join(";")
  }},
  @{name="deviceFilterIncluded";expression={
   if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "include"}).Rule }
