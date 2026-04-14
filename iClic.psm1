@@ -10842,7 +10842,9 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
   [parameter(Mandatory = $true)]$UserToken, # Graph Token
   [Switch]$Readable, # Simplified view excluding uneeded data
   [Switch]$ExactScope, # Check to see what this is used for
-  [Switch]$ExcludeHigher, # Check to see what this is used for
+  [Switch]$HideDefender, # Exclude Defender permissions which are often too much and not relevant for most of the use cases
+  [Switch]$HideSubscription, # Hide Subscription and Management Group from the result, to avoid confusion with Management Group or Resource Group permissions
+  [Switch]$HideManagementGroup, # Hide Management Group from the result, to avoid confusion with Subscription or Resource Group permissions
   [GUID]$TargetPrincipalId, # To filter by ID, to avoid looking everything
 
   # == SCOPE PARAMETERS (Mutually Exclusive Sets) ==
@@ -11098,7 +11100,18 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
    }},
    @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }}
 
-  if ($ExcludeHigher) { $RequestResult = $RequestResult | Where-Object { $_.ResourceType -notin "managementGroups","subscriptions" } }
+  if ($HideManagementGroup) { $RequestResult = $RequestResult | Where-Object { $_.ResourceType -notin "managementGroups" } }
+  if ($HideSubscription) { $RequestResult = $RequestResult | Where-Object { $_.ResourceType -notin "subscriptions","managementGroups" } }
+
+  if ($HideDefender) { $RequestResult = $RequestResult | Where-Object {
+   $_.principalName -notlike "ASC provisioning default*" -and
+   $_.principalName -notlike "Defender for *" -and
+   $_.principalName -notlike "*/securityOperators/Defender*" -and
+   $_.principalName -notlike "Microsoft Defender for*" -and
+   $_.principalName -notlike "Microsoft Defender for*" -and
+   $_.principalName -ne "SqlVmAndArcSqlServersProtection" -and
+   $_.principalName -ne "storageDataScanner"
+  }}
 
   if ($Readable) {
    $RequestResult | Sort-Object Scope,principalName | Select-Object AssignmentType,principalType,principalName,roleDefinitionName,roleDefinitionType,ManagementGroup,SubscriptionName,ResourceGroupName,ResourceName,ResourceType,scope,assignmentId
@@ -11190,8 +11203,6 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
 
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $header = $authDetails.Header
-
   Write-Verbose "Getting Role Definition"
   # Resolve Role Definition ID
   # The API requires: /subscriptions/{sub}/providers/Microsoft.Authorization/roleDefinitions/{guid}
@@ -11207,12 +11218,12 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
    $roleDefId = $Role
   } else {
    # It's a name (e.g., "Contributor"). We must search for it. Search at the scope provided.
-   $roleSearchUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleDefinitions?`$filter=roleName eq '$Role'&api-version=$APIVersion"
    Write-Verbose "Role Definition Name provided, will search for ID"
-   $roleResult = Invoke-RestMethod -Method Get -Headers $header -Uri $roleSearchUrl
-   if ($roleResult.value.Count -eq 0) { Throw "Role '$Role' not found at scope '$Scope'." }
-   if ($roleResult.value.Count -gt 1) { Throw "Role '$Role' was found multiple times at scope '$Scope'." }
-   $roleDefId = $roleResult.value.id
+   $roleSearchUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleDefinitions?`$filter=roleName eq '$Role'&api-version=$APIVersion"
+   $roleResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest $roleSearchUrl
+   if ($roleResult.Count -eq 0) { Throw "Role '$Role' not found at scope '$Scope'." }
+   if ($roleResult.Count -gt 1) { Throw "Role '$Role' was found multiple times at scope '$Scope'." }
+   $roleDefId = $roleResult.id
   }
 
   # Generate a unique GUID for the new assignment
@@ -11238,7 +11249,7 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   # Run Graph Method
   Write-Host -ForegroundColor Cyan -Object "Assigning role $Role for $Id [$ID_Type] on Scope $Scope"
   $putUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleAssignments/$($assignmentName)?api-version=$APIVersion"
-  $response = Invoke-RestMethod -Uri $putUrl -Method Put -Headers $header -Body $body -ContentType "application/json"
+  $response = Get-AzureGraph -Token $authDetails.Token -GraphRequest $putUrl -ErrorAction Stop -Method PUT -Body $body
   Write-Host -ForegroundColor Green "Success: Role assigned."
   if ($Verbose) { return $response }
 
@@ -17317,11 +17328,22 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   Write-Verbose "Return Result for $URL"
   return $GlobalResult
  } catch {
-  if ($($Error[0].ErrorDetails.Message -contains "{")) {
-   $ConvertedErrorMessage = $($Error[0].ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue).error.message
+  $ConvertedErrorMessage = $null
+  $errorDetailsMessage = $_.ErrorDetails.Message
+
+  if (-not [string]::IsNullOrWhiteSpace($errorDetailsMessage)) {
+   $parsedErrorMessage = $errorDetailsMessage | ConvertFrom-Json -ErrorAction SilentlyContinue
+   if ($parsedErrorMessage -and $parsedErrorMessage.error.message) {
+    $ConvertedErrorMessage = $parsedErrorMessage.error.message
+   } else {
+    Write-Verbose "ErrorDetails.Message is not valid JSON with error.message, returning raw message."
+    $ConvertedErrorMessage = $errorDetailsMessage
+   }
   } else {
-   $ConvertedErrorMessage = $Error[0]
+   Write-Verbose "No ErrorDetails.Message found, returning exception message."
+   $ConvertedErrorMessage = $_.Exception.Message
   }
+
   Write-Error -Message "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
  }
 }
