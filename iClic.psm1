@@ -14126,7 +14126,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
 }
 Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service principal, Assignement IDs are recommended, but UserName is possible but will be a lot slower. Uses Rest API with Token
  Param (
-  [parameter(Mandatory = $true)]$ServicePrincipalID, # Service Principal To Update
+  [parameter(Mandatory = $true)][Alias('ServicePrincipalID')]$ServicePrincipal, # Service Principal To Update (DisplayName, AppID or Object ID)
   [parameter(Mandatory = $true)]$ObjectToAddID, # User or group or object to add
   $AppRole, # AppRole to add (default : User)
   $Token
@@ -14138,11 +14138,24 @@ Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service pr
   'Content-type'  = "application/json"
  }
 
+ if (Assert-IsGUID $ServicePrincipal) {
+  # GUID input: try Object ID first, then AppID if Object ID lookup fails.
+  $ServicePrincipalInfo = Get-AzureServicePrincipal -ID $ServicePrincipal -Token $authDetails.Token -ErrorAction SilentlyContinue
+  if (! $ServicePrincipalInfo.ID) {
+   $ServicePrincipalInfo = Get-AzureServicePrincipal -AppID $ServicePrincipal -Token $authDetails.Token -ErrorAction Stop
+  }
+ } else {
+  $ServicePrincipalInfo = Get-AzureServicePrincipal -DisplayName $ServicePrincipal -Token $authDetails.Token -ErrorAction Stop
+ }
+
+ if (! $ServicePrincipalInfo.ID) { Throw "Service Principal not found: $ServicePrincipal" }
+ $ServicePrincipalID = $ServicePrincipalInfo.ID
+
  if ($AppRole) {
   if (Assert-IsGUID $AppRole) {
    $AppRoleID = $AppRole
   } else {
-  $AppID = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID`?`$select=AppID").appId
+  $AppID = $ServicePrincipalInfo.appId
   $AppRoleID = ((Get-AzureAppRegistration -AppID $AppID -Token $authDetails.Token).appRoles | Where-Object displayName -eq "$AppRole").id
   if (! $AppRoleID ) { throw "AppRole not found : $AppRole"}
   }
