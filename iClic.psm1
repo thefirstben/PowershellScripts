@@ -7504,7 +7504,7 @@ Function Install-GIT { # Download and install latest GIT [User version] (Non Adm
  }
 
  try {
-  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/downloads/win).links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href[0]
+  $DownloadLink = ((Invoke-WebRequest 'http://git-scm.com/install/windows').links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href[0]
   #Check Newest Version :
   $NewestVersion = ($DownloadLink -split "/" | Select-Object -Last 1) -replace '-64-bit.exe','' -replace 'Git-',''
   Write-Colored -NonColoredText "Newest version : " -ColoredText $NewestVersion -PrintDate
