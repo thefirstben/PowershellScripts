@@ -11380,34 +11380,28 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
   [switch]$CreateAssociatedServicePrincipal,
   $Token
  )
-
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
- # --- GRAPH API PATH ---
- Write-Host "Using Microsoft Graph API..."
- $graphUri = "https://graph.microsoft.com/v1.0"
-
- $header = $authDetails.Header
  $AppID = $null
 
  # 1. CHECK FOR/CREATE APP REGISTRATION
  try {
-  # Check if an app with the same name already exists
-  $checkAppUri = "$graphUri/applications?`$filter=displayName eq '$AppRegistrationName'"
-  $existingApp = Invoke-RestMethod -Uri $checkAppUri -Headers $Header -Method Get
+  Write-Verbose "Checking for existing App Registration with name '$AppRegistrationName'"
+  $existingApp = get-azuregraph -Token $authDetails.Token -GraphRequest "/applications?`$filter=displayName eq '$AppRegistrationName'" -ErrorAction SilentlyContinue
 
-  if ($existingApp.value.Count -gt 0) {
-   $AppID = $existingApp.value[0].appId
+  if ($existingApp.Count -gt 0) {
+   Write-Verbose "App Registration with name '$AppRegistrationName' already exists. Reusing existing App Registration."
+   $AppID = $existingApp.appId
    Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID: $AppID"
   } else {
+   Write-Verbose "No existing App Registration found with name '$AppRegistrationName'. Creating a new one."
    # Create a new, clean App Registration
-   $createAppUri = "$graphUri/applications"
    $appBody = @{
     displayName          = $AppRegistrationName
     signInAudience       = "AzureADMyOrg"
     requiredResourceAccess = @() # Ensures no default permissions are added
    } | ConvertTo-Json
 
-   $newApp = Invoke-RestMethod -Uri $createAppUri -Headers $Header -Method Post -Body $appBody
+   $newApp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/applications" -ErrorAction Stop -Method POST -Body $appBody
    $AppID = $newApp.appId
    Write-Host -ForegroundColor Green "Created clean App Registration `"$AppRegistrationName`" with ID: $AppID"
   }
@@ -11419,24 +11413,50 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
 
  # 2. CREATE ASSOCIATED SERVICE PRINCIPAL (IF REQUESTED)
  if ($AppID -and $CreateAssociatedServicePrincipal) {
+  write-verbose "CreateAssociatedServicePrincipal switch detected. Checking for or creating associated Service Principal for App ID: $AppID"
   try {
    # Check if the SP already exists to avoid errors
-   $checkSpUri = "$graphUri/servicePrincipals?`$filter=appId eq '$AppID'"
-   $existingSp = Invoke-RestMethod -Uri $checkSpUri -Headers $Header -Method Get
+   $existingSp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals?`$filter=appId eq '$AppID'" -ErrorAction SilentlyContinue
 
-   if ($existingSp.value.Count -gt 0) {
-    Write-Host -ForegroundColor Green "Associated Service Principal already exists with Object ID: $($existingSp.value[0].id)"
+   if ($existingSp.Count -gt 0) {
+    Write-Host -ForegroundColor Green "Associated Service Principal already exists with Object ID: $($existingSp.id)"
    } else {
     Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with App ID: $AppID"
-    $createSpUri = "$graphUri/servicePrincipals"
-    $spBody = @{
-     appId = $AppID
-    } | ConvertTo-Json
+    
+    # Retry logic for Service Principal creation - handles Azure AD replication delays
+    $maxRetries = 6
+    $retryCount = 0
+    $newSp = $null
+    $lastError = $null
+    
+    while ($retryCount -lt $maxRetries -and -not $newSp) {
+     try {
+      $spBody = @{
+       appId = $AppID
+       appRoleAssignmentRequired = $true
+      } | ConvertTo-Json
 
-    $newSp = Invoke-RestMethod -Uri $createSpUri -Headers $Header -Method Post -Body $spBody
-    Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id)"
-    Set-AzureServicePrincipalAssignementRequired -ServicePrincipalID $($newSp.id) -Token $Token
-    Write-Host -ForegroundColor Green "Set Assignement Required to True for Service Principal $($newSp.id)"
+      $newSp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals" -ErrorAction Stop -Method POST -Body $spBody
+      Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id) and Assignment Required set to True (Attempt: $($retryCount + 1))"
+      
+      if (-not $newSp.id) {
+       Throw "Failed to create Service Principal for App ID: $AppID. No Object ID returned."
+      }
+     }
+     catch {
+      $lastError = $_
+      $retryCount++
+      
+      if ($retryCount -lt $maxRetries) {
+       $backoffSeconds = [Math]::Min([Math]::Pow(2, $retryCount - 1), 32) # Exponential backoff: 1, 2, 4, 8, 16, 32 seconds
+       Write-Verbose "SP creation failed (Attempt $retryCount/$maxRetries): $($lastError.Exception.Message). Retrying in $backoffSeconds seconds..."
+       Start-Sleep -Seconds $backoffSeconds
+      }
+      else {
+       throw $lastError
+      }
+     }
+    }
    }
   }
   catch {
@@ -13948,51 +13968,20 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
   [Parameter(Mandatory=$true)]$ServicePrincipalID,
   $Token
  )
- if ($Token) {
-  Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID"
+  $CurrentValue = Get-AzureGraph -Token $authDetails.Token -GraphRequest $URI -ErrorAction Stop
+  if ( ! $CurrentValue.AppID ) { Throw "Service Principal not found" }
+  $Body = (@{
+   "appRoleAssignmentRequired" = 'true'
+  })
+  $BodyJSON = $Body | ConvertTo-JSON -Depth 6
 
-   $ContentType = "application/json"
-
-   $headers = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = $ContentType
-   }
-
-   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID"
-
-   $CurrentValue = Invoke-RestMethod -Headers $headers -Method 'GET' -ContentType $ContentType -Uri $URI
-
-   if ( ! $CurrentValue.AppID ) { Throw "Service Principal not found" }
-
-   $Body = (@{
-    "appRoleAssignmentRequired" = 'true'
-   })
-   $BodyJSON = $Body | ConvertTo-JSON -Depth 6
-
-   $CMDParams = @{
-    "URI"         = $URI
-    "Headers"     = $Headers
-    "Method"      = "PATCH"
-    "ContentType" = $ContentType
-    "Body" = $BodyJSON
-   }
-   # $CMDParams ;  return
-   Invoke-RestMethod @CMDParams
-  } catch {
-   if ($Error[0].ErrorDetails.message) {
-    $ErrorMessage = ($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message
-   } else {
-    $ErrorMessage = $Error[0]
-   }
-   Write-Error "Failed to set Assignement required value on $ServicePrincipalID ($ErrorMessage)"
-   if ($_.Exception.InnerException) {
-    Write-Error "Inner Exception: $($_.Exception.InnerException.Message)"
-   }
-   return $null
-  }
- } else {
-  az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest $URI -ErrorAction Stop -Method PATCH -Body $BodyJSON
+  Write-Verbose "Assignement required value set to true on $ServicePrincipalID"
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Set-AzureServicePrincipalCustomSecurityAttribute { # Set Custom Security Attribute on enterprise app
@@ -17067,22 +17056,35 @@ Function Assert-IsTokenLifetimeValid { # Check validity of token
  )
  try {
   if (-not $Token.PSObject.Properties.Name.Contains('expires_on')) {
-   Throw "The provided token object does not have an 'expires_on' property."
+   throw "The provided token object does not have an 'expires_on' property."
   }
-  $ExpirationTimeLocal = $token.expires_on.toLocalTime().DateTime
-  $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
-  $CurrentDate =  $(Format-date (Get-Date))
+
+  $rawExpiration = $Token.expires_on
+  if ($rawExpiration -is [datetimeoffset]) {
+   $expirationDateTime = $rawExpiration.LocalDateTime
+  } elseif ($rawExpiration -is [datetime]) {
+   $expirationDateTime = $rawExpiration.ToLocalTime()
+  } else {
+   $parsedDateTimeOffset = [datetimeoffset]::MinValue
+   if ([datetimeoffset]::TryParse([string]$rawExpiration, [ref]$parsedDateTimeOffset)) {
+    $expirationDateTime = $parsedDateTimeOffset.LocalDateTime
+   } else {
+    $expirationDateTime = ([datetime]$rawExpiration).ToLocalTime()
+   }
+  }
+
+  $ExpirationDate = Format-date (Get-Date $expirationDateTime)
+  $CurrentDate = Format-date (Get-Date)
 
   if ($ShowExpiration) { Write-Host "$CurrentDate : Token will expire at $ExpirationDate" }
 
-  $Result = $((NEW-TIMESPAN -Start $(Get-Date) -End $ExpirationDate) -gt 0)
-  if ($Result) {
-   return $true
-  } else {
-   throw "Token expired on $ExpirationDate."
-  }
- } Catch {
-  Write-Error $Error[0]
+  $Result = ((New-TimeSpan -Start (Get-Date) -End $expirationDateTime) -gt 0)
+  if ($Result) { return $true }
+
+  throw "Token expired on $ExpirationDate."
+ } catch {
+  $tokenValidationMessage = if ($_.Exception -and $_.Exception.Message) { $_.Exception.Message } else { [string]$_ }
+  throw "Token validation failed: $tokenValidationMessage"
  }
 }
 Function Convert-AccessToken { # Convert Access Token from a token
@@ -17209,7 +17211,7 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
  # If a token was found, validate it and construct the return object
  if ($null -ne $foundToken) {
   # VALIDATE THE TOKEN
-  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
+  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop | Out-Null
   Write-Verbose "Token lifetime is valid."
 
   # Assumes your token object has .token_type and .access_token properties
