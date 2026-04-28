@@ -9555,7 +9555,30 @@ Function Get-AzureManagementGroups { # Get all subscription and associated Manag
    Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
   }
 
-  $GlobalResult | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
+  $GlobalResult | ForEach-Object {
+    $ManagementGroupPath = @($_.properties.managementGroupAncestorsChain.displayName)
+    $ManagementGroupIdPath = @($_.properties.managementGroupAncestorsChain.name)
+    [array]::Reverse($ManagementGroupPath)
+    [array]::Reverse($ManagementGroupIdPath)
+
+    [PSCustomObject]@{
+     managementgroup = if ($ManagementGroupPath.Count -gt 0) { $ManagementGroupPath[-1] } else { $null }
+     managementgroupid = if ($ManagementGroupIdPath.Count -gt 0) { $ManagementGroupIdPath[-1] } else { $null }
+     managementgrouppath = $ManagementGroupPath -join "/"
+     subscription = [PSCustomObject]@{
+      name = $_.name
+      id = $_.subscriptionId
+     }
+    }
+   } | Group-Object -Property managementgroup, managementgroupid, managementgrouppath |
+   ForEach-Object {
+    [PSCustomObject]@{
+     managementgroup = $_.Group[0].managementgroup
+     managementgroupid = $_.Group[0].managementgroupid
+     managementgrouppath = $_.Group[0].managementgrouppath
+     subscription = @($_.Group.subscription | Sort-Object name -Unique)
+    }
+   } | Sort-Object managementgrouppath, managementgroup
  } catch {
   $Exception = $($Error[0])
   if ($Exception.ErrorDetails.message) {
@@ -12775,14 +12798,16 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
    if ($_.endDateTime -le $CurrentDate) {
     $ColorMsg = "Green"
     $TextMsg = "expired on"
+    $DefaultChoice = "0"
    } else {
     $ColorMsg = "Red"
     $TextMsg = "will expire on"
+    $DefaultChoice = "1"
    }
    Write-host -ForegroundColor $ColorMsg -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] from App $($AppInfo.displayName) that $TextMsg $($_.endDateTime)"
    # If confirmation is required ask for confirmation
    if (! $NoConfirm ) {
-    $Answer = Question "Please confirm removal" -defaultChoice "1"
+    $Answer = Question "Please confirm removal" -defaultChoice $DefaultChoice
     if (! $Answer) {write-host -foregroundcolor "Yellow" "Cancelled" ; return}
    }
    # Remove secret one by one
