@@ -15294,7 +15294,6 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   $GlobalResult = @()
   $ContinueRunning = $True
   $FirstRun=$True
-
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   $header = $authDetails.Header
 
@@ -17328,7 +17327,12 @@ Function Get-AzureGraph { # Send base graph request without any requirements
     Write-Verbose "Calculate Result for request $URL (loop $Count)"
     $GlobalResult += $CurrentResult.Value
     $NextRequest = $CurrentResult.'@odata.nextLink'
-    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
+    if ($NextRequest) {
+      Write-Verbose "NextLink found for request $URL (loop $Count) : $NextRequest"
+     $ContinueRunning = $True
+    } else {
+     $ContinueRunning = $False
+    }
 
     $Count++
    } catch {
