@@ -12857,36 +12857,76 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   $header = $authDetails.Header
 
+  # Get existing roles for merge/disable operations
+  $ExistingRoles = @()
+  if (-not $Overwrite) {
+   Write-Verbose "Getting existing roles for merge operation"
+   $ExistingRoles = get-azureappregistrationappRoles -ID $AppRegistrationObjectID -Token $authDetails.Token
+  }
+
   if ($AppRoleList) {
    Write-Verbose "Adding Role List"
+   $RolesToApply = @()
+   
+   if (-not $Overwrite) {
+    Write-Verbose "Merging: keeping ALL existing roles and adding new ones"
+    # Keep ALL existing roles unchanged (preserving IDs, state, membertypes)
+    foreach ($ExistingRole in $ExistingRoles) {
+     $RolesToApply += [PSCustomObject]@{
+      description        = $ExistingRole.description
+      displayName        = $ExistingRole.displayName
+      value              = $ExistingRole.value
+      allowedMemberTypes = $ExistingRole.allowedMemberTypes
+      isEnabled          = $ExistingRole.isEnabled
+      id                 = $ExistingRole.id
+     }
+    }
+   }
+   
+   # Add new roles (only when not overwriting, or when overwriting with explicit flag)
+   $RolesToApply += $AppRoleList
+   
    $body = @{
-    appRoles = @(
-       $AppRoleList
-    )
+    appRoles = @($RolesToApply)
    }| ConvertTo-Json -Depth 10
   } else {
    Write-Verbose "Adding Individual Role. Checking Member Type"
    if ($allowedMemberTypes -eq 'Both') { $allowedMemberTypes = "User","Application" }
+   $RolesToApply = @()
+   
+   if (-not $Overwrite) {
+    Write-Verbose "Merging existing roles with new individual role"
+    $RolesToApply = @($ExistingRoles | ForEach-Object {
+     [PSCustomObject]@{
+      description        = $_.description
+      displayName        = $_.displayName
+      value              = $_.value
+      allowedMemberTypes = $_.allowedMemberTypes
+      isEnabled          = $_.isEnabled
+      id                 = $_.id
+     }
+    })
+   }
+   
+   $RolesToApply += @{
+    allowedMemberTypes = @($allowedMemberTypes)
+    description         = $Description
+    displayName         = $DisplayName
+    id                  = [guid]::NewGuid()
+    isEnabled           = $true
+    value               = $Value
+   }
+   
    $body = @{
-    appRoles = @(
-      @{
-        allowedMemberTypes = @($allowedMemberTypes)
-        description         = $Description
-        displayName         = $DisplayName
-        id                  = [guid]::NewGuid()
-        isEnabled           = $true
-        value               = $Value
-      }
-    )
+    appRoles = @($RolesToApply)
    } | ConvertTo-Json -Depth 10
-
   }
 
   if ($Overwrite) {
-   Write-Verbose "Overwrite flag set, getting current roles"
-   $AppRoleToRemove = get-azureappregistrationappRoles -ID $AppRegistrationObjectID -Token $authDetails.Token | ForEach-Object {[PSCustomObject]@{description = $_.description ; displayName = $_.displayName ; value = $_.value ; allowedMemberTypes = @('User') ; isEnabled = $false ; id = $_.id }}
+   Write-Verbose "Overwrite flag set, disabling existing roles first"
+   $AppRoleToRemove = get-azureappregistrationappRoles -ID $AppRegistrationObjectID -Token $authDetails.Token | ForEach-Object {[PSCustomObject]@{description = $_.description ; displayName = $_.displayName ; value = $_.value ; allowedMemberTypes = $_.allowedMemberTypes ; isEnabled = $false ; id = $_.id }}
    $RemovalBody = @{ appRoles = @( $AppRoleToRemove ) }| ConvertTo-Json -Depth 10
-   Write-Verbose "Overwrite flag set, disabling existing roles"
+   Write-Verbose "Overwrite flag set, sending disable request"
    Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationObjectID" -Headers $header -Body $RemovalBody
   }
 
@@ -12975,22 +13015,28 @@ Function New-AppRegistrationEmailContent { # Used to prepare the content of the 
   $Result
  )
 
+ # Build one row per object in Result (including duplicates), or fallback to single-parameter row.
+ $Rows = @()
  if ($Result) {
-  $TenantID = $Result.TenantID
-  $ApplicationDisplayName = $Result.ApplicationDisplayName
-  $ApplicationID = $Result.ApplicationID
-  $secret = $Result.secret
-  $Secret_Start_Date = $Result.Secret_Start_Date
-  $Secret_End_Date = $Result.Secret_End_Date
- }
-
- $result = [ordered]@{
-  "Tenant ID" = $TenantID
-  "Application Name" = $ApplicationDisplayName
-  "Application ID" = $ApplicationID
-  "Secret" = $secret
-  "Secret Start Date" = $Secret_Start_Date
-  "Secret End Date" = $Secret_End_Date
+  foreach ($Item in @($Result)) {
+   $Rows += [ordered]@{
+    "Tenant ID" = $Item.TenantID
+    "Application Name" = if ($Item.ApplicationDisplayName) { $Item.ApplicationDisplayName } else { $Item."Application Name" }
+    "Application ID" = if ($Item.ApplicationID) { $Item.ApplicationID } else { $Item."Application ID" }
+    "Secret" = $Item.secret
+    "Secret Start Date" = if ($Item.Secret_Start_Date) { $Item.Secret_Start_Date } else { $Item."Secret Start Date" }
+    "Secret End Date" = if ($Item.Secret_End_Date) { $Item.Secret_End_Date } else { $Item."Secret End Date" }
+   }
+  }
+ } else {
+  $Rows += [ordered]@{
+   "Tenant ID" = $TenantID
+   "Application Name" = $ApplicationDisplayName
+   "Application ID" = $ApplicationID
+   "Secret" = $secret
+   "Secret Start Date" = $Secret_Start_Date
+   "Secret End Date" = $Secret_End_Date
+  }
  }
 
 # Create Base CSS
@@ -13003,11 +13049,17 @@ $Header = @"
 </style>
 "@
 
-# Build vertical table HTML (Property | Value)
+# Build table HTML with one row per object
 $TableHtml = "<table>"
-$TableHtml += "<tr><th>Property</th><th>Value</th></tr>"
-foreach ($key in $result.Keys) {
- $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($key) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($result[$key]) )</td></tr>"
+$TableHtml += "<tr><th>Tenant ID</th><th>Application Name</th><th>Application ID</th><th>Secret</th><th>Secret Start Date</th><th>Secret End Date</th></tr>"
+foreach ($Row in $Rows) {
+ $TableHtml += ("<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>" -f
+  [System.Web.HttpUtility]::HtmlEncode($Row['Tenant ID']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Application Name']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Application ID']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret Start Date']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret End Date']))
 }
 $TableHtml += "</table>"
 
