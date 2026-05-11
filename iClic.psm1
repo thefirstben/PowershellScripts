@@ -13042,8 +13042,8 @@ Function New-AppRegistrationEmailContent { # Used to prepare the content of the 
 # Create Base CSS
 $Header = @"
 <style>
- table { border-collapse: collapse; width: 60%; font-family: Arial, sans-serif; }
- th { background-color: #0078D4; color: white; padding: 8px; text-align: center; width: 30%; }
+ table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 10pt; table-layout: fixed; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
  td { border: 1px solid #dddddd; padding: 8px; }
  tr:nth-child(even) { background-color: #f2f2f2; }
 </style>
@@ -13083,7 +13083,6 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
   [string]$DisplayName,
   [string]$UserPrincipalName,
   [string]$Secret,
-  [string]$Owner,
   [string]$ID,
   $Result
  )
@@ -13099,7 +13098,6 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
     DisplayName = $Item.DisplayName
     UserPrincipalName = $Item.UserPrincipalName
     Password = $Item.Password
-    Owner = $Item.Owner
     ID = $Item.ID
    }
   }
@@ -13108,7 +13106,6 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
    DisplayName = $DisplayName
    UserPrincipalName = $UserPrincipalName
    Password = $Secret
-   Owner = $Owner
    ID = $ID
   }
  }
@@ -13125,9 +13122,9 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
 
  # Build horizontal table HTML (1 row per user)
  $TableHtml = "<table>"
- $TableHtml += "<tr><th>Display Name</th><th>User Principal Name</th><th>Password</th><th>Owner</th><th>ID</th></tr>"
+ $TableHtml += "<tr><th>Display Name</th><th>User Principal Name</th><th>Password</th><th>ID</th></tr>"
  foreach ($User in $UserRows) {
-  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($User.DisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.UserPrincipalName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Password) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Owner) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.ID) )</td></tr>"
+  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($User.DisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.UserPrincipalName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Password) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.ID) )</td></tr>"
  }
  $TableHtml += "</table>"
 
