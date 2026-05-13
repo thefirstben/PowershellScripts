@@ -11466,6 +11466,30 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
       if (-not $newSp.id) {
        Throw "Failed to create Service Principal for App ID: $AppID. No Object ID returned."
       }
+      
+      # Added verification step to confirm SP creation due to potential Azure AD replication delays
+      $verificationAttempts = 0
+      $maxVerificationAttempts = 20
+      $newlyCreatedSP = $null
+      
+      while ($verificationAttempts -lt $maxVerificationAttempts -and -not $newlyCreatedSP) {
+       Write-Host -ForegroundColor Cyan -Object "Verifying creation of Service Principal for App ID: $AppID (Attempt $($verificationAttempts + 1)/$maxVerificationAttempts)"
+       $verificationResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals?`$filter=appId eq '$AppID'" -ErrorAction SilentlyContinue
+       
+       # Check if we got a valid result with an id
+       if ($verificationResult -and $verificationResult.id) {
+        $newlyCreatedSP = $verificationResult
+        Write-Host -ForegroundColor Green "Service Principal verified successfully with Object ID: $($newlyCreatedSP.id)"
+        break
+       }
+       
+       $verificationAttempts++
+       if ($verificationAttempts -lt $maxVerificationAttempts) {
+        Start-Sleep -Seconds 2 # Short delay before next verification attempt
+       } else {
+        Write-Warning "Service Principal verification timeout. Max attempts ($maxVerificationAttempts) reached. SP may still be replicating."
+       }
+      }
      } catch {
       $lastError = $_
       $retryCount++
@@ -11478,12 +11502,6 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
       else {
        throw $lastError
       }
-     }
-     # Added verification step to confirm SP creation due to potential Azure AD replication delays
-     while (! $newlyCreatedSP) {
-      Write-Host -ForegroundColor Cyan -Object "Verifying creation of Service Principal for App ID: $AppID"
-      $NewlyCreatedSP = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals?`$filter=appId eq '$AppID'" -ErrorAction SilentlyContinue
-      Start-Sleep -Seconds 3 # Short delay before next verification attempt
      }
     }
    }
@@ -16763,6 +16781,78 @@ Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
 
  write-host "Setting Mail as UserUPN for user $UserUPN"
  Invoke-RestMethod -Method PATCH -headers $header -Uri $GraphURL -Body $ParamJson
+}
+
+# Sharepoint Scripts
+Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname+path [Uses Rest API]
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true)][string]$SiteURL, # Full URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME/docs/Forms/AllItems.aspx
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Parse hostname and site path from the URL (ignore anything beyond /sites/<name>)
+  $uri = [System.Uri]$SiteURL
+  $hostname = $uri.Host
+  # Match /sites/<name> or /teams/<name>
+  if ($uri.AbsolutePath -match "^(/sites/[^/]+|/teams/[^/]+)") {
+   $sitePath = $Matches[1]
+  } else {
+   throw "Could not extract site path from URL '$SiteURL'. Expected a /sites/ or /teams/ path."
+  }
+
+  Write-Verbose "Resolving Site ID for: $hostname$sitePath"
+  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}" -ErrorAction Stop
+
+  Write-Host -ForegroundColor Green "Resolved Site: $($result.displayName)"
+  Write-Host -ForegroundColor Green "Site ID: $($result.id)"
+  return $result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Add-SharepointSiteAppPermission { # Grant an App Registration access to a specific SharePoint site (Sites.Selected model) [Uses Rest API]
+ [CmdletBinding(DefaultParameterSetName = "BySiteID")]
+ Param (
+  [Parameter(Mandatory = $true, ParameterSetName = "BySiteID")][string]$SiteID,   # SharePoint Site ID (hostname,guid,guid format from Graph API)
+  [Parameter(Mandatory = $true, ParameterSetName = "ByURL")][string]$SiteURL,     # Full SharePoint URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME
+  [Parameter(Mandatory = $true)][string]$AppID,                                   # App Registration Application (Client) ID
+  [Parameter(Mandatory = $true)][string]$AppName,                                 # App Registration Display Name
+  [Parameter(Mandatory = $true)][ValidateSet("read", "write", "read,write")]
+  [string]$Role,                                                                   # Permission role to grant
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Resolve Site ID from URL if provided
+  if ($PSCmdlet.ParameterSetName -eq "ByURL") {
+   Write-Host -ForegroundColor DarkMagenta "Resolving Site ID from URL: $SiteURL"
+   $site = Get-SharepointSiteID -SiteURL $SiteURL -Token $authDetails.Token -ErrorAction Stop
+   $SiteID = $site.id
+  }
+
+  $body = @{
+   roles              = @($Role -split ",")
+   grantedToIdentities = @(
+    @{
+     application = @{
+      id          = $AppID
+      displayName = $AppName
+     }
+    }
+   )
+  } | ConvertTo-Json -Depth 5
+
+  Write-Host -ForegroundColor DarkMagenta "Granting '$Role' permission on Site '$SiteID' to App '$AppName' ($AppID)"
+  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$SiteID/permissions" -Method POST -Body $body -ErrorAction Stop
+  Write-Host -ForegroundColor Green "Permission granted successfully. Permission ID: $($result.id)"
+  return $result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 
 # Token Management
