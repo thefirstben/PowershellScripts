@@ -88,9 +88,9 @@ if ($env:LOCALAPPDATA) {
 
 if (! (Test-Path $iClic_TempPath)) {
  New-item -ItemType Directory $iClic_TempPath\ -Force | Out-Null
- Set-Location -Path "$iClic_TempPath"
+ # Set-Location -Path "$iClic_TempPath"
 } else {
- Set-Location -Path "$iClic_TempPath"
+ # Set-Location -Path "$iClic_TempPath"
 }
 
 # Set default colors used in functions
