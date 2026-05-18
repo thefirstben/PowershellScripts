@@ -7504,7 +7504,7 @@ Function Install-GIT { # Download and install latest GIT [User version] (Non Adm
  }
 
  try {
-  $DownloadLink = ((Invoke-WebRequest https://git-scm.com/downloads/win).links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href[0]
+  $DownloadLink = ((Invoke-WebRequest 'http://git-scm.com/install/windows').links | Where-Object { ($_ -like  "*-64-bit*") -and ($_ -notlike "*Portable*") }).href[0]
   #Check Newest Version :
   $NewestVersion = ($DownloadLink -split "/" | Select-Object -Last 1) -replace '-64-bit.exe','' -replace 'Git-',''
   Write-Colored -NonColoredText "Newest version : " -ColoredText $NewestVersion -PrintDate
@@ -8866,13 +8866,15 @@ Function Set-CurrentUserLangToAllUsers { # Set the current local from current us
 }
 Function Set-PowershellProfileForAllUsers { # Set a file as the profile for all users
  Param (
-  $ProfilePath="$env:OneDrive\Git\PowershellScripts\iClic.ps1"
+  $ProfilePath="$env:OneDrive\Git\PowershellScripts\iClic.psm1"
  )
  $ProfileList=$($PROFILE.AllUsersAllHosts,$PROFILE.CurrentUserAllHosts)
  $ProfileList | ForEach-Object {
   try {
+   Write-Host -ForegroundColor Cyan "removing existing profile at $_"
    Remove-Item $_ -ErrorAction silentlycontinue
-   new-Item -Path $_ -ItemType SymbolicLink -Value $ProfilePath -ErrorAction Stop -Force
+   write-host -foregroundcolor "Green" "Creating symbolic link for $_ to $ProfilePath"
+   new-Item -Path $_ -ItemType HardLink -Value $ProfilePath -ErrorAction Stop
   } catch {
    write-host -foregroundcolor "Red" $Error[0]
   }
@@ -9555,7 +9557,30 @@ Function Get-AzureManagementGroups { # Get all subscription and associated Manag
    Throw "MISMATCH: Expected $TotalRecords but retrieved $($GlobalResult.Count). Some data may be missing due to API consistency or timeouts."
   }
 
-  $GlobalResult | Select-Object name,SubscriptionID,@{Label="managementgroup";expression={$ManagementGroup=$_.properties.managementGroupAncestorsChain.displayName ; [array]::Reverse($ManagementGroup) ; $ManagementGroup -join "/" }} | Sort-Object managementgroup
+  $GlobalResult | ForEach-Object {
+    $ManagementGroupPath = @($_.properties.managementGroupAncestorsChain.displayName)
+    $ManagementGroupIdPath = @($_.properties.managementGroupAncestorsChain.name)
+    [array]::Reverse($ManagementGroupPath)
+    [array]::Reverse($ManagementGroupIdPath)
+
+    [PSCustomObject]@{
+     managementgroup = if ($ManagementGroupPath.Count -gt 0) { $ManagementGroupPath[-1] } else { $null }
+     managementgroupid = if ($ManagementGroupIdPath.Count -gt 0) { $ManagementGroupIdPath[-1] } else { $null }
+     managementgrouppath = $ManagementGroupPath -join "/"
+     subscription = [PSCustomObject]@{
+      name = $_.name
+      id = $_.subscriptionId
+     }
+    }
+   } | Group-Object -Property managementgroup, managementgroupid, managementgrouppath |
+   ForEach-Object {
+    [PSCustomObject]@{
+     managementgroup = $_.Group[0].managementgroup
+     managementgroupid = $_.Group[0].managementgroupid
+     managementgrouppath = $_.Group[0].managementgrouppath
+     subscription = @($_.Group.subscription | Sort-Object name -Unique)
+    }
+   } | Sort-Object managementgrouppath, managementgroup
  } catch {
   $Exception = $($Error[0])
   if ($Exception.ErrorDetails.message) {
@@ -11380,36 +11405,29 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
   [switch]$CreateAssociatedServicePrincipal,
   $Token
  )
-
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
- # --- GRAPH API PATH ---
- Write-Host "Using Microsoft Graph API..."
- $graphUri = "https://graph.microsoft.com/v1.0"
-
- $header = $authDetails.Header
  $AppID = $null
 
  # 1. CHECK FOR/CREATE APP REGISTRATION
  try {
-  # Check if an app with the same name already exists
-  $checkAppUri = "$graphUri/applications?`$filter=displayName eq '$AppRegistrationName'"
-  $existingApp = Invoke-RestMethod -Uri $checkAppUri -Headers $Header -Method Get
+  Write-Verbose "Checking for existing App Registration with name '$AppRegistrationName'"
+  $existingApp = get-azuregraph -Token $authDetails.Token -GraphRequest "/applications?`$filter=displayName eq '$AppRegistrationName'" -ErrorAction SilentlyContinue
 
-  if ($existingApp.value.Count -gt 0) {
-   $AppID = $existingApp.value[0].appId
-   Write-Host -ForegroundColor Green "App Registration with name `"$AppRegistrationName`" already exists with ID: $AppID"
+  if ($existingApp.Count -gt 0) {
+   $AppID = $existingApp.appId
+   Write-Host -ForegroundColor Cyan "App Registration with name `"$AppRegistrationName`" already exists with ID: $AppID"
   } else {
+   Write-Host -ForegroundColor DarkMagenta -Object "No existing App Registration found with name '$AppRegistrationName'. Creating a new one."
    # Create a new, clean App Registration
-   $createAppUri = "$graphUri/applications"
    $appBody = @{
     displayName          = $AppRegistrationName
     signInAudience       = "AzureADMyOrg"
     requiredResourceAccess = @() # Ensures no default permissions are added
    } | ConvertTo-Json
 
-   $newApp = Invoke-RestMethod -Uri $createAppUri -Headers $Header -Method Post -Body $appBody
+   $newApp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/applications" -ErrorAction Stop -Method POST -Body $appBody
    $AppID = $newApp.appId
-   Write-Host -ForegroundColor Green "Created clean App Registration `"$AppRegistrationName`" with ID: $AppID"
+   Write-Host -ForegroundColor Green -Object "Created clean App Registration `"$AppRegistrationName`" with ID: $AppID"
   }
  }
  catch {
@@ -11419,24 +11437,73 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
 
  # 2. CREATE ASSOCIATED SERVICE PRINCIPAL (IF REQUESTED)
  if ($AppID -and $CreateAssociatedServicePrincipal) {
+  write-verbose "CreateAssociatedServicePrincipal switch detected. Checking for or creating associated Service Principal for App ID: $AppID"
   try {
    # Check if the SP already exists to avoid errors
-   $checkSpUri = "$graphUri/servicePrincipals?`$filter=appId eq '$AppID'"
-   $existingSp = Invoke-RestMethod -Uri $checkSpUri -Headers $Header -Method Get
+   $existingSp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals?`$filter=appId eq '$AppID'" -ErrorAction SilentlyContinue
 
-   if ($existingSp.value.Count -gt 0) {
-    Write-Host -ForegroundColor Green "Associated Service Principal already exists with Object ID: $($existingSp.value[0].id)"
+   if ($existingSp.Count -gt 0) {
+    Write-Host -ForegroundColor Cyan -Object "Associated Service Principal already exists with Object ID: $($existingSp.id)"
    } else {
-    Write-Host -ForegroundColor Green "Creating associated Service Principal for `"$AppRegistrationName`" with App ID: $AppID"
-    $createSpUri = "$graphUri/servicePrincipals"
-    $spBody = @{
-     appId = $AppID
-    } | ConvertTo-Json
+    Write-Host -ForegroundColor DarkMagenta -Object "Creating associated Service Principal for `"$AppRegistrationName`" with App ID: $AppID"
+    
+    # Retry logic for Service Principal creation - handles Azure AD replication delays
+    $maxRetries = 6
+    $retryCount = 0
+    $newSp = $null
+    $lastError = $null
+    
+    while ($retryCount -lt $maxRetries -and -not $newSp) {
+     try {
+      $spBody = @{
+       appId = $AppID
+       appRoleAssignmentRequired = $true
+      } | ConvertTo-Json
 
-    $newSp = Invoke-RestMethod -Uri $createSpUri -Headers $Header -Method Post -Body $spBody
-    Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id)"
-    Set-AzureServicePrincipalAssignementRequired -ServicePrincipalID $($newSp.id) -Token $Token
-    Write-Host -ForegroundColor Green "Set Assignement Required to True for Service Principal $($newSp.id)"
+      $newSp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals" -ErrorAction Stop -Method POST -Body $spBody
+      Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id) and Assignment Required set to True (Attempt: $($retryCount + 1))"
+    
+      if (-not $newSp.id) {
+       Throw "Failed to create Service Principal for App ID: $AppID. No Object ID returned."
+      }
+      
+      # Added verification step to confirm SP creation due to potential Azure AD replication delays
+      $verificationAttempts = 0
+      $maxVerificationAttempts = 20
+      $newlyCreatedSP = $null
+      
+      while ($verificationAttempts -lt $maxVerificationAttempts -and -not $newlyCreatedSP) {
+       Write-Host -ForegroundColor Cyan -Object "Verifying creation of Service Principal for App ID: $AppID (Attempt $($verificationAttempts + 1)/$maxVerificationAttempts)"
+       $verificationResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals?`$filter=appId eq '$AppID'" -ErrorAction SilentlyContinue
+       
+       # Check if we got a valid result with an id
+       if ($verificationResult -and $verificationResult.id) {
+        $newlyCreatedSP = $verificationResult
+        Write-Host -ForegroundColor Green "Service Principal verified successfully with Object ID: $($newlyCreatedSP.id)"
+        break
+       }
+       
+       $verificationAttempts++
+       if ($verificationAttempts -lt $maxVerificationAttempts) {
+        Start-Sleep -Seconds 2 # Short delay before next verification attempt
+       } else {
+        Write-Warning "Service Principal verification timeout. Max attempts ($maxVerificationAttempts) reached. SP may still be replicating."
+       }
+      }
+     } catch {
+      $lastError = $_
+      $retryCount++
+      
+      if ($retryCount -lt $maxRetries) {
+       $backoffSeconds = [Math]::Min([Math]::Pow(2, $retryCount - 1), 32) # Exponential backoff: 1, 2, 4, 8, 16, 32 seconds
+       Write-Verbose "SP creation failed (Attempt $retryCount/$maxRetries): $($lastError.Exception.Message). Retrying in $backoffSeconds seconds..."
+       Start-Sleep -Seconds $backoffSeconds
+      }
+      else {
+       throw $lastError
+      }
+     }
+    }
    }
   }
   catch {
@@ -12450,118 +12517,83 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
   $Token
  )
 
- if ($PSBoundParameters.ContainsKey('Token')) {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ $headers = $authDetails.Header
+ $graphUri = "https://graph.microsoft.com/v1.0"
+ try {
+  $application = $null
+  $getAppUri = ""
 
-  Write-Host "Using Microsoft Graph API..."
-  $graphUri = "https://graph.microsoft.com/v1.0"
-  $Headers = @{
-   'Authorization' = "Bearer $($Token.Access_Token)"
-   'Content-Type'  = 'application/json'
+  switch ($PSCmdlet.ParameterSetName) {
+   "ID"        { $getAppUri = "$graphUri/applications/$ID" }
+   "AppID"     {
+    $filter = [System.Web.HttpUtility]::UrlEncode("appId eq '$AppID'")
+    $getAppUri = "$graphUri/applications?`$filter=$filter"
+   }
+   "NAME"      {
+    $filter = [System.Web.HttpUtility]::UrlEncode("displayName eq '$DisplayName'")
+    $getAppUri = "$graphUri/applications?`$filter=$filter"
+   }
   }
 
-  try {
-   $application = $null
-   $getAppUri = ""
+  $appResponse = Invoke-RestMethod -Uri $getAppUri -Headers $Headers -Method Get
+  $application = if ($appResponse.value) { $appResponse.value[0] } else { $appResponse }
 
-   switch ($PSCmdlet.ParameterSetName) {
-    "ID"        { $getAppUri = "$graphUri/applications/$ID" }
-    "AppID"     {
-     $filter = [System.Web.HttpUtility]::UrlEncode("appId eq '$AppID'")
-     $getAppUri = "$graphUri/applications?`$filter=$filter"
-    }
-    "NAME"      {
-     $filter = [System.Web.HttpUtility]::UrlEncode("displayName eq '$DisplayName'")
-     $getAppUri = "$graphUri/applications?`$filter=$filter"
-    }
-   }
+  if (-not $application) {
+   Write-Error "Could not find an Application Registration with the specified identifier."
+   return
+  }
 
-   $appResponse = Invoke-RestMethod -Uri $getAppUri -Headers $Headers -Method Get
-   $application = if ($appResponse.value) { $appResponse.value[0] } else { $appResponse }
+  $currentTags = $application.tags
+  $hadTagsInitially = $true
+  if ($currentTags -isnot [array]) {
+   $currentTags = @()
+   $hadTagsInitially = $false
+  }
 
-   if (-not $application) {
-    Write-Error "Could not find an Application Registration with the specified identifier."
-    return
-   }
+  Write-Host -ForegroundColor Cyan "Current Tags on `"$($application.displayName)`' (App Reg): $($currentTags -join ', ')"
 
-   $currentTags = $application.tags
-   $hadTagsInitially = $true
-   if ($currentTags -isnot [array]) {
-    $currentTags = @()
-    $hadTagsInitially = $false
-   }
+  if (-not $PSBoundParameters.ContainsKey('Tags')) { return }
 
-   Write-Host -ForegroundColor Cyan "Current Tags on `"$($application.displayName)`' (App Reg): $($currentTags -join ', ')"
+  $newTags = @()
+  if (-not $Overwrite) {
+   $newTags += $currentTags
+  }
+  $newTags += $Tags
 
-   if (-not $PSBoundParameters.ContainsKey('Tags')) { return }
+  # Wrap the command in @() to ensure the result is always an array
+  $newTags = @($newTags | Select-Object -Unique)
 
-   $newTags = @()
-   if (-not $Overwrite) {
-    $newTags += $currentTags
-   }
-   $newTags += $Tags
-
-   # Wrap the command in @() to ensure the result is always an array
-   $newTags = @($newTags | Select-Object -Unique)
-
-   $updateNeeded = $false
-   if (-not $hadTagsInitially) {
+  $updateNeeded = $false
+  if (-not $hadTagsInitially) {
+   $updateNeeded = $true
+  } else {
+   $currentTagsSortedString = ($currentTags | Sort-Object) -join ','
+   $newTagsSortedString = ($newTags | Sort-Object) -join ','
+   if ($currentTagsSortedString -ne $newTagsSortedString) {
     $updateNeeded = $true
-   } else {
-    $currentTagsSortedString = ($currentTags | Sort-Object) -join ','
-    $newTagsSortedString = ($newTags | Sort-Object) -join ','
-    if ($currentTagsSortedString -ne $newTagsSortedString) {
-     $updateNeeded = $true
-    }
-   }
-
-   if (-not $updateNeeded) {
-    Write-Host -ForegroundColor Magenta "Tags are already up to date."
-    return
-   }
-
-   Write-Host -ForegroundColor Cyan "Setting new tags to: $($newTags -join ', ')"
-   $updateUri = "$graphUri/applications/$($application.id)"
-   $updateBody = @{ tags = $newTags } | ConvertTo-Json
-   Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Patch -Body $updateBody
-   Write-Host -ForegroundColor Green "Tags updated successfully."
-
-   if ($ShowResult) {
-    $finalApp = Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Get
-    Write-Host -ForegroundColor Cyan "New Tags: $($finalApp.tags -join ', ')"
    }
   }
-  catch {
-   # This will now properly catch the error and display the JSON content
-   $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
-   Write-Error "An error occurred during the Graph API operation: $($errorDetail.error.message)"
+
+  if (-not $updateNeeded) {
+   Write-Host -ForegroundColor Magenta "Tags are already up to date."
+   return
   }
- } else {
-  # --- AZ CLI PATH ---
-  Write-Host "Using Azure CLI..."
-  Try {
-   $FunctionParams = $PSBoundParameters
-   $FunctionParams.Remove('Tags') | Out-Null
-   $FunctionParams.Remove('Overwrite') | Out-Null
-   $FunctionParams.Remove('ShowResult') | Out-Null
-   $FunctionParams.Remove('Token') | Out-Null
-   $App_Info = Get-AzureAppRegistration @FunctionParams
-   Write-Host -ForegroundColor Cyan "Current Tags on App Registration `'$($App_Info.displayName)`' : $($App_Info.Tags -join ',')"
-   if (! $Tags ) { Return }
-   $TagsToAdd = if ($Overwrite) { @($Tags) } else { @($App_Info.Tags) + @($Tags) }
-   $TagsToAddUnique = $TagsToAdd | Select-Object -Unique
-   $body = @{ tags = $TagsToAddUnique } | ConvertTo-Json -Compress
-   Write-Host -ForegroundColor Cyan "Tags that will be added: $($TagsToAddUnique -Join ', ')"
-   az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($App_Info.ID)" `
-    --headers "Content-Type=application/json" `
-    --body $body
-   Write-Host -ForegroundColor Green "Tags updated successfully."
-   If ($ShowResult) {
-    $App_Info_New = Get-AzureAppRegistration @FunctionParams
-    Write-Host -ForegroundColor Cyan "New Tags on App Registration `'$($App_Info_New.displayName)`' : $($App_Info_New.Tags -join ',')"
-   }
-  } catch {
-   write-host -foregroundcolor "Red" -Object $Error[0]
+
+  Write-Host -ForegroundColor Cyan "Setting new tags to: $($newTags -join ', ')"
+  $updateUri = "$graphUri/applications/$($application.id)"
+  $updateBody = @{ tags = $newTags } | ConvertTo-Json
+  Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Patch -Body $updateBody
+  Write-Host -ForegroundColor Green "Tags updated successfully."
+
+  if ($ShowResult) {
+   $finalApp = Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Get
+   Write-Host -ForegroundColor Cyan "New Tags: $($finalApp.tags -join ', ')"
   }
+ } catch {
+  # This will now properly catch the error and display the JSON content
+  $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
+  Write-Error "An error occurred during the Graph API operation: $($errorDetail.error.message)"
  }
 }
 Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
@@ -12755,14 +12787,16 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
    if ($_.endDateTime -le $CurrentDate) {
     $ColorMsg = "Green"
     $TextMsg = "expired on"
+    $DefaultChoice = "0"
    } else {
     $ColorMsg = "Red"
     $TextMsg = "will expire on"
+    $DefaultChoice = "1"
    }
    Write-host -ForegroundColor $ColorMsg -Object "Will remove the secret $($_.KeyID) [$($_.displayName)] from App $($AppInfo.displayName) that $TextMsg $($_.endDateTime)"
    # If confirmation is required ask for confirmation
    if (! $NoConfirm ) {
-    $Answer = Question "Please confirm removal" -defaultChoice "1"
+    $Answer = Question "Please confirm removal" -defaultChoice $DefaultChoice
     if (! $Answer) {write-host -foregroundcolor "Yellow" "Cancelled" ; return}
    }
    # Remove secret one by one
@@ -12841,36 +12875,76 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   $header = $authDetails.Header
 
+  # Get existing roles for merge/disable operations
+  $ExistingRoles = @()
+  if (-not $Overwrite) {
+   Write-Verbose "Getting existing roles for merge operation"
+   $ExistingRoles = get-azureappregistrationappRoles -ID $AppRegistrationObjectID -Token $authDetails.Token
+  }
+
   if ($AppRoleList) {
    Write-Verbose "Adding Role List"
+   $RolesToApply = @()
+   
+   if (-not $Overwrite) {
+    Write-Verbose "Merging: keeping ALL existing roles and adding new ones"
+    # Keep ALL existing roles unchanged (preserving IDs, state, membertypes)
+    foreach ($ExistingRole in $ExistingRoles) {
+     $RolesToApply += [PSCustomObject]@{
+      description        = $ExistingRole.description
+      displayName        = $ExistingRole.displayName
+      value              = $ExistingRole.value
+      allowedMemberTypes = $ExistingRole.allowedMemberTypes
+      isEnabled          = $ExistingRole.isEnabled
+      id                 = $ExistingRole.id
+     }
+    }
+   }
+   
+   # Add new roles (only when not overwriting, or when overwriting with explicit flag)
+   $RolesToApply += $AppRoleList
+   
    $body = @{
-    appRoles = @(
-       $AppRoleList
-    )
+    appRoles = @($RolesToApply)
    }| ConvertTo-Json -Depth 10
   } else {
    Write-Verbose "Adding Individual Role. Checking Member Type"
    if ($allowedMemberTypes -eq 'Both') { $allowedMemberTypes = "User","Application" }
+   $RolesToApply = @()
+   
+   if (-not $Overwrite) {
+    Write-Verbose "Merging existing roles with new individual role"
+    $RolesToApply = @($ExistingRoles | ForEach-Object {
+     [PSCustomObject]@{
+      description        = $_.description
+      displayName        = $_.displayName
+      value              = $_.value
+      allowedMemberTypes = $_.allowedMemberTypes
+      isEnabled          = $_.isEnabled
+      id                 = $_.id
+     }
+    })
+   }
+   
+   $RolesToApply += @{
+    allowedMemberTypes = @($allowedMemberTypes)
+    description         = $Description
+    displayName         = $DisplayName
+    id                  = [guid]::NewGuid()
+    isEnabled           = $true
+    value               = $Value
+   }
+   
    $body = @{
-    appRoles = @(
-      @{
-        allowedMemberTypes = @($allowedMemberTypes)
-        description         = $Description
-        displayName         = $DisplayName
-        id                  = [guid]::NewGuid()
-        isEnabled           = $true
-        value               = $Value
-      }
-    )
+    appRoles = @($RolesToApply)
    } | ConvertTo-Json -Depth 10
-
   }
 
   if ($Overwrite) {
-   Write-Verbose "Overwrite flag set, getting current roles"
-   $AppRoleToRemove = get-azureappregistrationappRoles -ID $AppRegistrationObjectID -Token $authDetails.Token | ForEach-Object {[PSCustomObject]@{description = $_.description ; displayName = $_.displayName ; value = $_.value ; allowedMemberTypes = @('User') ; isEnabled = $false ; id = $_.id }}
+   Write-Verbose "Overwrite flag set, disabling existing roles first"
+   $AppRoleToRemove = get-azureappregistrationappRoles -ID $AppRegistrationObjectID -Token $authDetails.Token | ForEach-Object {[PSCustomObject]@{description = $_.description ; displayName = $_.displayName ; value = $_.value ; allowedMemberTypes = $_.allowedMemberTypes ; isEnabled = $false ; id = $_.id }}
    $RemovalBody = @{ appRoles = @( $AppRoleToRemove ) }| ConvertTo-Json -Depth 10
-   Write-Verbose "Overwrite flag set, disabling existing roles"
+   Write-Verbose "Overwrite flag set, sending disable request"
    Invoke-RestMethod -Method Patch -Uri "https://graph.microsoft.com/v1.0/applications/$AppRegistrationObjectID" -Headers $header -Body $RemovalBody
   }
 
@@ -12959,39 +13033,51 @@ Function New-AppRegistrationEmailContent { # Used to prepare the content of the 
   $Result
  )
 
+ # Build one row per object in Result (including duplicates), or fallback to single-parameter row.
+ $Rows = @()
  if ($Result) {
-  $TenantID = $Result.TenantID
-  $ApplicationDisplayName = $Result.ApplicationDisplayName
-  $ApplicationID = $Result.ApplicationID
-  $secret = $Result.secret
-  $Secret_Start_Date = $Result.Secret_Start_Date
-  $Secret_End_Date = $Result.Secret_End_Date
- }
-
- $result = [ordered]@{
-  "Tenant ID" = $TenantID
-  "Application Name" = $ApplicationDisplayName
-  "Application ID" = $ApplicationID
-  "Secret" = $secret
-  "Secret Start Date" = $Secret_Start_Date
-  "Secret End Date" = $Secret_End_Date
+  foreach ($Item in @($Result)) {
+   $Rows += [ordered]@{
+    "Tenant ID" = $Item.TenantID
+    "Application Name" = if ($Item.ApplicationDisplayName) { $Item.ApplicationDisplayName } else { $Item."Application Name" }
+    "Application ID" = if ($Item.ApplicationID) { $Item.ApplicationID } else { $Item."Application ID" }
+    "Secret" = $Item.secret
+    "Secret Start Date" = if ($Item.Secret_Start_Date) { $Item.Secret_Start_Date } else { $Item."Secret Start Date" }
+    "Secret End Date" = if ($Item.Secret_End_Date) { $Item.Secret_End_Date } else { $Item."Secret End Date" }
+   }
+  }
+ } else {
+  $Rows += [ordered]@{
+   "Tenant ID" = $TenantID
+   "Application Name" = $ApplicationDisplayName
+   "Application ID" = $ApplicationID
+   "Secret" = $secret
+   "Secret Start Date" = $Secret_Start_Date
+   "Secret End Date" = $Secret_End_Date
+  }
  }
 
 # Create Base CSS
 $Header = @"
 <style>
- table { border-collapse: collapse; width: 60%; font-family: Arial, sans-serif; }
- th { background-color: #0078D4; color: white; padding: 8px; text-align: center; width: 30%; }
+ table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 10pt; table-layout: fixed; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
  td { border: 1px solid #dddddd; padding: 8px; }
  tr:nth-child(even) { background-color: #f2f2f2; }
 </style>
 "@
 
-# Build vertical table HTML (Property | Value)
+# Build table HTML with one row per object
 $TableHtml = "<table>"
-$TableHtml += "<tr><th>Property</th><th>Value</th></tr>"
-foreach ($key in $result.Keys) {
- $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($key) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($result[$key]) )</td></tr>"
+$TableHtml += "<tr><th>Tenant ID</th><th>Application Name</th><th>Application ID</th><th>Secret</th><th>Secret Start Date</th><th>Secret End Date</th></tr>"
+foreach ($Row in $Rows) {
+ $TableHtml += ("<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>" -f
+  [System.Web.HttpUtility]::HtmlEncode($Row['Tenant ID']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Application Name']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Application ID']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret Start Date']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret End Date']))
 }
 $TableHtml += "</table>"
 
@@ -13015,7 +13101,6 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
   [string]$DisplayName,
   [string]$UserPrincipalName,
   [string]$Secret,
-  [string]$Owner,
   [string]$ID,
   $Result
  )
@@ -13031,7 +13116,6 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
     DisplayName = $Item.DisplayName
     UserPrincipalName = $Item.UserPrincipalName
     Password = $Item.Password
-    Owner = $Item.Owner
     ID = $Item.ID
    }
   }
@@ -13040,7 +13124,6 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
    DisplayName = $DisplayName
    UserPrincipalName = $UserPrincipalName
    Password = $Secret
-   Owner = $Owner
    ID = $ID
   }
  }
@@ -13057,9 +13140,9 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
 
  # Build horizontal table HTML (1 row per user)
  $TableHtml = "<table>"
- $TableHtml += "<tr><th>Display Name</th><th>User Principal Name</th><th>Password</th><th>Owner</th><th>ID</th></tr>"
+ $TableHtml += "<tr><th>Display Name</th><th>User Principal Name</th><th>Password</th><th>ID</th></tr>"
  foreach ($User in $UserRows) {
-  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($User.DisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.UserPrincipalName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Password) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Owner) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.ID) )</td></tr>"
+  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($User.DisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.UserPrincipalName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Password) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.ID) )</td></tr>"
  }
  $TableHtml += "</table>"
 
@@ -13948,51 +14031,20 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
   [Parameter(Mandatory=$true)]$ServicePrincipalID,
   $Token
  )
- if ($Token) {
-  Try {
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID"
+  $CurrentValue = Get-AzureGraph -Token $authDetails.Token -GraphRequest $URI -ErrorAction Stop
+  if ( ! $CurrentValue.AppID ) { Throw "Service Principal not found" }
+  $Body = (@{
+   "appRoleAssignmentRequired" = 'true'
+  })
+  $BodyJSON = $Body | ConvertTo-JSON -Depth 6
 
-   $ContentType = "application/json"
-
-   $headers = @{
-    'Authorization' = "$($Token.token_type) $($Token.access_token)"
-    'Content-type'  = $ContentType
-   }
-
-   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID"
-
-   $CurrentValue = Invoke-RestMethod -Headers $headers -Method 'GET' -ContentType $ContentType -Uri $URI
-
-   if ( ! $CurrentValue.AppID ) { Throw "Service Principal not found" }
-
-   $Body = (@{
-    "appRoleAssignmentRequired" = 'true'
-   })
-   $BodyJSON = $Body | ConvertTo-JSON -Depth 6
-
-   $CMDParams = @{
-    "URI"         = $URI
-    "Headers"     = $Headers
-    "Method"      = "PATCH"
-    "ContentType" = $ContentType
-    "Body" = $BodyJSON
-   }
-   # $CMDParams ;  return
-   Invoke-RestMethod @CMDParams
-  } catch {
-   if ($Error[0].ErrorDetails.message) {
-    $ErrorMessage = ($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message
-   } else {
-    $ErrorMessage = $Error[0]
-   }
-   Write-Error "Failed to set Assignement required value on $ServicePrincipalID ($ErrorMessage)"
-   if ($_.Exception.InnerException) {
-    Write-Error "Inner Exception: $($_.Exception.InnerException.Message)"
-   }
-   return $null
-  }
- } else {
-  az ad sp update --id $ServicePrincipalID --set appRoleAssignmentRequired=True
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest $URI -ErrorAction Stop -Method PATCH -Body $BodyJSON
+  Write-Verbose "Assignement required value set to true on $ServicePrincipalID"
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Set-AzureServicePrincipalCustomSecurityAttribute { # Set Custom Security Attribute on enterprise app
@@ -14126,7 +14178,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
 }
 Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service principal, Assignement IDs are recommended, but UserName is possible but will be a lot slower. Uses Rest API with Token
  Param (
-  [parameter(Mandatory = $true)]$ServicePrincipalID, # Service Principal To Update
+  [parameter(Mandatory = $true)][Alias('ServicePrincipalID')]$ServicePrincipal, # Service Principal To Update (DisplayName, AppID or Object ID)
   [parameter(Mandatory = $true)]$ObjectToAddID, # User or group or object to add
   $AppRole, # AppRole to add (default : User)
   $Token
@@ -14138,11 +14190,24 @@ Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service pr
   'Content-type'  = "application/json"
  }
 
+ if (Assert-IsGUID $ServicePrincipal) {
+  # GUID input: try Object ID first, then AppID if Object ID lookup fails.
+  $ServicePrincipalInfo = Get-AzureServicePrincipal -ID $ServicePrincipal -Token $authDetails.Token -ErrorAction SilentlyContinue
+  if (! $ServicePrincipalInfo.ID) {
+   $ServicePrincipalInfo = Get-AzureServicePrincipal -AppID $ServicePrincipal -Token $authDetails.Token -ErrorAction Stop
+  }
+ } else {
+  $ServicePrincipalInfo = Get-AzureServicePrincipal -DisplayName $ServicePrincipal -Token $authDetails.Token -ErrorAction Stop
+ }
+
+ if (! $ServicePrincipalInfo.ID) { Throw "Service Principal not found: $ServicePrincipal" }
+ $ServicePrincipalID = $ServicePrincipalInfo.ID
+
  if ($AppRole) {
   if (Assert-IsGUID $AppRole) {
    $AppRoleID = $AppRole
   } else {
-  $AppID = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID`?`$select=AppID").appId
+  $AppID = $ServicePrincipalInfo.appId
   $AppRoleID = ((Get-AzureAppRegistration -AppID $AppID -Token $authDetails.Token).appRoles | Where-Object displayName -eq "$AppRole").id
   if (! $AppRoleID ) { throw "AppRole not found : $AppRole"}
   }
@@ -15296,7 +15361,6 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
   $GlobalResult = @()
   $ContinueRunning = $True
   $FirstRun=$True
-
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   $header = $authDetails.Header
 
@@ -16719,6 +16783,78 @@ Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
  Invoke-RestMethod -Method PATCH -headers $header -Uri $GraphURL -Body $ParamJson
 }
 
+# Sharepoint Scripts
+Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname+path [Uses Rest API]
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true)][string]$SiteURL, # Full URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME/docs/Forms/AllItems.aspx
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Parse hostname and site path from the URL (ignore anything beyond /sites/<name>)
+  $uri = [System.Uri]$SiteURL
+  $hostname = $uri.Host
+  # Match /sites/<name> or /teams/<name>
+  if ($uri.AbsolutePath -match "^(/sites/[^/]+|/teams/[^/]+)") {
+   $sitePath = $Matches[1]
+  } else {
+   throw "Could not extract site path from URL '$SiteURL'. Expected a /sites/ or /teams/ path."
+  }
+
+  Write-Verbose "Resolving Site ID for: $hostname$sitePath"
+  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}" -ErrorAction Stop
+
+  Write-Host -ForegroundColor Green "Resolved Site: $($result.displayName)"
+  Write-Host -ForegroundColor Green "Site ID: $($result.id)"
+  return $result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Add-SharepointSiteAppPermission { # Grant an App Registration access to a specific SharePoint site (Sites.Selected model) [Uses Rest API]
+ [CmdletBinding(DefaultParameterSetName = "BySiteID")]
+ Param (
+  [Parameter(Mandatory = $true, ParameterSetName = "BySiteID")][string]$SiteID,   # SharePoint Site ID (hostname,guid,guid format from Graph API)
+  [Parameter(Mandatory = $true, ParameterSetName = "ByURL")][string]$SiteURL,     # Full SharePoint URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME
+  [Parameter(Mandatory = $true)][string]$AppID,                                   # App Registration Application (Client) ID
+  [Parameter(Mandatory = $true)][string]$AppName,                                 # App Registration Display Name
+  [Parameter(Mandatory = $true)][ValidateSet("read", "write", "read,write")]
+  [string]$Role,                                                                   # Permission role to grant
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Resolve Site ID from URL if provided
+  if ($PSCmdlet.ParameterSetName -eq "ByURL") {
+   Write-Host -ForegroundColor DarkMagenta "Resolving Site ID from URL: $SiteURL"
+   $site = Get-SharepointSiteID -SiteURL $SiteURL -Token $authDetails.Token -ErrorAction Stop
+   $SiteID = $site.id
+  }
+
+  $body = @{
+   roles              = @($Role -split ",")
+   grantedToIdentities = @(
+    @{
+     application = @{
+      id          = $AppID
+      displayName = $AppName
+     }
+    }
+   )
+  } | ConvertTo-Json -Depth 5
+
+  Write-Host -ForegroundColor DarkMagenta "Granting '$Role' permission on Site '$SiteID' to App '$AppName' ($AppID)"
+  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$SiteID/permissions" -Method POST -Body $body -ErrorAction Stop
+  Write-Host -ForegroundColor Green "Permission granted successfully. Permission ID: $($result.id)"
+  return $result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+
 # Token Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
@@ -17054,22 +17190,35 @@ Function Assert-IsTokenLifetimeValid { # Check validity of token
  )
  try {
   if (-not $Token.PSObject.Properties.Name.Contains('expires_on')) {
-   Throw "The provided token object does not have an 'expires_on' property."
+   throw "The provided token object does not have an 'expires_on' property."
   }
-  $ExpirationTimeLocal = $token.expires_on.toLocalTime().DateTime
-  $ExpirationDate = $(Format-date (Get-Date $ExpirationTimeLocal))
-  $CurrentDate =  $(Format-date (Get-Date))
+
+  $rawExpiration = $Token.expires_on
+  if ($rawExpiration -is [datetimeoffset]) {
+   $expirationDateTime = $rawExpiration.LocalDateTime
+  } elseif ($rawExpiration -is [datetime]) {
+   $expirationDateTime = $rawExpiration.ToLocalTime()
+  } else {
+   $parsedDateTimeOffset = [datetimeoffset]::MinValue
+   if ([datetimeoffset]::TryParse([string]$rawExpiration, [ref]$parsedDateTimeOffset)) {
+    $expirationDateTime = $parsedDateTimeOffset.LocalDateTime
+   } else {
+    $expirationDateTime = ([datetime]$rawExpiration).ToLocalTime()
+   }
+  }
+
+  $ExpirationDate = Format-date (Get-Date $expirationDateTime)
+  $CurrentDate = Format-date (Get-Date)
 
   if ($ShowExpiration) { Write-Host "$CurrentDate : Token will expire at $ExpirationDate" }
 
-  $Result = $((NEW-TIMESPAN -Start $(Get-Date) -End $ExpirationDate) -gt 0)
-  if ($Result) {
-   return $true
-  } else {
-   throw "Token expired on $ExpirationDate."
-  }
- } Catch {
-  Write-Error $Error[0]
+  $Result = ((New-TimeSpan -Start (Get-Date) -End $expirationDateTime) -gt 0)
+  if ($Result) { return $true }
+
+  throw "Token expired on $ExpirationDate."
+ } catch {
+  $tokenValidationMessage = if ($_.Exception -and $_.Exception.Message) { $_.Exception.Message } else { [string]$_ }
+  throw "Token validation failed: $tokenValidationMessage"
  }
 }
 Function Convert-AccessToken { # Convert Access Token from a token
@@ -17196,7 +17345,7 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
  # If a token was found, validate it and construct the return object
  if ($null -ne $foundToken) {
   # VALIDATE THE TOKEN
-  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop
+  Assert-IsTokenLifetimeValid -Token $foundToken -ErrorAction Stop | Out-Null
   Write-Verbose "Token lifetime is valid."
 
   # Assumes your token object has .token_type and .access_token properties
@@ -17241,6 +17390,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   $BaseURL = 'https://graph.microsoft.com/beta',
   [ValidateSet("GET","POST","DELETE","PATCH","PUT")]$Method='GET',
   [Switch]$ConsistencyLevelEventual,
+  [Switch]$SinglePage,
   [Switch]$ShowState,
   $Throttle='10',
   $Body # Json Format Body
@@ -17283,6 +17433,11 @@ Function Get-AzureGraph { # Send base graph request without any requirements
       return $CurrentResult
      }
 
+    # Optional mode: return only the first page even if @odata.nextLink is present.
+    if ($SinglePage) {
+     return $CurrentResult.Value
+    }
+
      # Get the Count if the value is present
      if ($($CurrentResult.'@odata.count') -gt 1) {
       $NumberOfLoop = [Math]::Ceiling($($CurrentResult.'@odata.count') / 999)
@@ -17311,7 +17466,13 @@ Function Get-AzureGraph { # Send base graph request without any requirements
     Write-Verbose "Calculate Result for request $URL (loop $Count)"
     $GlobalResult += $CurrentResult.Value
     $NextRequest = $CurrentResult.'@odata.nextLink'
-    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
+    if ($NextRequest) {
+      Write-Verbose "NextLink found for request $URL (loop $Count) : $NextRequest"
+     $ContinueRunning = $True
+    } else {
+     $ContinueRunning = $False
+    }
+
     $Count++
    } catch {
     # Check for 429 (Too Many Requests)
@@ -17531,6 +17692,44 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
    Write-Verbose "Exclude JSON Data"
    $ResultConverted | Select-Object -ExcludeProperty Full_JSON
   }
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Disable-AzureConditionalAccessPolicy { # Disable Conditional Access Policy by Name or ID
+ Param (
+  [Parameter(Mandatory=$true)]$Policy, # Unified parameter for Name or ID
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Define the base resource path
+  $PolicyGraphUrl = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies"
+
+  if (Assert-IsGUID -Value $Policy) {
+   # If GUID, target the specific policy endpoint
+   $GraphUrl = "$PolicyGraphUrl/$Policy"
+  } else {
+   # If Name, use the protected OData filter to find the policy first
+   $GraphUrl = "$PolicyGraphUrl`?`$filter=displayName eq '$Policy'"
+   $policies = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl -ErrorAction Stop
+
+   if ($policies.count -gt 1) { throw "More than one policy found with name '$Policy'. Please specify by ID." }
+   if (-not $policies) { throw "No policy found with name '$Policy'." }
+
+   $GraphUrl = "$PolicyGraphUrl/$($policies[0].id)"
+  }
+
+  # Prepare the body to disable the policy
+  $Body = @{
+   state = "disabled"
+  } | ConvertTo-Json
+
+  # Send the PATCH request to disable the policy
+  Invoke-RestMethod -Method PATCH -Uri $GraphUrl -Headers $authDetails.Header -Body $Body -ContentType "application/json"
+  Write-Host "Policy '$Policy' has been disabled." -ForegroundColor Green
 
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -17776,10 +17975,11 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [switch]$ConditionalAccessIgnoreNotApplied,
   [switch]$SimplifiedQuery,
   [switch]$ShowRawResult,
-  [switch]$Readable,
   $Token,
   $AzureMonitorToken,
   $Duration = '1d',
+  $StartDuration,
+  $EndDuration,
   $WorkspaceID,
   $AppFilter,
   [ValidateSet("DisplayName","Mail","UserPrincipalName")][string]$UserType="UserPrincipalName"
@@ -17835,9 +18035,27 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
 
   if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
 
+  # Pepare TimeFrame :
+  if (! $EndDuration) {
+   $EndDuration = "now()"
+  } else {
+   $EndDuration = "datetime(" + $(get-date $EndDuration).ToString("yyyy-MM-dd HH:mm:ss") + ")"
+   Write-Verbose "Using EndDuration $EndDuration"
+  }
+  if (! $StartDuration) {
+   $StartDuration = "ago($Duration)"
+  } else {
+   $StartDuration = "datetime(" + $(get-date $StartDuration).ToString("yyyy-MM-dd HH:mm:ss") + ")"
+   Write-Verbose "Using StartDuration $StartDuration"
+  }
+
+  $TimeFrame = "$StartDuration .. $EndDuration"
+
+  Write-Verbose "Using TimeFrame $TimeFrame"
+
   # Start of Query
   $QueryStart = 'union SigninLogs, AADNonInteractiveUserSignInLogs
- | where TimeGenerated between (ago('+$Duration+') .. now() )
+ | where TimeGenerated between ('+$TimeFrame+')
  | where UserId == "'+$UserID+'"
  '
 
@@ -17891,7 +18109,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($SimplifiedQuery) {
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
-   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
+   ResultDescription,DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
    DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,
    Conditional_Access_Success, Conditional_Access_Failure'
   }
@@ -17908,7 +18126,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
 
   if ($ResultRaw) {
-   if ($Readable) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
+   if ($SimplifiedQuery) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
 
    # Convert TimeGenerated from UTC to the local user timezone (WEBSITE_TIME_ZONE for FunctionApps)
    $localTz = if ($env:WEBSITE_TIME_ZONE) { [System.TimeZoneInfo]::FindSystemTimeZoneById($env:WEBSITE_TIME_ZONE) } else { [System.TimeZoneInfo]::Local }
@@ -18069,12 +18287,27 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
  | project-away UnifiedCAP_TEMP, CAP_List
  '
 
+ $QueryStart += '
+ | extend CAP = coalesce(ConditionalAccessPolicies_dynamic, parse_json(ConditionalAccessPolicies_string))
+ | mv-apply p = CAP on (
+  where tostring(p.result) in ("success", "failure")
+  | summarize
+   Conditional_Access_Success = make_set_if(tostring(p.displayName), tostring(p.result) == "success"),
+   Conditional_Access_Failure = make_set_if(tostring(p.displayName), tostring(p.result) == "failure")
+ )
+ | extend
+  Conditional_Access_Success = strcat_array(Conditional_Access_Success, ";"),
+  Conditional_Access_Failure = strcat_array(Conditional_Access_Failure, ";")
+ | project-away CAP
+'
+
   # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
   if ($SimplifiedQuery) {
-   $QueryStart += '| project TimeGenerated,ServicePrincipalName,ServicePrincipalId,AppDisplayName,AppId,ResourceDisplayName,ResourceIdentity,UserDisplayName,UserId,UserPrincipalName,
+   $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceIdentity,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
    ResultDescription,DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
-   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,ServicePrincipalCredentialKeyId'
+   DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,
+   Conditional_Access_Success, Conditional_Access_Failure,ServicePrincipalCredentialKeyId'
   }
   # Query will always end with this
   $QueryEnd = '| sort by TimeGenerated'
@@ -18088,7 +18321,19 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   # Stop here if no results where found
   if (! $ResultRaw) { return }
 
-  if ($ShowRawResult) { return $ResultRaw }
+  # Convert TimeGenerated from UTC to the local user timezone (WEBSITE_TIME_ZONE for FunctionApps)
+  $localTz = if ($env:WEBSITE_TIME_ZONE) { [System.TimeZoneInfo]::FindSystemTimeZoneById($env:WEBSITE_TIME_ZONE) } else { [System.TimeZoneInfo]::Local }
+  $ResultRaw = $ResultRaw | ForEach-Object {
+   $_ | Add-Member -MemberType NoteProperty -Name 'Local_TimeGenerated' -Value ([System.TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind($_.TimeGenerated, [System.DateTimeKind]::Utc), $localTz))
+   $_ | Add-Member -MemberType NoteProperty -Name 'Local_Timezone' -Value $localTz.Id
+   $_
+  }
+
+  if ($ShowRawResult) {
+   $timeColumns = @('TimeGenerated', 'Local_TimeGenerated', 'Local_Timezone')
+   $colOrder = $timeColumns + ($ResultRaw[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
+   return ($ResultRaw | Select-Object -Property $colOrder)
+  }
 
   if ($ShowSecretDetails) {
    $ResultRaw = $ResultRaw | ForEach-Object {
@@ -18132,7 +18377,9 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
     AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,
     NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
   }
-  return $Result
+    $timeColumns = @('TimeGenerated', 'Local_TimeGenerated', 'Local_Timezone')
+    $colOrder = $timeColumns + ($Result[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
+    return ($Result | Select-Object -Property $colOrder)
  } catch {
   if ($Query) {Write-Verbose $Query}
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -18148,7 +18395,6 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
   [switch]$ConditionalAccessIgnoreNotApplied,
   [switch]$SimplifiedQuery,
   [switch]$ShowRawResult,
-  [switch]$Readable,
   $Duration = '1d',
   $WorkspaceID
  )
@@ -18202,7 +18448,7 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
   if ($SimplifiedQuery) {
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus,
-   ResultDescription,FailureReason = UnifiedStatusSTRING["failureReason"],DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName'
+   ResultDescription,DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName'
   }
 
   # Query will always end with this
@@ -18215,7 +18461,7 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
 
   if ($ResultRaw) {
-   if ($Readable) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
+   if ($SimplifiedQuery) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
   } else {
    # Stop here if no results where found
    return
@@ -18801,6 +19047,33 @@ Function Add-ToStorageAccount { # Used to send file to a storage account (not fi
  Write-Host "File '$blobName' uploaded successfully to container '$containerName'."
 }
 
+Function Get-Profile { # Reload profile/module files into global scope without restarting the session
+ $ProfileList = @(
+  $PROFILE.AllUsersAllHosts,
+  $PROFILE.AllUsersCurrentHost,
+  $PROFILE.CurrentUserAllHosts,
+  $PROFILE.CurrentUserCurrentHost
+ )
+
+ if (Test-Path $env:iClic_Addon_Path -ErrorAction SilentlyContinue) {
+  $ProfileList += $env:iClic_Addon_Path
+ }
+ if (Test-Path $env:iClic_Perso_Path -ErrorAction SilentlyContinue) {
+  $ProfileList += $env:iClic_Perso_Path
+ }
+
+ $ProfileList = $ProfileList | Where-Object { $_ } | Select-Object -Unique
+
+ foreach ($Path in $ProfileList) {
+  if (-not (Test-Path $Path -ErrorAction SilentlyContinue)) {
+   continue
+  }
+
+  Write-Host "Reloading profile from $Path"
+  Import-Module $Path -Force -Global -ErrorAction Stop
+ }
+}
+
 #Alias
 Set-Alias -Name ls -Value "Get-ChildItemBen" -Option AllScope
 Set-Alias -Name ll -Value "ls" -Option AllScope
@@ -18817,6 +19090,7 @@ Function LoadMMC { mmc "$env:OneDriveCommercial\RootConsole.msc" }
 Set-Alias -Name jd -value Start-Jdownloader
 Set-Alias -Name Home -value "LoginHome"
 Set-Alias -Name Which -value "Get-Command"
+Set-Alias -Name Reload -value "Get-Profile"
 
 if (Assert-MinPSVersion 6 -Silent) {
  if ( (test-path $env:iClic_Addon_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Addon_Path }
