@@ -12619,7 +12619,7 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
  }
 }
 Function Set-AzureAppRegistrationAcceptMappedClaims { # Set acceptMappedClaims and requestedAccessTokenVersion on an App Registration
- [CmdletBinding(SupportsShouldProcess = $true)]
+ [CmdletBinding()]
  Param (
   [parameter(Mandatory = $true)][Alias("ID")]$Application,
   [bool]$AcceptMappedClaims = $true,
@@ -15343,7 +15343,7 @@ Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as 
   $Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$User, # can be UPN or GUID
   [parameter(Mandatory = $true)]$StartDateTime=([DateTime]::Now),
-  [parameter(Mandatory = $true)]$EndDateTime=([DateTime]::Now).AddHours(8),
+  [parameter(Mandatory = $true)]$EndDateTime=([DateTime]::Now).AddHours(1),
   [string]$DisplayName = "iClic Generated Temporary Access Pass"
  )
 
