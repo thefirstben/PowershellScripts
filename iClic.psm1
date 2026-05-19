@@ -11547,9 +11547,11 @@ Function New-AzureServicePrincipal { # Created a new Service Principal that can 
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
  Param (
+  [parameter(Mandatory=$true,ParameterSetName="Application")][String]$Application,
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
   [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
   [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
+  [switch]$PriorityObjectID,
   $Token,
   [Switch]$HideGUID,
   $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
@@ -11557,16 +11559,62 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
-  if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
-  } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
-  } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
+  $SearchByFilter = {
+   param (
+    [string]$CurrentFilter,
+    [string]$CurrentValue
+   )
+
+   $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$CurrentFilter eq '$CurrentValue'"
+   if ($authDetails.Method -eq "Token") {
+    $QueryResult = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $GraphURI).value
+   } else {
+    $QueryResult = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
+   }
+
+   if ($QueryResult -and (@($QueryResult).Count -gt 1)) {
+    throw "Multiple App Registrations found for $CurrentFilter '$CurrentValue'. Use a unique identifier."
+   }
+
+   return $QueryResult
   }
-  $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
-  if ($authDetails.Method -eq "Token") {
-   $Result = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $GraphURI).value
-  } else {
-   $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
+
+  if ($AppID) {
+   $Result = & $SearchByFilter -CurrentFilter 'AppID' -CurrentValue $AppID
+   if (! $Result) { throw "No result found for search value '$AppID'" }
+  } elseif ($ID) {
+   $Result = & $SearchByFilter -CurrentFilter 'ID' -CurrentValue $ID
+   if (! $Result) { throw "No result found for search value '$ID'" }
+  } elseif ($DisplayName) {
+   $Result = & $SearchByFilter -CurrentFilter 'DisplayName' -CurrentValue $DisplayName
+   if (! $Result) { throw "No result found for search value '$DisplayName'" }
+  } elseif ($Application) {
+   if (Assert-IsGUID $Application) {
+    if ($PriorityObjectID) {
+     $LookupOrder = @('ID','AppID')
+    } else {
+     $LookupOrder = @('AppID','ID')
+    }
+
+    $Result = $null
+    foreach ($CurrentFilter in $LookupOrder) {
+     $Result = & $SearchByFilter -CurrentFilter $CurrentFilter -CurrentValue $Application
+     if ($Result) { break }
+    }
+
+    if (! $Result) {
+     throw "No result found for search value '$Application' (lookup order: $($LookupOrder -join ' -> '))"
+    }
+   } else {
+    if ($PriorityObjectID) {
+     Write-Verbose "PriorityObjectID is ignored because Application '$Application' is not a GUID."
+    }
+    $Result = & $SearchByFilter -CurrentFilter 'DisplayName' -CurrentValue $Application
+    if (! $Result) { throw "No result found for search value '$Application'" }
+   }
   }
+
+  $Result = @($Result)[0]
 
   # Add Generic Redirect URLs with all the different redirect URLs
   $RedirectURLS = @()
@@ -11574,8 +11622,6 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   $RedirectURLS += [pscustomobject]@{Type="WEB";URLs=$Result.WEB.redirectUris}
   $RedirectURLS += [pscustomobject]@{Type="publicClient";URLs=$Result.publicClient.redirectUris}
   $Result | Add-Member -MemberType NoteProperty -Name "RedirectURLS" -Value $RedirectURLS
-
-  if (! $Result) {Throw "No result found for search value '$ValueToCheck'"}
 
   if ($HideGUID) {
    $Result | Select-Object -ExcludeProperty *ID
@@ -11662,21 +11708,13 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if (Assert-IsGUID $Application) {
-   $AppInfo = Get-AzureAppRegistration -AppID $Application -Token $authDetails.Token -ErrorAction SilentlyContinue
-   if (! $AppInfo.ID) {
-    $AppInfo = Get-AzureAppRegistration -ID $Application -Token $authDetails.Token -ErrorAction Stop
-   }
-  } else {
-   $AppInfo = Get-AzureAppRegistration -DisplayName $Application -Token $authDetails.Token -ErrorAction Stop
-  }
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token
+  if (! $AppInfo.ID) { Throw "Application $Application not found" }
 
- if (! $AppInfo.ID) { Throw "Application not found with AppID : $AppRegistrationID, Object ID : $AppRegistrationObjectID and AppName : $AppRegistrationName" }
-
- $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest /applications/$($AppInfo.ID)/owners
- $Result | Select-Object @{Name="AppObjectID";Expression={$($AppInfo.ID)}},
- @{Name="AppID";Expression={$AppInfo.appId}},
- @{Name="AppName";Expression={$AppInfo.displayName}},id,userPrincipalName,displayName
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest /applications/$($AppInfo.ID)/owners
+  $Result | Select-Object @{Name="AppObjectID";Expression={$($AppInfo.ID)}},
+  @{Name="AppID";Expression={$AppInfo.appId}},
+  @{Name="AppName";Expression={$AppInfo.displayName}},id,userPrincipalName,displayName
  } catch {
   Write-Error $_
  }
@@ -11696,13 +11734,8 @@ Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
    $UserObjectID = (Get-AzureADUserInfo -UPNorID $Owner -Token $authDetails.Token -ErrorAction Stop).ID
   }
   Write-Verbose "Found user with Object ID $UserObjectID"
-  if (Assert-IsGUID $Application) {
-   $AppInfo = Get-AzureAppRegistration -AppID $Application -Token $authDetails.Token -ErrorAction Stop
-  } else {
-   $AppInfo = Get-AzureAppRegistration -DisplayName $Application -Token $authDetails.Token -ErrorAction Stop
-  }
-  Write-Verbose "Found App with Object ID $($AppInfo.ID)"
-  if (!$AppInfo.ID) { Throw "Application not found: $Application" }
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
   Write-Host -ForegroundColor "Cyan" "Adding owner $Owner on App Registration $($AppInfo.displayName)"
   $Body = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$UserObjectID" } | ConvertTo-Json
   Get-AzureGraph -Token $authDetails.Token -GraphRequest "/applications/$($AppInfo.ID)/owners/`$ref" -Method POST -Body $Body -ErrorAction Stop
@@ -11726,13 +11759,8 @@ Function Remove-AzureAppRegistrationOwner { # Remove an owner from an App Regist
    $UserObjectID = (Get-AzureADUserInfo -UPNorID $Owner -Token $authDetails.Token -ErrorAction Stop).ID
   }
   Write-Verbose "Found user with Object ID $UserObjectID"
-  if (Assert-IsGUID $Application) {
-   $AppInfo = Get-AzureAppRegistration -AppID $Application -Token $authDetails.Token -ErrorAction Stop
-  } else {
-   $AppInfo = Get-AzureAppRegistration -DisplayName $Application -Token $authDetails.Token -ErrorAction Stop
-  }
-  Write-Verbose "Found App with Object ID $($AppInfo.ID)"
-  if (!$AppInfo.ID) { Throw "Application not found: $Application" }
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
   Write-Host -ForegroundColor "Cyan" "Adding owner $Owner on App Registration $($AppInfo.displayName)"
   Get-AzureGraph -Token $authDetails.Token -GraphRequest "/applications/$($AppInfo.ID)/owners/$UserObjectID/`$ref" -Method DELETE -ErrorAction Stop
   Write-Host -ForegroundColor "Green" "Successfully added owner $Owner to App Registration $($AppInfo.displayName)"
@@ -11769,7 +11797,7 @@ Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Ri
   }
  }
 }
-Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Rights on a single App Registration
+Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Rights on a single App Registration [AzCLI]
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
   [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName,
@@ -11929,15 +11957,9 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   $header = $authDetails.Header
 
   # BLOCK 1 - Get App Information
-  if (Assert-IsGUID $AppRegistration ) {
-   Write-Verbose "Using AppID no need to search"
-   $AppID = $AppRegistration
-  } else {
-   Write-Verbose "Using AppName will search for GUID"
-   $AppID = (Get-AzureAppRegistration -DisplayName $AppRegistration -Token $authDetails.Token -ErrorAction Stop).AppID
-  }
-  Write-Verbose "Check if value was found"
-  if (! $AppID ) {Throw "App $AppRegistration not found" } else { Write-Verbose "Found AppID : $AppID" }
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token
+  if (! $AppInfo.ID) { Throw "Application $Application not found" } else { Write-Verbose "Found App Registration with Object ID $($AppInfo.ID) and AppID $($AppInfo.AppID)" }
+  $AppID = $AppInfo.AppID
 
   # BLOCK 2 - Find Rights ID depending on backend_API_ID
   if (Assert-IsGUID $API ) {
@@ -12156,9 +12178,9 @@ Function Remove-AzureAppRegistrationPermission { # Remove Azure App Registration
   $header = $authDetails.Header
 
   # BLOCK 1 - Get App Information
-  if (Assert-IsGUID $AppRegistration ) { $AppID = $AppRegistration }
-  else { $AppID = (Get-AzureAppRegistration -DisplayName $AppRegistration -Token $authDetails.Token -ErrorAction Stop).AppID }
-  if (! $AppID ) { Throw "App $AppRegistration not found" }
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
+  $AppID = $AppInfo.AppID
 
   # BLOCK 2 - Find API ID
   if (Assert-IsGUID $API ) { $ServicePrincipalID = $API }
@@ -12596,6 +12618,36 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
   Write-Error "An error occurred during the Graph API operation: $($errorDetail.error.message)"
  }
 }
+Function Set-AzureAppRegistrationAcceptMappedClaims { # Set acceptMappedClaims and requestedAccessTokenVersion on an App Registration
+ [CmdletBinding(SupportsShouldProcess = $true)]
+ Param (
+  [parameter(Mandatory = $true)][Alias("ID")]$Application,
+  [bool]$AcceptMappedClaims = $true,
+  [ValidateSet(1,2)][int]$AccessTokenAcceptedVersion = 2,
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ValuesToShow "id,appId,displayName" -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" }
+  Write-Verbose "Found App with Object ID $($AppInfo.ID)"
+
+  $Body = @{
+   api = @{
+    acceptMappedClaims = $AcceptMappedClaims
+    requestedAccessTokenVersion = $AccessTokenAcceptedVersion
+   }
+  } | ConvertTo-Json -Depth 10
+
+  $GraphRequest = "https://graph.microsoft.com/v1.0/applications/$($AppInfo.ID)"
+  Write-Verbose "Patching application using object ID endpoint $GraphRequest"
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphRequest -Method PATCH -Body $Body -ErrorAction Stop | Out-Null
+  Write-Host -ForegroundColor Green "Updated App Registration $($AppInfo.displayName) [$($AppInfo.appId)]"
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
 Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
@@ -12605,36 +12657,18 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
   $Token
  )
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if ($authDetails.Method -eq "Token") {
-   Write-Verbose "Getting Application Details using Token"
-   $header = $authDetails.Header
-   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $authDetails.Token }
-   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $authDetails.Token }
-   else {$AppRegistrationInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $authDetails.Token}
-  } else {
-   Write-Verbose "Getting Application Details using Az Cli"
-   if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" }
-   elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" }
-   else {$AppRegistrationInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName"}
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  Write-Verbose "Getting Application Details using Token"
+  $header = $authDetails.Header
+  if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $authDetails.Token }
+  elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $authDetails.Token }
+  else {$AppRegistrationInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $authDetails.Token}
 
   $SecretRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)"
   $FederatedCredRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)/federatedIdentityCredentials"
 
-  if ($authDetails.Method -eq "Token") {
-   Write-Verbose "Getting Secrets Information Using Tokens"
-   $AppInfoFull = Invoke-RestMethod -Method GET -headers $header -Uri $SecretRequest
-   $FederatedCredentialFull = Invoke-RestMethod -Method GET -headers $header -Uri $FederatedCredRequest
-  } else {
-   Write-Verbose "Getting Secrets Information Using Az Cli"
-   # Get Secret and Certificate
-   $AppInfoJSON = az rest --method get --url $SecretRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-   $AppInfoFull = $AppInfoJSON | ConvertFrom-Json
-   # Get Federated Credential
-   $FederatedCredentialJSON = az rest --method get --url $FederatedCredRequest --headers 'Content-Type=application/json' 2>&1 | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-   $FederatedCredentialFull = $FederatedCredentialJSON | ConvertFrom-Json
-  }
+  $AppInfoFull = Invoke-RestMethod -Method GET -headers $header -Uri $SecretRequest
+  $FederatedCredentialFull = Invoke-RestMethod -Method GET -headers $header -Uri $FederatedCredRequest
 
   $FederatedCredential = $FederatedCredentialFull.Value
   $AppInfo = $AppInfoFull | Select-Object AppId,ID,displayName,passwordCredentials,keyCredentials
@@ -12671,11 +12705,8 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   $header = $authDetails.Header
-  if (Assert-IsGUID -Value $AppRegistration) {
-   $AppInfo = Get-AzureAppRegistration -AppID $AppRegistration -Token $authDetails.Token
-  } else {
-   $AppInfo = Get-AzureAppRegistration -DisplayName $AppRegistration -Token $authDetails.Token
-  }
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
   if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $authDetails.Token) -gt 1) {
    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $($AppInfo.displayName) ($($AppInfo.AppID)), remove existing keys to have maximum 1 before renewing"
    if (! $Force) { return }
@@ -12806,14 +12837,6 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
   write-host -foregroundcolor "Red" -Object $Error[0]
  }
 }
-Function Set-AzureAppRegistrationConsent { # Consent on permission (Warning : It consents all permissions on an App, you cannot select what permission to consent, so check before)
- Param (
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
-  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName
- )
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
- az ad app permission admin-consent --id $AppRegistrationID
-}
 Function Get-AzureAppRegistrationAPIExposed { # List Service Principal Exposed API (Equivalent of portal 'Expose an API' values)
 Param (
  [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
@@ -12833,23 +12856,29 @@ Param (
 }
 Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration - Uses Get-AzureAppRegistration
  Param (
- [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppID,
- [parameter(Mandatory=$true,ParameterSetName="ID")]$ID,
- [parameter(Mandatory=$true,ParameterSetName="DisplayName")]$DisplayName,
+ [parameter(Mandatory=$true)][Alias("ID")]$Application,
  [switch]$HideGUID,
  $Token
 )
- $AppInfo = Get-AzureAppRegistration @PSBoundParameters
- $AppRoles = $AppInfo | Select-Object -ExpandProperty appRoles
- $Result = $AppRoles | Select-Object -Property @{Name="AppName";Expression={$AppInfo.DisplayName}},@{Name="AppID";Expression={$AppInfo.AppID}},*
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
- if ($HideGUID) { $Result | Select-Object -ExcludeProperty *ID } else { $Result }
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
+
+  $AppRoles = $AppInfo | Select-Object -ExpandProperty appRoles
+  $Result = $AppRoles | Select-Object -Property @{Name="AppName";Expression={$AppInfo.DisplayName}},@{Name="AppID";Expression={$AppInfo.AppID}},*
+
+  if ($HideGUID) { $Result | Select-Object -ExcludeProperty *ID } else { $Result }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles, careful, by default it will overwrite existing
  [CmdletBinding(DefaultParameterSetName="IndividualRole")]
  Param (
   # Parameters mandatory in ALL sets
-  [parameter(Mandatory = $true)][GUID]$AppRegistrationObjectID, #ObjectID of App Registration
+  [parameter(Mandatory = $true)][Alias("AppRegistrationObjectID")][string]$Application, # App Registration AppID (client ID), Object ID, or Display Name
 
   [parameter(Mandatory = $true)]$Token,
 
@@ -12862,7 +12891,7 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
 
   # --- Parameter Set 2: RoleList ---
   [parameter(Mandatory = $true, ParameterSetName = "RoleList")][object[]]$AppRoleList,
-  # Example to Copy Role : $RoleList = Get-AzureAppRegistrationAppRoles -DisplayName $AppName -Token $AppToken | select-object description,displayName,value,allowedMemberTypes,@{name="isEnabled";expression={$true}},@{name="id";expression={([guid]::NewGuid()).guid}}
+  # Example to Copy Role : $RoleList = Get-AzureAppRegistrationAppRoles -Application $AppName -Token $AppToken | select-object description,displayName,value,allowedMemberTypes,@{name="isEnabled";expression={$true}},@{name="id";expression={([guid]::NewGuid()).guid}}
   # To Create an object From CSV : $New_Roles = import-csv FILENAME.csv | ForEach-Object {[PSCustomObject]@{description = $_.Role ; displayName = $_.Role ; value = $_.Role ; allowedMemberTypes = @('User') ; isEnabled = $true ; id = ([guid]::NewGuid()).Guid }}
   # From list of roles : $New_Roles = "MGappUser","TemplateEditor","FrontendPublisher","PushnotificationManager","MonitoringAccess" | ForEach-Object {[PSCustomObject]@{description = $_ ; displayName = $_ ; value = $_ ; allowedMemberTypes = @('User') ; isEnabled = $true ; id = ([guid]::NewGuid()).Guid }}
   [Switch]$Overwrite
@@ -12874,6 +12903,9 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
   Write-Verbose "Getting Token information"
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   $header = $authDetails.Header
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
+    $AppRegistrationObjectID = $AppInfo.ID
 
   # Get existing roles for merge/disable operations
   $ExistingRoles = @()
@@ -13021,152 +13053,6 @@ Function Remove-AzureAppRegistration { # Remove Azure App Registration | Service
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
-}
-Function New-AppRegistrationEmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body.
- param (
-  [string]$TenantID,
-  [string]$ApplicationDisplayName,
-  [string]$ApplicationID,
-  [string]$secret,
-  [datetime]$Secret_Start_Date,
-  [datetime]$Secret_End_Date,
-  $Result
- )
-
- # Build one row per object in Result (including duplicates), or fallback to single-parameter row.
- $Rows = @()
- if ($Result) {
-  foreach ($Item in @($Result)) {
-   $Rows += [ordered]@{
-    "Tenant ID" = $Item.TenantID
-    "Application Name" = if ($Item.ApplicationDisplayName) { $Item.ApplicationDisplayName } else { $Item."Application Name" }
-    "Application ID" = if ($Item.ApplicationID) { $Item.ApplicationID } else { $Item."Application ID" }
-    "Secret" = $Item.secret
-    "Secret Start Date" = if ($Item.Secret_Start_Date) { $Item.Secret_Start_Date } else { $Item."Secret Start Date" }
-    "Secret End Date" = if ($Item.Secret_End_Date) { $Item.Secret_End_Date } else { $Item."Secret End Date" }
-   }
-  }
- } else {
-  $Rows += [ordered]@{
-   "Tenant ID" = $TenantID
-   "Application Name" = $ApplicationDisplayName
-   "Application ID" = $ApplicationID
-   "Secret" = $secret
-   "Secret Start Date" = $Secret_Start_Date
-   "Secret End Date" = $Secret_End_Date
-  }
- }
-
-# Create Base CSS
-$Header = @"
-<style>
- table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 10pt; table-layout: fixed; }
- th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
- td { border: 1px solid #dddddd; padding: 8px; }
- tr:nth-child(even) { background-color: #f2f2f2; }
-</style>
-"@
-
-# Build table HTML with one row per object
-$TableHtml = "<table>"
-$TableHtml += "<tr><th>Tenant ID</th><th>Application Name</th><th>Application ID</th><th>Secret</th><th>Secret Start Date</th><th>Secret End Date</th></tr>"
-foreach ($Row in $Rows) {
- $TableHtml += ("<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>" -f
-  [System.Web.HttpUtility]::HtmlEncode($Row['Tenant ID']),
-  [System.Web.HttpUtility]::HtmlEncode($Row['Application Name']),
-  [System.Web.HttpUtility]::HtmlEncode($Row['Application ID']),
-  [System.Web.HttpUtility]::HtmlEncode($Row['Secret']),
-  [System.Web.HttpUtility]::HtmlEncode($Row['Secret Start Date']),
-  [System.Web.HttpUtility]::HtmlEncode($Row['Secret End Date']))
-}
-$TableHtml += "</table>"
-
-# 3. Build the full HTML Body
-$FullBody = @"
-<html>
- <head>$Header</head>
- <body>
-  <p>Hello,</p>
-  <p>The following application secret has been generated/rotated:</p>
-  $TableHtml
-  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
- </body>
-</html>
-"@
-
- return $FullBody
-}
-Function New-UserEmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body. It supports both single user and multiple users (in case of bulk creation) by accepting either individual parameters or a result object containing an array of users.
- param (
-  [string]$DisplayName,
-  [string]$UserPrincipalName,
-  [string]$Secret,
-  [string]$ID,
-  $Result
- )
-
- $UserRows = @()
-
- if ($Result) {
-  # Support a single object, an array of objects, or a Graph-style object containing a .value array.
-  $ResultItems = if ($Result.PSObject.Properties.Name -contains 'value' -and $Result.value) { @($Result.value) } else { @($Result) }
-
-  foreach ($Item in $ResultItems) {
-   $UserRows += [pscustomobject]@{
-    DisplayName = $Item.DisplayName
-    UserPrincipalName = $Item.UserPrincipalName
-    Password = $Item.Password
-    ID = $Item.ID
-   }
-  }
- } else {
-  $UserRows += [pscustomobject]@{
-   DisplayName = $DisplayName
-   UserPrincipalName = $UserPrincipalName
-   Password = $Secret
-   ID = $ID
-  }
- }
-
- # Create Base CSS
- $Header = @"
-<style>
- table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }
- th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
- td { border: 1px solid #dddddd; padding: 8px; }
- tr:nth-child(even) { background-color: #f2f2f2; }
-</style>
-"@
-
- # Build horizontal table HTML (1 row per user)
- $TableHtml = "<table>"
- $TableHtml += "<tr><th>Display Name</th><th>User Principal Name</th><th>Password</th><th>ID</th></tr>"
- foreach ($User in $UserRows) {
-  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($User.DisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.UserPrincipalName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Password) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.ID) )</td></tr>"
- }
- $TableHtml += "</table>"
-
- $UserCount = $UserRows.Count
- if ($UserCount -eq 1) {
-  $CreatedMessage = "The following user has been created:"
- } else {
-  $CreatedMessage = "The following $UserCount users have been created:"
- }
-
- # Build the full HTML Body
- $FullBody = @"
-<html>
- <head>$Header</head>
- <body>
-  <p>Hello,</p>
-  <p>$CreatedMessage</p>
-  $TableHtml
-  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
- </body>
-</html>
-"@
-
- return $FullBody
 }
 
 # Service Principal (Enterprise Applications) [Only]
@@ -18198,7 +18084,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   $EndDuration,
   $WorkspaceID
  )
-  # Example : $Result = get-sentinelappInfo -App $AppName -Duration '1d' -SimplifiedQuery -StartDuration "datetime(2025-12-19 14:46:33)" -EndDuration "datetime(2025-12-20 14:46:33)"
+  # Example : $Result = get-sentinelappInfo -App $AppName -Duration '1d' -SimplifiedQuery -StartDuration "2025-12-19 14:46:33" -EndDuration "2025-12-20 14:46:33"
   try {
 
   Write-Verbose "Getting WorkspaceID"
@@ -18796,7 +18682,152 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function New-AppRegistrationEmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body.
+ param (
+  [string]$TenantID,
+  [string]$ApplicationDisplayName,
+  [string]$ApplicationID,
+  [string]$secret,
+  [datetime]$Secret_Start_Date,
+  [datetime]$Secret_End_Date,
+  $Result
+ )
 
+ # Build one row per object in Result (including duplicates), or fallback to single-parameter row.
+ $Rows = @()
+ if ($Result) {
+  foreach ($Item in @($Result)) {
+   $Rows += [ordered]@{
+    "Tenant ID" = $Item.TenantID
+    "Application Name" = if ($Item.ApplicationDisplayName) { $Item.ApplicationDisplayName } else { $Item."Application Name" }
+    "Application ID" = if ($Item.ApplicationID) { $Item.ApplicationID } else { $Item."Application ID" }
+    "Secret" = $Item.secret
+    "Secret Start Date" = if ($Item.Secret_Start_Date) { $Item.Secret_Start_Date } else { $Item."Secret Start Date" }
+    "Secret End Date" = if ($Item.Secret_End_Date) { $Item.Secret_End_Date } else { $Item."Secret End Date" }
+   }
+  }
+ } else {
+  $Rows += [ordered]@{
+   "Tenant ID" = $TenantID
+   "Application Name" = $ApplicationDisplayName
+   "Application ID" = $ApplicationID
+   "Secret" = $secret
+   "Secret Start Date" = $Secret_Start_Date
+   "Secret End Date" = $Secret_End_Date
+  }
+ }
+
+# Create Base CSS
+$Header = @"
+<style>
+ table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 10pt; table-layout: fixed; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
+ td { border: 1px solid #dddddd; padding: 8px; }
+ tr:nth-child(even) { background-color: #f2f2f2; }
+</style>
+"@
+
+# Build table HTML with one row per object
+$TableHtml = "<table>"
+$TableHtml += "<tr><th>Tenant ID</th><th>Application Name</th><th>Application ID</th><th>Secret</th><th>Secret Start Date</th><th>Secret End Date</th></tr>"
+foreach ($Row in $Rows) {
+ $TableHtml += ("<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>" -f
+  [System.Web.HttpUtility]::HtmlEncode($Row['Tenant ID']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Application Name']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Application ID']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret Start Date']),
+  [System.Web.HttpUtility]::HtmlEncode($Row['Secret End Date']))
+}
+$TableHtml += "</table>"
+
+# 3. Build the full HTML Body
+$FullBody = @"
+<html>
+ <head>$Header</head>
+ <body>
+  <p>Hello,</p>
+  <p>The following application secret has been generated/rotated:</p>
+  $TableHtml
+  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
+ </body>
+</html>
+"@
+
+ return $FullBody
+}
+Function New-UserEmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body. It supports both single user and multiple users (in case of bulk creation) by accepting either individual parameters or a result object containing an array of users.
+ param (
+  [string]$DisplayName,
+  [string]$UserPrincipalName,
+  [string]$Secret,
+  [string]$ID,
+  $Result
+ )
+
+ $UserRows = @()
+
+ if ($Result) {
+  # Support a single object, an array of objects, or a Graph-style object containing a .value array.
+  $ResultItems = if ($Result.PSObject.Properties.Name -contains 'value' -and $Result.value) { @($Result.value) } else { @($Result) }
+
+  foreach ($Item in $ResultItems) {
+   $UserRows += [pscustomobject]@{
+    DisplayName = $Item.DisplayName
+    UserPrincipalName = $Item.UserPrincipalName
+    Password = $Item.Password
+    ID = $Item.ID
+   }
+  }
+ } else {
+  $UserRows += [pscustomobject]@{
+   DisplayName = $DisplayName
+   UserPrincipalName = $UserPrincipalName
+   Password = $Secret
+   ID = $ID
+  }
+ }
+
+ # Create Base CSS
+ $Header = @"
+<style>
+ table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
+ td { border: 1px solid #dddddd; padding: 8px; }
+ tr:nth-child(even) { background-color: #f2f2f2; }
+</style>
+"@
+
+ # Build horizontal table HTML (1 row per user)
+ $TableHtml = "<table>"
+ $TableHtml += "<tr><th>Display Name</th><th>User Principal Name</th><th>Password</th><th>ID</th></tr>"
+ foreach ($User in $UserRows) {
+  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($User.DisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.UserPrincipalName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.Password) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($User.ID) )</td></tr>"
+ }
+ $TableHtml += "</table>"
+
+ $UserCount = $UserRows.Count
+ if ($UserCount -eq 1) {
+  $CreatedMessage = "The following user has been created:"
+ } else {
+  $CreatedMessage = "The following $UserCount users have been created:"
+ }
+
+ # Build the full HTML Body
+ $FullBody = @"
+<html>
+ <head>$Header</head>
+ <body>
+  <p>Hello,</p>
+  <p>$CreatedMessage</p>
+  $TableHtml
+  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
+ </body>
+</html>
+"@
+
+ return $FullBody
+}
 
 # Azure Device management
 Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
