@@ -15338,6 +15338,48 @@ Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
   }
  }
 }
+Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as a method for users
+ Param (
+  $Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$User, # can be UPN or GUID
+  [parameter(Mandatory = $true)]$StartDateTime=([DateTime]::Now),
+  [parameter(Mandatory = $true)]$EndDateTime=([DateTime]::Now).AddHours(8),
+  [string]$DisplayName = "iClic Generated Temporary Access Pass"
+ )
+
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -tokenOnly
+  $header = $authDetails.Header
+
+  $params = @{
+   startDateTime = $StartDateTime
+   endDateTime = $EndDateTime
+   displayName = $DisplayName
+  }
+
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/temporaryAccessPassMethods/"
+
+  # Add check if user is found and / exists
+  # Add check if value already exists
+
+  $ParamJson = $params | convertto-json
+
+  $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
+
+  if (! $Result) {
+   Throw "Error during apply of update"
+  }
+ } catch {
+  $Exception = $($Error[0])
+  Try {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error -Message "Error adding MFA Method Temporary Access Pass of user $User ($StatusCode | $StatusMessage))"
+  } catch {
+   Write-Error $Exception
+  }
+ }
+}
 Function Get-AzureADUserMFADeviceBoundAAGUID {
  Param (
   [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
