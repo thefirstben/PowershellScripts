@@ -11716,7 +11716,7 @@ Function Get-AzureAppRegistrationOwner { # Get owner(s) of an App Registration
   @{Name="AppID";Expression={$AppInfo.appId}},
   @{Name="AppName";Expression={$AppInfo.displayName}},id,userPrincipalName,displayName
  } catch {
-  Write-Error $_
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Add-AzureAppRegistrationOwner { # Add an owner to an App Registration
@@ -11816,31 +11816,23 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses AzCli or Token
  Param (
-  [parameter(Mandatory=$True,ParameterSetName="AppID")]$AppRegistrationID,
-  [parameter(Mandatory=$True,ParameterSetName="AppName")]$AppRegistrationName,
+  $Application,
   [switch]$Readable,
   [switch]$HideGUID,
   $Token
  )
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-
-  if ($authDetails.Method -eq "Token") {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
    $header = $authDetails.Header
-   if ($AppRegistrationName) {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$AppRegistrationName'&`$select=id,appId,displayName,requiredResourceAccess" | Select-Object * -ExpandProperty value -ExcludeProperty Value
+   if (Assert-IsGUID $Application) {
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/applications(appId='$Application')?`$select=id,appId,displayName,requiredResourceAccess"
    } else {
-    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/applications(appId='$AppRegistrationID')?`$select=id,appId,displayName,requiredResourceAccess"
+    $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/applications?`$filter=displayName eq '$Application'&`$select=id,appId,displayName,requiredResourceAccess" | Select-Object * -ExpandProperty value -ExcludeProperty Value
    }
    $AppRegistrationName = $CurrentResult.displayName
    $AppRegistrationID = $CurrentResult.appId
    $PermissionListJson = $CurrentResult.requiredResourceAccess
-  } else {
-   if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).displayName}
-   if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
-   $PermissionListJson = az ad app permission list --id $AppRegistrationID --only-show-errors -o json | convertfrom-json
-  }
 
   $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
     $Rules_List=@()
@@ -11858,11 +11850,7 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
    }
   }
   If ($Readable -and $Result.Rules) {
-  if ($authDetails.Method -eq "Token") {
-    $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules -Token $authDetails.Token
-   } else {
-    $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules
-   }
+   $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules -Token $authDetails.Token
    if ($HideGUID) {
     $ReadablePermissionList | Select-Object -ExcludeProperty *ID
    } else {
@@ -11945,7 +11933,7 @@ Function Get-AzureAppRegistrationPermissionsGlobal { # Check Permission for All 
 Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (Requires Grant to be fully working)
  [CmdletBinding()]
  Param (
-  [parameter(Mandatory=$true)]$AppRegistration, # App to update
+  [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # App to update
   [parameter(Mandatory=$true)]$API, # Service Principal Object ID that holds the Permission - Example : 'Microsoft Graph'
   [Parameter(Mandatory=$true)]$Permission, # Permission to add (Example : User.Read.All) / Can use the GUID of the permission for faster processing but less user friendly
   [ValidateSet("Application","Delegated")]$PermissionType,
@@ -11957,17 +11945,19 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   $header = $authDetails.Header
 
   # BLOCK 1 - Get App Information
+  write-verbose "Retrieving App Registration information for $Application"
   $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token
   if (! $AppInfo.ID) { Throw "Application $Application not found" } else { Write-Verbose "Found App Registration with Object ID $($AppInfo.ID) and AppID $($AppInfo.AppID)" }
   $AppID = $AppInfo.AppID
 
   # BLOCK 2 - Find Rights ID depending on backend_API_ID
+  write-verbose "Finding API ID for $API"
   if (Assert-IsGUID $API ) {
    Write-Verbose "Using API ID no need to search"
    $ServicePrincipalID = $API
   } else {
    Write-Verbose "Using API Name will search for GUID"
-   $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $API
+   $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $API -Token $authDetails.Token
   }
   Write-Verbose "Check if value was found"
   if (! $ServicePrincipalID ) {Throw "API $API not found" } else { Write-Verbose "Found API ID : $ServicePrincipalID" }
@@ -12045,7 +12035,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
 
   if ($Consent) {
    Write-Verbose "Granting Consent"
-    Grant-AzureAppRegistrationConsent -AppRegistration $AppRegistration -API $API -Permission $Permission -PermissionType $PermissionType -Token $authDetails.Token
+    Grant-AzureAppRegistrationConsent -AppRegistration $Application -API $API -Permission $Permission -PermissionType $PermissionType -Token $authDetails.Token
   }
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -12695,7 +12685,7 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
 Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
  [CmdletBinding()]
  Param (
-  [parameter(Mandatory=$true)]$AppRegistration, # Accepts App Registration Name or AppID (GUID)
+  [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # Accepts App Registration Name or AppID (GUID)
   $SecretDescription= "Automatically Generated by $env:username",
   $AppMonths = "6",
   [switch]$ShowObjectID,
@@ -12743,7 +12733,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
   $Result
 
  } catch {
-  write-Error "Error adding secret |$AppRegistration| : $($Error[0])"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Remove-AzureAppRegistrationSecret { # Remove Secret to App (uses Rest API / Removal) - Not working for Certificate because of requirement for 'Proof'
@@ -13831,10 +13821,16 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
     $EndPointURL = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$oAuth2PermissionGrantId"
 
     # Update Scope (if you do not do this, then the scope will be overwrote - DO NOT FORGET THE SPACE) - Remove Duplicate
-    $NewScope = ( ( $oAuth2PermissionGrantInfo.scope + " " + $appRoleName) -split(" ") | Sort-Object -Unique) -join(" ")
+      $OldScope = (($oAuth2PermissionGrantInfo.scope -split(" ") | Where-Object { $_ }) | Sort-Object -Unique) -join(" ")
+      $NewScope = ((( $oAuth2PermissionGrantInfo.scope + " " + $appRoleName) -split(" ") | Where-Object { $_ }) | Sort-Object -Unique) -join(" ")
 
-    Write-Verbose "Old Scope : $($oAuth2PermissionGrantInfo.scope) ($(($oAuth2PermissionGrantInfo.scope -split(" ")).Count))"
+      Write-Verbose "Old Scope : $OldScope ($(($OldScope -split(" ")).Count))"
     Write-Verbose "New Scope : $NewScope ($(($NewScope -split(" ")).Count))"
+
+      if ($OldScope -eq $NewScope) {
+       Write-Host -ForegroundColor Cyan "Delegated permission '$appRoleName' is already configured on '$resourceDisplayName' for principal '$principalId'."
+       return
+      }
 
     $Body = @{
      Scope = $NewScope
@@ -16712,9 +16708,9 @@ Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
 }
 
 # Sharepoint Scripts
-Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname+path [Uses Rest API]
+Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname&path [Uses Rest API]
  [CmdletBinding()]
- Param (
+ Param(
   [Parameter(Mandatory = $true)][string]$SiteURL, # Full URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME/docs/Forms/AllItems.aspx
   $Token
  )
@@ -16744,12 +16740,10 @@ Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL o
 Function Add-SharepointSiteAppPermission { # Grant an App Registration access to a specific SharePoint site (Sites.Selected model) [Uses Rest API]
  [CmdletBinding(DefaultParameterSetName = "BySiteID")]
  Param (
-  [Parameter(Mandatory = $true, ParameterSetName = "BySiteID")][string]$SiteID,   # SharePoint Site ID (hostname,guid,guid format from Graph API)
-  [Parameter(Mandatory = $true, ParameterSetName = "ByURL")][string]$SiteURL,     # Full SharePoint URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME
-  [Parameter(Mandatory = $true)][string]$AppID,                                   # App Registration Application (Client) ID
-  [Parameter(Mandatory = $true)][string]$AppName,                                 # App Registration Display Name
-  [Parameter(Mandatory = $true)][ValidateSet("read", "write", "read,write")]
-  [string]$Role,                                                                   # Permission role to grant
+  [Parameter(Mandatory = $true, ParameterSetName = "BySiteID")][string]$SiteID,            # SharePoint Site ID (hostname,guid,guid format from Graph API)
+  [Parameter(Mandatory = $true, ParameterSetName = "ByURL")][string]$SiteURL,              # Full SharePoint URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME
+  [Parameter(Mandatory = $true)][PSObject]$AppInfo,                                        # Object containing AppID and AppName
+  [Parameter(Mandatory = $true)][ValidateSet("read", "write", "read,write")][string]$Role, # Permission role to grant
   $Token
  )
  try {
@@ -16761,6 +16755,9 @@ Function Add-SharepointSiteAppPermission { # Grant an App Registration access to
    $site = Get-SharepointSiteID -SiteURL $SiteURL -Token $authDetails.Token -ErrorAction Stop
    $SiteID = $site.id
   }
+
+  $AppID = $AppInfo.Appid
+  $AppName = $AppInfo.DisplayName
 
   $body = @{
    roles              = @($Role -split ",")
@@ -16775,7 +16772,8 @@ Function Add-SharepointSiteAppPermission { # Grant an App Registration access to
   } | ConvertTo-Json -Depth 5
 
   Write-Host -ForegroundColor DarkMagenta "Granting '$Role' permission on Site '$SiteID' to App '$AppName' ($AppID)"
-  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$SiteID/permissions" -Method POST -Body $body -ErrorAction Stop
+  $encodedSiteID = [System.Uri]::EscapeDataString($SiteID)
+  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$encodedSiteID/permissions" -Method POST -Body $body -ErrorAction Stop
   Write-Host -ForegroundColor Green "Permission granted successfully. Permission ID: $($result.id)"
   return $result
  } catch {
@@ -17904,6 +17902,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [switch]$SimplifiedQuery,
   [switch]$ShowRawResult,
   $Token,
+  $ResultTypeExclusion, # Exclude specific result types (e.g. "50140" ("Keep me signed in"), "50126" ("Incorrect Password"), "53003" ("Blocked by CA Policy"), "50076" ("Standard MFA"))
+  $ResultTypeInclusion, # Include only specific result types (e.g. "90094" for "Admin consent is required")
   $AzureMonitorToken,
   $Duration = '1d',
   $StartDuration,
@@ -17999,6 +17999,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature == "SUCCESS"' }
   if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
   if ($ShowOnlyFailures) { $QueryStart += '| where ResultSignature == "FAILURE"' }
+  if ($ResultTypeExclusion) { $QueryStart += '| where ResultType !in (' + ($ResultTypeExclusion -join ',') + ')' }
+  if ($ResultTypeInclusion) { $QueryStart += '| where ResultType in (' + ($ResultTypeInclusion -join ',') + ')' }
 
   # Add Unified Values
   $QueryStart += '| extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
@@ -18036,7 +18038,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
   if ($SimplifiedQuery) {
    $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceServicePrincipalId,UserDisplayName,UserId,UserPrincipalName,
-   IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
+   IPAddress,AuthenticationRequirement,Category,ResultSignature,ResultType,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
    ResultDescription,DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
    DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,
    Conditional_Access_Success, Conditional_Access_Failure'
