@@ -4266,21 +4266,6 @@ Function Disconnect-Exchange () {
  if ($ModuleSource) { Remove-Module -ErrorAction Ignore -Name $($ModuleSource.Source) }
  Title
 }
-# SendMail
-Function Send-MailO365 {
- Param (
-  [PSCredential]$Credential=(get-credential),
-  [Parameter(Mandatory=$true)]$eTo,
-  [Parameter(Mandatory=$true)]$eFrom,
-  [Parameter(Mandatory=$true)]$eSubject,
-  [Parameter(Mandatory=$true)]$eBody
- )
- try {
-  Send-MailMessage -SmtpServer 'smtp.office365.com' -port 587 -UseSsl -BodyAsHtml -Priority High -Encoding UTF8 -credential $Credential -To $eTo -From $eFrom -Subject $eSubject -Body $eBody -ErrorAction Stop
-  } catch {
-   write-host -foregroundcolor "red" "Error while sending mail ($($error[0]))"
-  }
-}
 # Get Info/Filter
 Function Get-ExchangeVersion {
  if ( ! (Assert-IsCommandAvailable EXSetup) ) {return}
@@ -12679,7 +12664,7 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
    Return $AppInfo
   }
  } catch {
-  write-host -foregroundcolor "Red" -Object "Error getting secret from $AppRegistrationID$AppRegistrationName$AppRegistrationObjectID : $($Error[0])"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
@@ -14347,10 +14332,32 @@ Function Get-AzureRoleAssignementsEligible { # Get all Azure Eligible Roles
 }
 Function Get-AzureAdministrativeUnit {
  Param (
-  [parameter(Mandatory = $true)]$Token
+  $Token,
+  [string]$Name,
+  [switch]$ShowMembers
  )
- $Result = Get-AzureGraph -Token $Token -GraphRequest "/directory/administrativeUnits?`$top=999"
- $Result.value | select-object * -ExcludeProperty deletedDateTime,isMemberManagementRestricted,visibility
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directory/administrativeUnits"
+  
+  # Apply name filter if provided
+  if ($Name) {
+   $Result = $Result | Where-Object { $_.displayName -like "*$Name*" }
+  }
+  
+  # Fetch members if ShowMembers flag is set
+  if ($ShowMembers -and $Result) {
+   $Result | ForEach-Object {
+    $AdminUnitId = $_.id
+    $Members = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directory/administrativeUnits/$AdminUnitId/members"
+    $_ | Add-Member -MemberType NoteProperty -Name "members" -Value $Members -Force
+   }
+  }
+  
+  $Result | select-object * -ExcludeProperty deletedDateTime
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Add-AzureRole {
  Param (
@@ -15335,11 +15342,18 @@ Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
  }
 }
 Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as a method for users
+ [CmdletBinding(DefaultParameterSetName = "ByEndDateTime")]
  Param (
   $Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$User, # can be UPN or GUID
-  [parameter(Mandatory = $true)]$StartDateTime=([DateTime]::Now),
-  [parameter(Mandatory = $true)]$EndDateTime=([DateTime]::Now).AddHours(1),
+  [Parameter(ParameterSetName = "ByEndDateTime")]
+  [Parameter(ParameterSetName = "ByDuration")]
+  $StartDateTime=([DateTime]::Now),
+  [Parameter(ParameterSetName = "ByEndDateTime")]
+  $EndDateTime=([DateTime]::Now).AddHours(1),
+  [Parameter(ParameterSetName = "ByDuration", Mandatory = $true)]
+  [ValidateRange(60, 43200)]
+  [int]$DurationInMinutes,
   [string]$DisplayName = "iClic Generated Temporary Access Pass"
  )
 
@@ -15347,33 +15361,47 @@ Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as 
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -tokenOnly
   $header = $authDetails.Header
 
-  $params = @{
-   startDateTime = $StartDateTime
-   endDateTime = $EndDateTime
-   displayName = $DisplayName
+  # Graph validates TAP datetimes in UTC; always send explicit UTC values.
+  $StartDateTimeUtc = ([DateTime]$StartDateTime).ToUniversalTime()
+  if ($PSCmdlet.ParameterSetName -eq "ByDuration") {
+   $LifetimeInMinutes = [int]$DurationInMinutes
+   $EndDateTimeUtc = $StartDateTimeUtc.AddMinutes($LifetimeInMinutes)
+  } else {
+   $EndDateTimeUtc = ([DateTime]$EndDateTime).ToUniversalTime()
+
+   if ($EndDateTimeUtc -le $StartDateTimeUtc) {
+    Throw "EndDateTime must be greater than StartDateTime"
+   }
+
+   $LifetimeInMinutes = [int][Math]::Ceiling(($EndDateTimeUtc - $StartDateTimeUtc).TotalMinutes)
+
+   if ($LifetimeInMinutes -le 0) {
+    Throw "EndDateTime must be at least 1 minute greater than StartDateTime"
+   }
   }
 
-  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/temporaryAccessPassMethods/"
-
-  # Add check if user is found and / exists
-  # Add check if value already exists
-
+  $params = @{
+   startDateTime = $StartDateTimeUtc.ToString("o")
+   lifetimeInMinutes = $LifetimeInMinutes
+   displayName = $DisplayName
+  }
   $ParamJson = $params | convertto-json
 
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/temporaryAccessPassMethods/"
   $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
 
   if (! $Result) {
    Throw "Error during apply of update"
+  } else {
+   $Result | Select-Object -ExcludeProperty '@odata.context' *,
+    @{Name="startDateTimeUTC"; Expression={ ([DateTimeOffset]$_.startDateTime).UtcDateTime }},
+    @{Name="startDateTimeLocal"; Expression={ ([DateTimeOffset]$_.startDateTime).LocalDateTime }},
+    @{Name="endDateTime"; Expression={ ([DateTimeOffset]$_.startDateTime).AddMinutes([double]$_.lifetimeInMinutes).LocalDateTime }},
+    @{Name="endDateTimeUTC"; Expression={ ([DateTimeOffset]$_.startDateTime).AddMinutes([double]$_.lifetimeInMinutes).UtcDateTime }},
+    @{Name="endDateTimeLocal"; Expression={ ([DateTimeOffset]$_.startDateTime).AddMinutes([double]$_.lifetimeInMinutes).LocalDateTime }}
   }
  } catch {
-  $Exception = $($Error[0])
-  Try {
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   Write-Error -Message "Error adding MFA Method Temporary Access Pass of user $User ($StatusCode | $StatusMessage))"
-  } catch {
-   Write-Error $Exception
-  }
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureADUserMFADeviceBoundAAGUID {
@@ -16707,108 +16735,26 @@ Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
  Invoke-RestMethod -Method PATCH -headers $header -Uri $GraphURL -Body $ParamJson
 }
 
-# Sharepoint Scripts
-Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname&path [Uses Rest API]
- [CmdletBinding()]
- Param(
-  [Parameter(Mandatory = $true)][string]$SiteURL, # Full URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME/docs/Forms/AllItems.aspx
-  $Token
- )
- try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-
-  # Parse hostname and site path from the URL (ignore anything beyond /sites/<name>)
-  $uri = [System.Uri]$SiteURL
-  $hostname = $uri.Host
-  # Match /sites/<name> or /teams/<name>
-  if ($uri.AbsolutePath -match "^(/sites/[^/]+|/teams/[^/]+)") {
-   $sitePath = $Matches[1]
-  } else {
-   throw "Could not extract site path from URL '$SiteURL'. Expected a /sites/ or /teams/ path."
-  }
-
-  Write-Verbose "Resolving Site ID for: $hostname$sitePath"
-  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}" -ErrorAction Stop
-
-  Write-Host -ForegroundColor Green "Resolved Site: $($result.displayName)"
-  Write-Host -ForegroundColor Green "Site ID: $($result.id)"
-  return $result
- } catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-Function Add-SharepointSiteAppPermission { # Grant an App Registration access to a specific SharePoint site (Sites.Selected model) [Uses Rest API]
- [CmdletBinding(DefaultParameterSetName = "BySiteID")]
- Param (
-  [Parameter(Mandatory = $true, ParameterSetName = "BySiteID")][string]$SiteID,            # SharePoint Site ID (hostname,guid,guid format from Graph API)
-  [Parameter(Mandatory = $true, ParameterSetName = "ByURL")][string]$SiteURL,              # Full SharePoint URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME
-  [Parameter(Mandatory = $true)][PSObject]$AppInfo,                                        # Object containing AppID and AppName
-  [Parameter(Mandatory = $true)][ValidateSet("read", "write", "read,write")][string]$Role, # Permission role to grant
-  $Token
- )
- try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-
-  # Resolve Site ID from URL if provided
-  if ($PSCmdlet.ParameterSetName -eq "ByURL") {
-   Write-Host -ForegroundColor DarkMagenta "Resolving Site ID from URL: $SiteURL"
-   $site = Get-SharepointSiteID -SiteURL $SiteURL -Token $authDetails.Token -ErrorAction Stop
-   $SiteID = $site.id
-  }
-
-  $AppID = $AppInfo.Appid
-  $AppName = $AppInfo.DisplayName
-
-  $body = @{
-   roles              = @($Role -split ",")
-   grantedToIdentities = @(
-    @{
-     application = @{
-      id          = $AppID
-      displayName = $AppName
-     }
-    }
-   )
-  } | ConvertTo-Json -Depth 5
-
-  Write-Host -ForegroundColor DarkMagenta "Granting '$Role' permission on Site '$SiteID' to App '$AppName' ($AppID)"
-  $encodedSiteID = [System.Uri]::EscapeDataString($SiteID)
-  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$encodedSiteID/permissions" -Method POST -Body $body -ErrorAction Stop
-  Write-Host -ForegroundColor Green "Permission granted successfully. Permission ID: $($result.id)"
-  return $result
- } catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-
 # Token Management
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
-  # --- Common Parameters for All Sets ---
-
   # This parameter is mandatory for all three authentication methods.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
   [parameter(Mandatory = $True, ParameterSetName="CertificateThumbprint")]
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]
   [parameter(Mandatory = $True, ParameterSetName="Interactive")]
   $TenantID,
-
   # This parameter is optional for all sets and defaults to the Microsoft Graph Command Line Tools public App ID.
   [parameter(Mandatory = $False, ParameterSetName="ClientSecret")]
   [parameter(Mandatory = $False, ParameterSetName="CertificateThumbprint")]
   [parameter(Mandatory = $False, ParameterSetName="Certificate")]
   [parameter(Mandatory = $False, ParameterSetName="Interactive")]
   $ApplicationID = "14d82eec-204b-4c2f-b7e8-296a70dab67e", # Microsoft Graph Command Line Tools Public App ID
-  # $ApplicationID = "04b07795-8ddb-461a-bbee-02f9e1bf7b46", # Azure CLI's Public App ID
-
   # Optional resource parameter, available to all sets /.default is the modern recommended scope.
   [parameter(Mandatory = $False)]$Scope = "https://graph.microsoft.com/.default",
-
+  # Optional switch to print the full token response (including refresh token if applicable) instead of just the access token.
   [parameter(Mandatory = $False)][Switch]$PrintTokenResponse,
-
-  # --- Parameters for Specific Auth Sets ---
-
   # This parameter is mandatory ONLY for the 'ClientSecret' set.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]$ClientKey,
   # This parameter is mandatory ONLY for the 'CertificateThumbprint' set. Thumbprint must be in the local user certificate store
@@ -16819,7 +16765,6 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive,
   # Parameter for Managed Identity Set ---
   [parameter(Mandatory = $True, ParameterSetName="ManagedIdentity")][switch]$ManagedIdentity,
-
   # Dedicated parameter for User-Assigned Managed Identity ---
   [parameter(Mandatory = $False, ParameterSetName="ManagedIdentity")][string]$UserAssignedClientID
  )
@@ -17304,6 +17249,80 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
   else {
    Throw "Authentication failed: A token was not provided or was invalid, and the Az CLI is not available."
   }
+ }
+}
+
+# Sharepoint Scripts
+Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname&path [Uses Rest API]
+ [CmdletBinding()]
+ Param(
+  [Parameter(Mandatory = $true)][string]$SiteURL, # Full URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME/docs/Forms/AllItems.aspx
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Parse hostname and site path from the URL (ignore anything beyond /sites/<name>)
+  $uri = [System.Uri]$SiteURL
+  $hostname = $uri.Host
+  # Match /sites/<name> or /teams/<name>
+  if ($uri.AbsolutePath -match "^(/sites/[^/]+|/teams/[^/]+)") {
+   $sitePath = $Matches[1]
+  } else {
+   throw "Could not extract site path from URL '$SiteURL'. Expected a /sites/ or /teams/ path."
+  }
+
+  Write-Verbose "Resolving Site ID for: $hostname$sitePath"
+  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}" -ErrorAction Stop
+
+  Write-Host -ForegroundColor Green "Resolved Site: $($result.displayName)"
+  Write-Host -ForegroundColor Green "Site ID: $($result.id)"
+  return $result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Add-SharepointSiteAppPermission { # Grant an App Registration access to a specific SharePoint site (Sites.Selected model) [Uses Rest API]
+ [CmdletBinding(DefaultParameterSetName = "BySiteID")]
+ Param (
+  [Parameter(Mandatory = $true, ParameterSetName = "BySiteID")][string]$SiteID,            # SharePoint Site ID (hostname,guid,guid format from Graph API)
+  [Parameter(Mandatory = $true, ParameterSetName = "ByURL")][string]$SiteURL,              # Full SharePoint URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME
+  [Parameter(Mandatory = $true)][PSObject]$AppInfo,                                        # Object containing AppID and AppName
+  [Parameter(Mandatory = $true)][ValidateSet("read", "write", "read,write")][string]$Role, # Permission role to grant
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Resolve Site ID from URL if provided
+  if ($PSCmdlet.ParameterSetName -eq "ByURL") {
+   Write-Host -ForegroundColor DarkMagenta "Resolving Site ID from URL: $SiteURL"
+   $site = Get-SharepointSiteID -SiteURL $SiteURL -Token $authDetails.Token -ErrorAction Stop
+   $SiteID = $site.id
+  }
+
+  $AppID = $AppInfo.Appid
+  $AppName = $AppInfo.DisplayName
+
+  $body = @{
+   roles              = @($Role -split ",")
+   grantedToIdentities = @(
+    @{
+     application = @{
+      id          = $AppID
+      displayName = $AppName
+     }
+    }
+   )
+  } | ConvertTo-Json -Depth 5
+
+  Write-Host -ForegroundColor DarkMagenta "Granting '$Role' permission on Site '$SiteID' to App '$AppName' ($AppID)"
+  $encodedSiteID = [System.Uri]::EscapeDataString($SiteID)
+  $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$encodedSiteID/permissions" -Method POST -Body $body -ErrorAction Stop
+  Write-Host -ForegroundColor Green "Permission granted successfully. Permission ID: $($result.id)"
+  return $result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 
