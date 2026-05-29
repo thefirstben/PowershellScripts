@@ -7332,6 +7332,7 @@ Function Remove-History {
 }
 
 # Install APP (Generic Functions)
+
 Function Add-ToPath {
  Param (
   [Parameter(Mandatory=$true)]$PathToAdd,
@@ -7468,6 +7469,7 @@ Function Get-GITHUB_App_LatestVersion { # Find latest version on Github if using
 }
 
 # Install APP (UserMode)
+
 Function Install-VsCode { # Download and install latest VSCode [User version] (Non Admin) [EXE]
  $FileName = Get-FileFromURL "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-user"
  Invoke-Expression  "& { ./$FileName  /VERYSILENT /NORESTART /MERGETASKS=!runcode }"
@@ -7796,6 +7798,7 @@ Function Install-OpenSSL { # Download and install lastest OpenSSL (from firedaem
 }
 
 # Install APP (Admin)
+
 Function Install-RSAT { # Install Full RSAT (Remote Server Administration Tools) [Windows Component] - Can remote install
  Param (
   [Switch]$SkipWSUS,
@@ -7959,6 +7962,7 @@ Function Install-SSMS { # Download and install latest SQL Server Management Stud
 }
 
 # Git
+
 Function Get-GitLabGroups {
  Param (
   $Access_Token = $env:GitLabKey,
@@ -8015,6 +8019,7 @@ Function Get-GitConfig {
 }
 
 # Misc Functions
+
 Function Add-ValuesToArray { # Example to add values to a Powershell Array
  Param (
   $userlist=@(""),
@@ -8977,7 +8982,9 @@ Function Clear-CBSFolder {
  Remove-Item C:\Windows\Logs\CBS\cbs.log
  Start-Service TrustedInstaller
 }
+
 # Non standard verbs
+
 Function ScreenOff { # Turns of screen (no additional software required)
  (Add-Type '[DllImport("user32.dll")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1,0x0112,0xF170,2)
 }
@@ -9043,6 +9050,7 @@ Function LaunchAsUser { # Launch Script as another user
 }
 
 # Misc Functions (Require Additionnal Tools)
+
 Function Reset-GraphicCard { # Disables/Enables device [Requires Nirsoft DevManView] - On windows 11 can use : Ctrl+Win+Shift+B
  Param (
   $AppPath="C:\Apps\NirSoft",
@@ -9170,6 +9178,7 @@ Function Add-PasswordToPFX { # Add a password to a PFX File [Requires OpenSSL]
 }
 
 # Video / Audio Encoding
+
 Function Encode { # Encodes Video using FFMPEG [Requires FFMPEG]
  Param (
   $ffmpegbinary=$(get-command ffmpeg -ErrorAction SilentlyContinue),
@@ -9232,6 +9241,7 @@ Function Save-AudioTrack { # Uses FFmpeg
 }
 
 #Security (Check Admin Mods)
+
 Function Get-LocalGroupMod { # Get Information on the modification of local groups
  try {
   Get-WinEvent -FilterHashtable @{ProviderName='Microsoft-Windows-Security-Auditing';ID=$(4732,4733)} -ErrorAction Stop | Select-Object RecordId,
@@ -9356,6 +9366,7 @@ Function MassCheckSecurityPolicy { # Mass Check Local Security Policy on servers
 }
 
 #Certificates
+
 Function Get-LocalCertificate { # Print all local certificates
  Param (
   $CertPath=@('LocalMachine','CurrentUser')
@@ -9379,6 +9390,7 @@ Function Get-EncryptionCertificate { # Retrive certificat that can be used for d
 }
 
 # VPN (OnPrem)
+
 Function Get-VPNUserFromIP {
  Param (
   $IP,
@@ -9410,6 +9422,7 @@ Function Get-VPNInfoFromUser {
 }
 
 #Azure Connection
+
 Function Connect-AzureCli {
  Param (
   [Parameter(Mandatory)]$AzureLogin
@@ -9438,6 +9451,7 @@ Function Open-MgGraphConnection {
 }
 
 # Get Azure Resource Data using Azure Resource Graph API with KQL Queries
+
 Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups
   [CmdletBinding()]
  Param (
@@ -10030,6 +10044,7 @@ Get-AzureGraph -Token $authDetails.Token -Method "PUT" -Body $JsonBody -GraphReq
 }
 
 # Get Azure Resource Data user Azure CLI (Legacy)
+
 Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
 [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
@@ -10094,12 +10109,14 @@ Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot
 }
 
 # AzCli Env Management
+
 Function Get-AzureCliEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
 
 # Get Azure Resource Information
+
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptionsAZCLI | foreach-object {
   $SubscriptionName = $_.Name
@@ -10554,6 +10571,7 @@ Function Get-AzureApplicationGateway { # Check all Azure Application Gateway
 }
 
 # Convert Methods
+
 Function Convert-Tag { # Convert Tags to a usable value
  Param (
   $TagToSearch,
@@ -10672,6 +10690,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
 }
 
 # User Rights Management
+
 Function Get-AzureRBACRightsAzCLI { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
  [CmdletBinding(DefaultParameterSetName='ShowAll')]
  Param (
@@ -11352,7 +11371,9 @@ Function Remove-AzureRBACRights { # Remove rights to a resource using UserName o
   }
  }
 }
+
 # App Registration / Service Principal creation
+
 Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions from App Registration
  Param (
   [Parameter(Mandatory=$true)]$AppID,
@@ -11529,6 +11550,7 @@ Function New-AzureServicePrincipal { # Created a new Service Principal that can 
 }
 
 # App Registration [Only]
+
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
  Param (
@@ -13031,6 +13053,7 @@ Function Remove-AzureAppRegistration { # Remove Azure App Registration | Service
 }
 
 # Service Principal (Enterprise Applications) [Only]
+
 Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AzCli AzAD Cmdlet are 5 times slower than AzRest
  Param (
   [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
@@ -14187,6 +14210,7 @@ Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal
 }
 
 # User Role Assignement (Not RBAC)
+
 Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
   $Token,
@@ -14427,6 +14451,7 @@ Function Add-AzureRole {
 }
 
 # Devices
+
 Function Get-AzureDeviceObjectIDFromName {
  param(
   [parameter(Mandatory=$true)][String]$DeviceName,
@@ -14492,6 +14517,7 @@ Function Get-AzureDevices {
 }
 
 # Administrative Unit Management
+
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
  [CmdletBinding()]
  Param (
@@ -14510,6 +14536,7 @@ Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with ass
  }
 }
 # Schema Extensions
+
 Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  #How to filter by Type :
  # ($result | ? targetTypes -Contains "user").count
@@ -14526,6 +14553,7 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
 }
 
 # Defender for Cloud (MDC)
+
 Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AzCli rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
  [CmdletBinding()]
  Param (
@@ -14648,6 +14676,7 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
 }
 
 # DevOps
+
 Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops | Uses API Only
  <#
  .SYNOPSIS
@@ -15233,6 +15262,7 @@ Function Add-ADOGroupMember { # Add ADO Group inside and ADO Group
 }
 
 # MFA
+
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
   $Throttle = 10, # Time in Seconds to wait in case of throttle
@@ -15393,10 +15423,10 @@ Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as 
   if (! $Result) {
    Throw "Error during apply of update"
   } else {
-   $Result | Select-Object -ExcludeProperty '@odata.context' *,
+   $Result | Select-Object -ExcludeProperty '@odata.context',startDateTime,endDateTime *,
+    @{Name="UserName"; Expression={ $User }},
     @{Name="startDateTimeUTC"; Expression={ ([DateTimeOffset]$_.startDateTime).UtcDateTime }},
     @{Name="startDateTimeLocal"; Expression={ ([DateTimeOffset]$_.startDateTime).LocalDateTime }},
-    @{Name="endDateTime"; Expression={ ([DateTimeOffset]$_.startDateTime).AddMinutes([double]$_.lifetimeInMinutes).LocalDateTime }},
     @{Name="endDateTimeUTC"; Expression={ ([DateTimeOffset]$_.startDateTime).AddMinutes([double]$_.lifetimeInMinutes).UtcDateTime }},
     @{Name="endDateTimeLocal"; Expression={ ([DateTimeOffset]$_.startDateTime).AddMinutes([double]$_.lifetimeInMinutes).LocalDateTime }}
   }
@@ -15568,6 +15598,7 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
 }
 
 # AAD Group Management
+
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
  Param (
   [Parameter(Mandatory=$true)]$Member, # If name is provided will search for "MemberType"
@@ -16214,7 +16245,9 @@ Function New-AzureADGroup { # Create New Group using Graph
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
 # AAD User Management
+
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
   [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
@@ -16736,6 +16769,7 @@ Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
 }
 
 # Token Management
+
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
@@ -17253,6 +17287,7 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
 }
 
 # Sharepoint Scripts
+
 Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname&path [Uses Rest API]
  [CmdletBinding()]
  Param(
@@ -17327,6 +17362,7 @@ Function Add-SharepointSiteAppPermission { # Grant an App Registration access to
 }
 
 # API Call Management
+
 Function Get-AzureGraph { # Send base graph request without any requirements
  [CmdletBinding()]
  Param (
@@ -17455,6 +17491,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
 }
 
 # Conditional Access
+
 Function Get-AzureConditionalAccessLocations { # Get all conditional Access Policies Locations
  [CmdletBinding()]
  Param (
@@ -17682,6 +17719,7 @@ Function Disable-AzureConditionalAccessPolicy { # Disable Conditional Access Pol
 }
 
 # Access Packages
+
 Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssignementPolicies to expand all policies, takes a while)
  Param (
   [Switch]$ExpandAssignementPolicies,
@@ -17832,6 +17870,7 @@ Function Add-AzureAccessPackageAssignment { # Provision users to Access Package,
 }
 
 # Log Analytics
+
 Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
  Param (
   [Parameter(ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true,Mandatory)]$LogAnalyticsResult
@@ -17910,6 +17949,7 @@ Function Get-AzureLogAnalyticsRequest { # Run cmd towards Log Analytics Workspac
 }
 
 # Sentinel Specific Functions
+
 Function Get-SentinelUserInfo { # Get user logs from Sentinel
  Param (
   [Parameter(Mandatory = $true)]$User,
@@ -18634,6 +18674,7 @@ Function Get-SentinelAppLastLogin {
 }
 
 # Mail Management
+
 Function Send-EncryptedEmail { # Will send an encrypted email using Outlook COM object (Encrypt-Only). Requires Outlook to be installed and configured on the machine running the script.
  param (
   [Parameter(Mandatory)][string]$Recipient,
@@ -18891,8 +18932,105 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
 
  return $FullBody
 }
+Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a structured HTML table. Supports single TAP entry parameters or a result object/array.
+ param (
+  [datetime]$createdDateTime,
+  [string]$id,
+  [string]$UserName,
+  [string]$temporaryAccessPass,
+  [bool]$isUsable,
+  [string]$methodUsabilityReason,
+  [bool]$isUsableOnce,
+  [int]$lifetimeInMinutes,
+  [datetime]$startDateTimeLocal,
+  [datetime]$startDateTimeUTC,
+  [datetime]$endDateTimeLocal,
+  [datetime]$endDateTimeUTC,
+  $Result
+ )
+
+ $TapRows = @()
+
+ if ($Result) {
+  # Support a single object, an array of objects, or a Graph-style object containing a .value array.
+  $ResultItems = if ($Result.PSObject.Properties.Name -contains 'value' -and $Result.value) { @($Result.value) } else { @($Result) }
+
+  foreach ($Item in $ResultItems) {
+   $TapRows += [pscustomobject]@{
+    createdDateTime = $Item.createdDateTime
+    id = $Item.id
+    UserName = $Item.UserName
+    temporaryAccessPass = $Item.temporaryAccessPass
+    isUsable = $Item.isUsable
+    methodUsabilityReason = $Item.methodUsabilityReason
+    isUsableOnce = $Item.isUsableOnce
+    lifetimeInMinutes = $Item.lifetimeInMinutes
+    startDateTimeLocal = $Item.startDateTimeLocal
+    startDateTimeUTC = $Item.startDateTimeUTC
+    endDateTimeLocal = $Item.endDateTimeLocal
+    endDateTimeUTC = $Item.endDateTimeUTC
+   }
+  }
+ } else {
+  $TapRows += [pscustomobject]@{
+   createdDateTime = $createdDateTime
+   id = $id
+   UserName = $UserName
+   temporaryAccessPass = $temporaryAccessPass
+   isUsable = $isUsable
+   methodUsabilityReason = $methodUsabilityReason
+   isUsableOnce = $isUsableOnce
+   lifetimeInMinutes = $lifetimeInMinutes
+   startDateTimeLocal = $startDateTimeLocal
+   startDateTimeUTC = $startDateTimeUTC
+   endDateTimeLocal = $endDateTimeLocal
+   endDateTimeUTC = $endDateTimeUTC
+  }
+ }
+
+ # Create Base CSS
+ $Header = @"
+<style>
+ table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; }
+ th { background-color: #0078D4; color: white; padding: 8px; text-align: center; }
+ td { border: 1px solid #dddddd; padding: 8px; }
+ tr:nth-child(even) { background-color: #f2f2f2; }
+</style>
+"@
+
+ # Build horizontal table HTML (1 row per TAP entry)
+ $TableHtml = "<table>"
+ $TableHtml += "<tr><th>createdDateTime</th><th>id</th><th>UserName</th><th>temporaryAccessPass</th><th>isUsable</th><th>methodUsabilityReason</th><th>isUsableOnce</th><th>lifetimeInMinutes</th><th>startDateTimeLocal</th><th>startDateTimeUTC</th><th>endDateTimeLocal</th><th>endDateTimeUTC</th></tr>"
+ foreach ($Tap in $TapRows) {
+  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.createdDateTime) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.id) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.UserName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.temporaryAccessPass) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.isUsable) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.methodUsabilityReason) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.isUsableOnce) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.lifetimeInMinutes) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.startDateTimeLocal) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.startDateTimeUTC) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.endDateTimeLocal) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.endDateTimeUTC) )</td></tr>"
+ }
+ $TableHtml += "</table>"
+
+ $TapCount = $TapRows.Count
+ if ($TapCount -eq 1) {
+  $CreatedMessage = "The following Temporary Access Pass has been created:"
+ } else {
+  $CreatedMessage = "The following $TapCount Temporary Access Pass entries have been created:"
+ }
+
+ # Build the full HTML Body
+ $FullBody = @"
+<html>
+ <head>$Header</head>
+ <body>
+  <p>Hello,</p>
+  <p>$CreatedMessage</p>
+  $TableHtml
+  <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
+ </body>
+</html>
+"@
+
+ return $FullBody
+}
 
 # Azure Device management
+
 Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
  Param (
   [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
@@ -18965,6 +19103,7 @@ Function Get-AzureDeviceIntuneAssignementGroups {
 }
 
 # Misc
+
 Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
  Param (
   [Parameter(Mandatory)]$Access_Policy_Name,
