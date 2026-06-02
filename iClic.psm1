@@ -12028,7 +12028,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
     Write-Verbose "Adding permission $PermUUID to existing API entry"
     $ApiEntry.resourceAccess += @{ id = $PermUUID; type = $TypeStr }
    } Else {
-    Write-Host -ForegroundColor "Magenta" -Object "Permission '$($RightsToAdd.Value) [$($RightsToAdd.PermissionType)]' already exists on the App Registration '$AppRegistration'"
+    Write-Host -ForegroundColor "Magenta" -Object "Permission '$($RightsToAdd.Value) [$($RightsToAdd.PermissionType)]' already exists on the App Registration '$Application'"
     $PermissionAlreadyPresent = $true
    }
   }
@@ -15389,7 +15389,6 @@ Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as 
 
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -tokenOnly
-  $header = $authDetails.Header
 
   # Graph validates TAP datetimes in UTC; always send explicit UTC values.
   $StartDateTimeUtc = ([DateTime]$StartDateTime).ToUniversalTime()
@@ -15416,15 +15415,16 @@ Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as 
    displayName = $DisplayName
   }
   $ParamJson = $params | convertto-json
-
-  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/temporaryAccessPassMethods/"
-  $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/users/$User/authentication/temporaryAccessPassMethods/" -Method POST -Body $ParamJson
 
   if (! $Result) {
    Throw "Error during apply of update"
   } else {
-   $Result | Select-Object -ExcludeProperty '@odata.context',startDateTime,endDateTime *,
-    @{Name="UserName"; Expression={ $User }},
+   $UserDisplayName = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/users/$User`?`$select=displayName").displayname
+   $Result | Select-Object -ExcludeProperty '@odata.context',createdDateTime,startDateTime,endDateTime *,
+   @{Name="CreatedDateTimeLocal"; Expression={ ([DateTimeOffset]$_.createdDateTime).LocalDateTime }},
+   @{Name="UserName"; Expression={ $User }},
+   @{Name="UserDisplayName"; Expression={ $UserDisplayName }},
     @{Name="startDateTimeUTC"; Expression={ ([DateTimeOffset]$_.startDateTime).UtcDateTime }},
     @{Name="startDateTimeLocal"; Expression={ ([DateTimeOffset]$_.startDateTime).LocalDateTime }},
     @{Name="endDateTimeUTC"; Expression={ ([DateTimeOffset]$_.startDateTime).AddMinutes([double]$_.lifetimeInMinutes).UtcDateTime }},
@@ -17369,7 +17369,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   $Token,
   [parameter(Mandatory = $True)]$GraphRequest,
   $BaseURL = 'https://graph.microsoft.com/beta',
-  [ValidateSet("GET","POST","DELETE","PATCH","PUT")]$Method='GET',
+  [ValidateSet("GET","POST","DELETE","PATCH","PUT")]$Method="GET",
   [Switch]$ConsistencyLevelEventual,
   [Switch]$SinglePage,
   [Switch]$ShowState,
@@ -17864,6 +17864,109 @@ Function Add-AzureAccessPackageAssignment { # Provision users to Access Package,
   $requestUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignmentRequests"
   get-azuregraph -Token $authDetails.Token -GraphRequest $requestUrl -Method POST -Body $body -ErrorAction Stop
 
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Remove-AzureAccessPackageAssignment { # Remove users from Access Package, can bypass Approval | Not working yet
+ Param (
+  [Parameter(Mandatory=$true)]$TargetId,
+  [Parameter(Mandatory=$true)]$AccessPackage, # Can be Name or GUID
+  [Parameter(Mandatory=$true)]$Policy,        # Can be Name or GUID
+  [String]$Justification,
+  [Switch]$BypassApproval,
+  [Switch]$ShowMatch,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $ResourcePath = "identityGovernance/entitlementManagement"
+
+  $ResolvedPackageId = $null
+  $ResolvedPolicyId = $null
+
+  # --- Step 1: Resolve Access Package ---
+  if (Assert-IsGUID -Value $AccessPackage) {
+   $ResolvedPackageId = $AccessPackage
+  } else {
+   $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages`?`$filter=displayName eq '$AccessPackage'&`$expand=assignmentPolicies"
+   $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
+
+   if ($apResult.count -gt 1) { throw "More than one Access Package found with name '$AccessPackage'" }
+   if (-not $apResult) { throw "Access Package '$AccessPackage' not found." }
+
+   $ResolvedPackageId = $apResult.id
+   $apPolicies = $apResult.assignmentPolicies # Store for step 2 if needed
+  }
+
+  # --- Step 2: Resolve Policy ---
+  if (Assert-IsGUID -Value $Policy) {
+   $ResolvedPolicyId = $Policy
+  } else {
+   # If we didn't search for the package in Step 1 (because ID was provided), we need to find the policy now
+   if ($null -eq $apPolicies) {
+    $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages/$ResolvedPackageId`?`$expand=assignmentPolicies"
+    $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
+    $apPolicies = $apResult.assignmentPolicies
+   }
+
+   $targetPolicy = $apPolicies | Where-Object { $_.displayName -eq $Policy }
+   if ($targetPolicy.count -gt 1) { throw "More than one Policy found with name '$Policy' in this package" }
+   if (-not $targetPolicy) { throw "Policy '$Policy' not found in this package." }
+
+   $ResolvedPolicyId = $targetPolicy.id
+  }
+
+  # --- Step 3: Find matching active assignments ---
+  $assignmentUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignments?`$expand=target,accessPackage,assignmentPolicy"
+  $allAssignments = @(get-azuregraph -Token $authDetails.Token -GraphRequest $assignmentUrl -SinglePage -ErrorAction Stop)
+  $matchingAssignments = @(
+   $allAssignments | Where-Object {
+    $_.target.objectId -eq $TargetId -and
+    $_.accessPackage.id -eq $ResolvedPackageId -and
+    $_.assignmentPolicy.id -eq $ResolvedPolicyId
+   }
+  )
+
+  if ($ShowMatch -and $matchingAssignments) {
+   Write-Host -ForegroundColor Cyan "Found $($matchingAssignments.Count) matching assignment(s):"
+   $matchingAssignments | Select-Object id,
+    @{Name='TargetId';Expression={$_.target.objectId}},
+    @{Name='AccessPackageId';Expression={$_.accessPackage.id}},
+    @{Name='AssignmentPolicyId';Expression={$_.assignmentPolicy.id}},
+    state,
+    status | Format-Table -AutoSize
+  }
+
+  if (-not $matchingAssignments) {
+   Write-Warning "No matching assignment found for TargetId '$TargetId' in AccessPackage '$AccessPackage' with Policy '$Policy'."
+   return $false
+  }
+
+  # --- Step 4: Create remove request(s) ---
+  # adminRemove is the reliable mode for automation/app permissions.
+  $requestType = "adminRemove"
+  $requestUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignmentRequests"
+  $removeResults = @()
+
+  foreach ($assignment in $matchingAssignments) {
+   $bodyObject = @{
+    requestType = $requestType
+    assignment = @{
+     id = $assignment.id
+    }
+   }
+
+   if ($PSBoundParameters.ContainsKey('Justification') -and -not [string]::IsNullOrWhiteSpace($Justification)) {
+    $bodyObject.justification = $Justification
+   }
+
+   $body = $bodyObject | ConvertTo-Json -Depth 10
+
+   $removeResults += get-azuregraph -Token $authDetails.Token -GraphRequest $requestUrl -Method POST -Body $body -ErrorAction Stop
+  }
+
+  $removeResults
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
@@ -18934,18 +19037,15 @@ Function New-UserEmailContent { # Used to prepare the content of the email in a 
 }
 Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a structured HTML table. Supports single TAP entry parameters or a result object/array.
  param (
-  [datetime]$createdDateTime,
-  [string]$id,
+  [datetime]$CreatedDateTimeLocal,
   [string]$UserName,
+  [string]$UserDisplayName,
   [string]$temporaryAccessPass,
-  [bool]$isUsable,
   [string]$methodUsabilityReason,
   [bool]$isUsableOnce,
   [int]$lifetimeInMinutes,
   [datetime]$startDateTimeLocal,
-  [datetime]$startDateTimeUTC,
   [datetime]$endDateTimeLocal,
-  [datetime]$endDateTimeUTC,
   $Result
  )
 
@@ -18957,34 +19057,28 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
 
   foreach ($Item in $ResultItems) {
    $TapRows += [pscustomobject]@{
-    createdDateTime = $Item.createdDateTime
-    id = $Item.id
+    CreatedDateTimeLocal = if ($Item.PSObject.Properties.Name -contains 'CreatedDateTimeLocal') { $Item.CreatedDateTimeLocal } else { $Item.createdDateTime }
     UserName = $Item.UserName
+    UserDisplayName = if ($Item.PSObject.Properties.Name -contains 'UserDisplayName') { $Item.UserDisplayName } else { $null }
     temporaryAccessPass = $Item.temporaryAccessPass
-    isUsable = $Item.isUsable
     methodUsabilityReason = $Item.methodUsabilityReason
     isUsableOnce = $Item.isUsableOnce
     lifetimeInMinutes = $Item.lifetimeInMinutes
     startDateTimeLocal = $Item.startDateTimeLocal
-    startDateTimeUTC = $Item.startDateTimeUTC
     endDateTimeLocal = $Item.endDateTimeLocal
-    endDateTimeUTC = $Item.endDateTimeUTC
    }
   }
  } else {
   $TapRows += [pscustomobject]@{
-   createdDateTime = $createdDateTime
-   id = $id
+     CreatedDateTimeLocal = $CreatedDateTimeLocal
    UserName = $UserName
+     UserDisplayName = $UserDisplayName
    temporaryAccessPass = $temporaryAccessPass
-   isUsable = $isUsable
    methodUsabilityReason = $methodUsabilityReason
    isUsableOnce = $isUsableOnce
    lifetimeInMinutes = $lifetimeInMinutes
    startDateTimeLocal = $startDateTimeLocal
-   startDateTimeUTC = $startDateTimeUTC
    endDateTimeLocal = $endDateTimeLocal
-   endDateTimeUTC = $endDateTimeUTC
   }
  }
 
@@ -19000,9 +19094,9 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
 
  # Build horizontal table HTML (1 row per TAP entry)
  $TableHtml = "<table>"
- $TableHtml += "<tr><th>createdDateTime</th><th>id</th><th>UserName</th><th>temporaryAccessPass</th><th>isUsable</th><th>methodUsabilityReason</th><th>isUsableOnce</th><th>lifetimeInMinutes</th><th>startDateTimeLocal</th><th>startDateTimeUTC</th><th>endDateTimeLocal</th><th>endDateTimeUTC</th></tr>"
+ $TableHtml += "<tr><th>CreatedDateTimeLocal</th><th>UserName</th><th>UserDisplayName</th><th>temporaryAccessPass</th><th>methodUsabilityReason</th><th>isUsableOnce</th><th>lifetimeInMinutes</th><th>startDateTimeLocal</th><th>endDateTimeLocal</th></tr>"
  foreach ($Tap in $TapRows) {
-  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.createdDateTime) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.id) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.UserName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.temporaryAccessPass) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.isUsable) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.methodUsabilityReason) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.isUsableOnce) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.lifetimeInMinutes) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.startDateTimeLocal) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.startDateTimeUTC) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.endDateTimeLocal) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.endDateTimeUTC) )</td></tr>"
+  $TableHtml += "<tr><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.CreatedDateTimeLocal) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.UserName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.UserDisplayName) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.temporaryAccessPass) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.methodUsabilityReason) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.isUsableOnce) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.lifetimeInMinutes) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.startDateTimeLocal) )</td><td>$( [System.Web.HttpUtility]::HtmlEncode($Tap.endDateTimeLocal) )</td></tr>"
  }
  $TableHtml += "</table>"
 
