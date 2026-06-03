@@ -13117,17 +13117,11 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
  )
 
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   # --- Script Body ---
   # You can determine which parameter set was used and branch your logic accordingly.
   Write-Verbose "The active parameter set is: $($PSCmdlet.ParameterSetName)"
-
-  if ($authDetails.Method -eq "Token") {
-   $headers = $authDetails.Header
-  } else {
-   $headers = "Content-Type=application/json"
-  }
 
   switch ($PSCmdlet.ParameterSetName) {
    'Filter' {
@@ -13136,37 +13130,80 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      if ($NameFilter) { Write-Verbose "NameFilter: $NameFilter" }
      if ($GraphFilter) { Write-Verbose "GraphFilter: $GraphFilter" }
      Write-Verbose "ValuesToShow: $ValuesToShow"
-     if ($authDetails.Method -eq "Token") {
-      # Colums to select # For fast : id,appId,displayName,servicePrincipalType
-      $Arguments += "?`$select=$ValuesToShow"
+     $ApplyClientSideURLFilter = [bool]$URLFilter
+     # Colums to select # For fast : id,appId,displayName,servicePrincipalType
+     $Arguments += "?`$select=$ValuesToShow"
 
-      if ($GraphFilter) {
-       $EncodedGraphFilter = [System.Uri]::EscapeDataString($GraphFilter)
-       $Arguments += "&`$filter=$EncodedGraphFilter"
-      }
-
-      if ($NameFilter) {
-       $Arguments += "&`$count=true&`$search=`"displayName:$NameFilter`""
-       $headers.Add("ConsistencyLevel","eventual")
-      } else {
-       Write-Verbose "No NameFilter provided, a default 100 results limit is applied by Endpoint, 999 top does not work. Consider using -NameFilter or -GraphFilter to get more specific results and avoid hitting limits."
-       # $Arguments += "&`$top=999"
-      }
-      $Result = Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments" -Token $authDetails.Token
-     } else { # If using Az Cli
-      $Arguments = '--output', 'json', '--all', '--only-show-errors'
-      $Arguments += '--query'
-      if ($Fast) {
-       $Arguments += '"[].{id:id,appId:appId,displayName:displayName,servicePrincipalType:servicePrincipalType}"'
-      } else {
-       $Arguments += '"[].{id:id,objectType:objectType,servicePrincipalType:servicePrincipalType,appId:appId,publisherName:publisherName,appDisplayName:appDisplayName,displayName:displayName,accountEnabled:accountEnabled,appRoleAssignmentRequired:appRoleAssignmentRequired,notificationEmailAddresses:notificationEmailAddresses,createdDateTime:createdDateTime,preferredSingleSignOnMode:preferredSingleSignOnMode,loginUrl:loginUrl,replyUrls:replyUrls, signInAudience:signInAudience, passwordCredentials:passwordCredentials}"'
-      }
-      $Result = az ad sp list @Arguments | ConvertFrom-Json
+     $GraphFilterList = @()
+     if ($GraphFilter) {
+      $GraphFilterList += "($GraphFilter)"
      }
+     if ($URLFilter) {
+      $EscapedURLFilter = $URLFilter.Replace("'","''")
+      $URLPrefixes = @()
+      if ($EscapedURLFilter -match '^https?://') {
+       $URLPrefixes += $EscapedURLFilter
+      } else {
+       $URLPrefixes += "https://$EscapedURLFilter"
+       $URLPrefixes += "http://$EscapedURLFilter"
+      }
+
+      Write-Verbose "URLFilter pre-filter: querying applications redirectUris before servicePrincipals query."
+      $URLFilterAppIds = @()
+      $RedirectURIPaths = @("web/redirectUris","spa/redirectUris","publicClient/redirectUris")
+      foreach ($RedirectURIPath in $RedirectURIPaths) {
+       foreach ($URLPrefix in $URLPrefixes) {
+        try {
+         $AppURLFilter = "$RedirectURIPath/any(uri:startswith(uri,'$URLPrefix'))"
+         $EncodedAppURLFilter = [System.Uri]::EscapeDataString($AppURLFilter)
+         $AppURLFilterRequest = "https://graph.microsoft.com/v1.0/applications?`$select=appId&`$count=true&`$filter=$EncodedAppURLFilter"
+         $PrefilterResult = Get-AzureGraph -GraphRequest $AppURLFilterRequest -Token $authDetails.Token -ConsistencyLevelEventual -ErrorAction Stop
+         if ($PrefilterResult) {
+          $URLFilterAppIds += $PrefilterResult.appId
+         }
+        } catch {
+         Write-Verbose "URLFilter pre-filter on $RedirectURIPath with '$URLPrefix' failed: $_"
+        }
+       }
+      }
+
+      $URLFilterAppIds = $URLFilterAppIds | Where-Object { $_ } | Select-Object -Unique
+      if ($URLFilterAppIds.Count -eq 0) {
+       Write-Verbose "URLFilter pre-filter returned no matching applications."
+       return @()
+      }
+
+      if ($URLFilterAppIds.Count -le 100) {
+       $URLFilterAppIdsEscaped = $URLFilterAppIds | ForEach-Object { "'" + $_.Replace("'","''") + "'" }
+       $GraphFilterList += "appId in ($($URLFilterAppIdsEscaped -join ','))"
+      } else {
+       Write-Host -ForegroundColor Magenta -Object "URLFilter pre-filter returned $($URLFilterAppIds.Count) application IDs (>100); using full servicePrincipals loop fallback."
+      }
+     }
+     $UseConsistencyLevelEventual = [bool]($NameFilter -or ($GraphFilterList.Count -gt 0))
+     if ($GraphFilterList.Count -gt 0) {
+      $EncodedGraphFilter = [System.Uri]::EscapeDataString(($GraphFilterList -join " and "))
+      $Arguments += "&`$count=true&`$filter=$EncodedGraphFilter"
+     }
+
+     if ($NameFilter) {
+      if ($Arguments -notmatch '&`\$count=true') { $Arguments += "&`$count=true" }
+      $Arguments += "&`$search=`"displayName:$NameFilter`""
+     } else {
+      Write-Verbose "No NameFilter provided, a default 100 results limit is applied by Endpoint, 999 top does not work. Consider using -NameFilter or -GraphFilter to get more specific results and avoid hitting limits."
+      # $Arguments += "&`$top=999"
+     }
+     $GraphParams = @{
+      GraphRequest = "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments"
+      Token = $authDetails.Token
+      ErrorAction = 'Stop'
+     }
+     if ($UseConsistencyLevelEventual) { $GraphParams.ConsistencyLevelEventual = $true }
+     $Result = Get-AzureGraph @GraphParams
      # Common conversion
      $ReplyURLColumn = $Result | get-member -MemberType NoteProperty -Name replyUrls
      if ($ReplyURLColumn) { $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}} }
-     if ($URLFilter) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
+     if ($ApplyClientSideURLFilter) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
 
      $Result
    }
@@ -13174,37 +13211,22 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      Write-Verbose "Running in GetByAppID mode."
      Write-Verbose "AppID: $AppID"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'"
-     if ($authDetails.Method -eq "Token") {
-      $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
-     } else {
-      $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
-     }
-     if (! $RestResultObj.value) { Throw "$AppID Not found as AppID"}
-     $RestResultObj.value
+     $RestResultObj = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
+     if (! $RestResultObj) { Throw "$AppID Not found as AppID"} else { $RestResultObj }
    }
    'GetByID' {
      Write-Verbose "Running in GetByID mode."
      Write-Verbose "ID: $ID"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'"
-     if ($authDetails.Method -eq "Token") {
-      $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
-     } else {
-      $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
-     }
-     if (! $RestResultObj.value) { Throw "$ID Not found as ID"}
-     $RestResultObj.value
+     $RestResultObj = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
+     if (! $RestResultObj) { Throw "$ID Not found as ID"} else { $RestResultObj }
    }
    'GetByDisplayName' {
      Write-Verbose "Running in GetByDisplayName mode."
      Write-Verbose "DisplayName: $DisplayName"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'"
-     if ($authDetails.Method -eq "Token") {
-      $RestResultObj = Invoke-RestMethod -Method GET -headers $headers -Uri $URI
-     } else {
-      $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
-     }
-     if (! $RestResultObj.value) { Throw "$DisplayName Not found as DisplayName"}
-     $RestResultObj.value
+     $RestResultObj = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
+     if (! $RestResultObj) { Throw "$DisplayName Not found as DisplayName"} else { $RestResultObj }
    }
   } # End Switch
  } catch {
