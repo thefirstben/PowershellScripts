@@ -14055,7 +14055,6 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
     @{Name="SecretDescription";Expression={$_.DisplayName}},
     @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
     @{Name="SecretExpiration";Expression={$_.endDateTime}},
-    @{Name="SecretType";Expression={$_.preferredSingleSignOnMode}},
     @{Name="ExpiresIn";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.endDateTime).Days}},* | `
      Select-Object  -ExcludeProperty displayName,createdDateTime,customKeyIdentifier,hint,keyId,secretText,startDateTime,endDateTime *,
      @{Name="Count";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
@@ -14064,11 +14063,10 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
   if ($LocalInclusionFilterNeeded) { $Result = $Result | Where-Object Name -like $NameFilterInclusion }
   if ($LocalExclusionFilterNeeded) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
   if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
-  if ($ShowOnlySAML -and ! ($GraphFilterClauses -contains "preferredSingleSignOnMode eq 'saml'")) { $Result = $Result | Where-Object Mode -eq "saml" }
   if (! $ShowAll) { $Result = $Result | Where-Object ExpiresIn -lt $Expiration }
 
   # Print Data
-  $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,appRoleAssignmentRequired,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs,AppID,ID,SecretDescription,SecretCreatedOn,SecretType
+  $Result | Sort-Object ExpiresIn | Select-Object Name,Type,Audience,Mode,appRoleAssignmentRequired,ExpiresIn,Count,AppCreatedOn,SecretExpiration,Contacts,URLs,AppID,ID,SecretDescription,SecretCreatedOn
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
@@ -18891,7 +18889,7 @@ Function Send-MailMGGraph {  # To make automated Email, it requires an account w
 }
 Function Send-Mail { # Send Email using Azure Graph without any external modules
  Param (
-  [Parameter(Mandatory)]$Recipient,
+  [Parameter(Mandatory)][Alias("To")]$Recipient,
   [Parameter(Mandatory)]$SenderUPN,
   [Parameter(Mandatory)][Alias("Body")]$MessageContent, # Format @"TEXT"@
   [Parameter(Mandatory)]$Subject,
@@ -18904,17 +18902,22 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   $Header = $authDetails.Header
 
+    $RecipientList = @($Recipient)
+    if ($Recipient -is [string]) {
+     $RecipientList = $Recipient -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    }
+
   $MessageBody = @{
    "subject" = $Subject
    "body"    = @{
     "contentType" = 'HTML'
     "content"     = $MessageContent
    }
-   "toRecipients" = @(
-    @{
-     "emailAddress" = @{"address" = $Recipient }
-    }
-   )
+     "toRecipients" = @(
+      $RecipientList | ForEach-Object {
+       @{ "emailAddress" = @{ "address" = $_ } }
+      }
+     )
   }
 
   if ($From) {
