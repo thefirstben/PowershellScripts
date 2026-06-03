@@ -13106,17 +13106,13 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
   [Parameter(Mandatory = $false, HelpMessage = 'A security token is required.')]
   $Token,
   [Switch]$Fast,
-
-  # --- Specific Get by AppID Set ---
   [Parameter(ParameterSetName = 'GetByAppID', Mandatory = $true, HelpMessage = 'Specify the Application ID.')][string]$AppID,
-  # --- Specific Get by ID Set ---
   [Parameter(ParameterSetName = 'GetByID', Mandatory = $true, HelpMessage = 'Specify the Object ID.')][string]$ID,
-  # --- Specific Get by DisplayName Set ---
   [Parameter(ParameterSetName = 'GetByDisplayName', Mandatory = $true, HelpMessage = 'Specify the Display Name.')][string]$DisplayName,
-
   # --- Filter Parameter Set ---
   [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on URL of Service Principals.')]$URLFilter,
   [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on Name of Service Principals.')]$NameFilter, # Filter must not contain wildcards, it will search value automatically
+  [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Raw OData filter expression applied on Graph query.')][string]$GraphFilter,
   [Parameter(Mandatory = $false, HelpMessage = 'A comma-separated list of properties to display.')]$ValuesToShow = "*"
  )
 
@@ -13138,24 +13134,25 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      Write-Verbose "Running in Filter mode."
      if ($URLFilter) { Write-Verbose "URLFilter: $URLFilter" }
      if ($NameFilter) { Write-Verbose "NameFilter: $NameFilter" }
+     if ($GraphFilter) { Write-Verbose "GraphFilter: $GraphFilter" }
      Write-Verbose "ValuesToShow: $ValuesToShow"
      if ($authDetails.Method -eq "Token") {
       # Colums to select # For fast : id,appId,displayName,servicePrincipalType
       $Arguments += "?`$select=$ValuesToShow"
 
+      if ($GraphFilter) {
+       $EncodedGraphFilter = [System.Uri]::EscapeDataString($GraphFilter)
+       $Arguments += "&`$filter=$EncodedGraphFilter"
+      }
+
       if ($NameFilter) {
        $Arguments += "&`$count=true&`$search=`"displayName:$NameFilter`""
        $headers.Add("ConsistencyLevel","eventual")
       } else {
-       $Arguments += "&`$top=999"
+       Write-Verbose "No NameFilter provided, a default 100 results limit is applied by Endpoint, 999 top does not work. Consider using -NameFilter or -GraphFilter to get more specific results and avoid hitting limits."
+       # $Arguments += "&`$top=999"
       }
-      $Result = @()
-      $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments"
-      $Result += $CurrentResult.value
-      While ($CurrentResult.'@odata.nextLink') {
-       $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 3
-       $Result += $CurrentResult.value
-      }
+      $Result = Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/ServicePrincipals$Arguments" -Token $authDetails.Token
      } else { # If using Az Cli
       $Arguments = '--output', 'json', '--all', '--only-show-errors'
       $Arguments += '--query'
@@ -13182,7 +13179,7 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
      }
-     if (! $RestResultObj.value) { Throw "$AppID Not found"}
+     if (! $RestResultObj.value) { Throw "$AppID Not found as AppID"}
      $RestResultObj.value
    }
    'GetByID' {
@@ -13194,7 +13191,7 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
      }
-     if (! $RestResultObj.value) { Throw "$AppID Not found"}
+     if (! $RestResultObj.value) { Throw "$ID Not found as ID"}
      $RestResultObj.value
    }
    'GetByDisplayName' {
@@ -13206,17 +13203,12 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      } else {
       $RestResultObj = az rest --method GET --uri $URI --headers $headers | ConvertFrom-Json
      }
-     if (! $RestResultObj.value) { Throw "$DisplayName Not found"}
+     if (! $RestResultObj.value) { Throw "$DisplayName Not found as DisplayName"}
      $RestResultObj.value
    }
   } # End Switch
  } catch {
-   if ($Error[0].ErrorDetails.message) {
-    $ErrorMessage = ($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message
-   } else {
-    $ErrorMessage = $Error[0]
-   }
-   Write-Error "Error during lookup : $ErrorMessage"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureServicePrincipalIDFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
@@ -13969,22 +13961,84 @@ Function Set-AzureServicePrincipalCustomSecurityAttribute { # Set Custom Securit
  }
 }
 Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secrets (Copied function from App Registration) - Used to get SAML certificate Expiration
+ [CmdletBinding()]
  Param (
-  [switch]$PrintOnly,
-  [switch]$ShowAll,
-  [switch]$ShowOnlySAML,
-  [switch]$ExcludeLegacy,
-  $NameFilterInclusion,
-  $NameFilterExclusion,
-  $Expiration = 30,
+  [switch]$ShowAll,        # Ignore expiration
+  [switch]$ShowOnlySAML,   # Only show SAML Apps (as they often have certificate that expire and are often forgotten)
+  [switch]$ExcludeLegacy,  # Exclude Legacy App (servicePrincipalType = "Legacy") as they often have no owner and are often forgotten, but they can not be managed and often do not have secrets
+  $NameFilterInclusion,    # Filter on Display Name with wildcard support (* and ?), only supported for simple cases (StartsWith, EndsWith, Contains, Exact) when possible to avoid loading all service principals and filter locally which can be very long if you have a lot of service principals
+  $NameFilterExclusion,    # Filter on Display Name with wildcard support (* and ?), only supported for simple cases (StartsWith, EndsWith, Contains, Exact) when possible to avoid loading all service principals and filter locally which can be very long if you have a lot of service principals
+  $Expiration = 30,        # Number of days before expiration to be included in the result, ignored if ShowAll is set
   $Token
  )
 
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
 
-  # Get Data
-  $AppList = Get-AzureServicePrincipal -Token $authDetails.Token
+  # Build server-side Graph filter when possible to avoid loading all service principals.
+  $GraphFilterClauses = @()
+  $LocalInclusionFilterNeeded = $false
+  $LocalExclusionFilterNeeded = $false
+
+  if ($ShowOnlySAML) { $GraphFilterClauses += "preferredSingleSignOnMode eq 'saml'" }
+  # Note: servicePrincipalType is NOT filterable on the Graph servicePrincipals endpoint - ExcludeLegacy is applied locally after retrieval
+
+  if ($NameFilterInclusion) {
+   $EscapedInclusion = $NameFilterInclusion.Replace("'","''")
+   switch -Regex ($NameFilterInclusion) {
+    '^[^*?]+$' {
+     $GraphFilterClauses += "displayName eq '$EscapedInclusion'"
+    }
+    '^\*[^*?]+\*$' {
+     $ContainsText = $NameFilterInclusion.Trim('*').Replace("'","''")
+     $GraphFilterClauses += "contains(displayName,'$ContainsText')"
+    }
+    '^[^*?]+\*$' {
+     $StartsWithText = $NameFilterInclusion.TrimEnd('*').Replace("'","''")
+     $GraphFilterClauses += "startswith(displayName,'$StartsWithText')"
+    }
+    '^\*[^*?]+$' {
+     $EndsWithText = $NameFilterInclusion.TrimStart('*').Replace("'","''")
+     $GraphFilterClauses += "endswith(displayName,'$EndsWithText')"
+    }
+    default {
+     $LocalInclusionFilterNeeded = $true
+    }
+   }
+  }
+
+  if ($NameFilterExclusion) {
+   $EscapedExclusion = $NameFilterExclusion.Replace("'","''")
+   switch -Regex ($NameFilterExclusion) {
+    '^[^*?]+$' {
+     $GraphFilterClauses += "displayName ne '$EscapedExclusion'"
+    }
+    '^\*[^*?]+\*$' {
+     $NotContainsText = $NameFilterExclusion.Trim('*').Replace("'","''")
+     $GraphFilterClauses += "not(contains(displayName,'$NotContainsText'))"
+    }
+    '^[^*?]+\*$' {
+     $NotStartsWithText = $NameFilterExclusion.TrimEnd('*').Replace("'","''")
+     $GraphFilterClauses += "not(startswith(displayName,'$NotStartsWithText'))"
+    }
+    '^\*[^*?]+$' {
+     $NotEndsWithText = $NameFilterExclusion.TrimStart('*').Replace("'","''")
+     $GraphFilterClauses += "not(endswith(displayName,'$NotEndsWithText'))"
+    }
+    default {
+     $LocalExclusionFilterNeeded = $true
+    }
+   }
+  }
+
+  $GraphFilter = $null
+  if ($GraphFilterClauses.Count -gt 0) {
+   $GraphFilter = ($GraphFilterClauses -join " and ")
+  }
+
+  # Get Data (only required properties, with server-side filtering when available)
+  $ValuesToShow = "id,appId,displayName,appRoleAssignmentRequired,preferredSingleSignOnMode,servicePrincipalType,notificationEmailAddresses,createdDateTime,replyUrls,signInAudience,passwordCredentials"
+  $AppList = Get-AzureServicePrincipal -Token $authDetails.Token -ValuesToShow $ValuesToShow -GraphFilter $GraphFilter
 
   $Date_Today = Get-Date
 
@@ -14007,10 +14061,10 @@ Function Get-AzureServicePrincipalExpiration { # Get All Service Principal Secre
      @{Name="Count";Expression={$AppList[$AppList.AppID.indexof($_.AppId)].passwordCredentials.Count}} # A lot Faster than Where cmdlet
 
   # Filter Data
-  if ($NameFilterInclusion) { $Result = $Result | Where-Object Name -like $NameFilterInclusion }
-  if ($NameFilterExclusion) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
+  if ($LocalInclusionFilterNeeded) { $Result = $Result | Where-Object Name -like $NameFilterInclusion }
+  if ($LocalExclusionFilterNeeded) { $Result = $Result | Where-Object Name -notlike $NameFilterExclusion }
   if ($ExcludeLegacy) { $Result = $Result | Where-Object Type -ne "Legacy" }
-  if ($ShowOnlySAML) { $Result = $Result | Where-Object Mode -eq "saml" }
+  if ($ShowOnlySAML -and ! ($GraphFilterClauses -contains "preferredSingleSignOnMode eq 'saml'")) { $Result = $Result | Where-Object Mode -eq "saml" }
   if (! $ShowAll) { $Result = $Result | Where-Object ExpiresIn -lt $Expiration }
 
   # Print Data
@@ -18314,6 +18368,10 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   }
 
   if ($ShowSecretDetails) {
+   if (! $authDetails) {
+    Write-Verbose "Getting App Token"
+    $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+   }
    $SecretsInfo = Get-AzureAppRegistrationSecrets -AppRegistrationID $AppID -Token $authDetails.Token
    $SecretsInfoHash = $SecretsInfo.secrets.value | Group-Object -Property keyId -AsHashTable
   }
