@@ -12381,14 +12381,20 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
  Param (
   $Expiration = 30,
   $MaxExpiration = 730,
+  [switch]$ShowAll,
   $Token
  )
  Write-Verbose "Using Expiration of $Expiration days / Max Expiration $MaxExpiration days"
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $Date_Today = Get-Date
+  if ($ShowAll) {
+   Write-Verbose "ShowAll enabled: querying all apps with key/password credentials."
+  } else {
+   Write-Verbose "Default mode: querying all apps and returning only credentials expiring in $Expiration days or less."
+  }
   $GraphRequest = "https://graph.microsoft.com/v1.0/applications?`$select=DisplayName,Notes,Tags,AppID,createdDateTime,signInAudience,passwordCredentials,keyCredentials&`$top=999"
   $AppList = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphRequest
-  $Date_Today = Get-Date
 
   Write-Verbose "Getting All Key Credentials"
   $KeyList = $AppList | Where-Object passwordCredentials | Select-Object `
@@ -12404,7 +12410,7 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
    @{Name="SecretExpiration";Expression={$_.endDateTime}},
    @{Name="SecretType";Expression={"Key"}},
-   @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}},*
+    @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}},*
 
   Write-Verbose "Getting All Certificate Credentials"
   $CertificateList = $AppList | Where-Object keyCredentials | Select-Object `
@@ -12420,10 +12426,10 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
    @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
    @{Name="SecretExpiration";Expression={$_.endDateTime}},
    @{Name="SecretType";Expression={"Certificate"}},
-   @{Name="CertificateCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).keyCredentials.Count}},*
+    @{Name="CertificateCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).keyCredentials.Count}},*
 
   Write-Verbose "Merge Secret & Certificates"
-  $KeyList + $CertificateList | Sort-Object SecretExpiration | Select-Object `
+  $ResultList = $KeyList + $CertificateList | Sort-Object SecretExpiration | Select-Object `
    AppName,AppNotes,AppTags,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,KeyCount,CertificateCount,SecretType,hint,
    @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.SecretExpiration).Days}} | Select-Object *,
    @{Name="Status";Expression={
@@ -12442,6 +12448,13 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
     }
    }},
    @{Name="SecretCount";Expression={$_.KeyCount + $_.CertificateCount}}
+
+  
+  if ($ShowAll) {
+   $ResultList | Sort-Object SecretExpiration
+  } else {
+   $ResultList | Sort-Object SecretExpiration | Where-Object { $_.TimeUntilExpiration -le [int]$Expiration }
+  }
 
   Write-Verbose "Found $(($KeyList + $CertificateList).Count) App Registration with Secrets out of $($AppList.Count) total Apps"
  } Catch {
