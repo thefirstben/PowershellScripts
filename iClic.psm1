@@ -12404,7 +12404,21 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
   @{Name="AppTags";Expression={
    write-verbose "Processing Tags for App Registration $($_.DisplayName)"
    $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
-   $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] } ; $TagList
+    $DuplicateTagNames = @()
+    $_.Tags | ForEach-Object {
+     $TagParts = $_ -split ':', 2
+     $TagName = $TagParts[0].Trim()
+     $TagValue = if ($TagParts.Count -gt 1) { $TagParts[1].Trim() } else { '' }
+     if ($TagList.PSObject.Properties.Name -contains $TagName) {
+      $DuplicateTagNames += $TagName
+      } else {
+       $TagList | Add-Member -MemberType NoteProperty -Name $TagName -Value $TagValue
+     }
+    }
+    if ($DuplicateTagNames.Count -gt 0) {
+      Write-Warning "Duplicate tag(s) on App Registration '$($_.DisplayName)': $((($DuplicateTagNames | Select-Object -Unique) -join ', ')). Keeping the first value and skipping duplicates."
+    }
+    $TagList
   }},
   @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | Select-Object -Property `
    @{Name="SecretDescription";Expression={$_.DisplayName}},
@@ -12421,7 +12435,21 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
   @{Name="AppTags";Expression={
    write-verbose "Processing Tags for App Registration $($_.DisplayName)"
    $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
-   $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] } ; $TagList
+    $DuplicateTagNames = @()
+    $_.Tags | ForEach-Object {
+     $TagParts = $_ -split ':', 2
+     $TagName = $TagParts[0].Trim()
+     $TagValue = if ($TagParts.Count -gt 1) { $TagParts[1].Trim() } else { '' }
+     if ($TagList.PSObject.Properties.Name -contains $TagName) {
+      $DuplicateTagNames += $TagName
+      } else {
+       $TagList | Add-Member -MemberType NoteProperty -Name $TagName -Value $TagValue
+     }
+    }
+    if ($DuplicateTagNames.Count -gt 0) {
+      Write-Warning "Duplicate tag(s) on App Registration '$($_.DisplayName)': $((($DuplicateTagNames | Select-Object -Unique) -join ', ')). Keeping the first value and skipping duplicates."
+    }
+    $TagList
   }},
   @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty keyCredentials | Select-Object -Property `
    @{Name="SecretDescription";Expression={$_.DisplayName}},
