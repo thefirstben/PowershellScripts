@@ -12402,6 +12402,7 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
   @{Name="AppNotes";Expression={$_.notes}},
   @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
   @{Name="AppTags";Expression={
+   write-verbose "Processing Tags for App Registration $($_.DisplayName)"
    $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
    $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] } ; $TagList
   }},
@@ -12418,6 +12419,7 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
   @{Name="AppNotes";Expression={$_.notes}},
   @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
   @{Name="AppTags";Expression={
+   write-verbose "Processing Tags for App Registration $($_.DisplayName)"
    $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
    $_.Tags | ForEach-Object { $TagList | Add-Member -MemberType NoteProperty -Name ($_ -split ":")[0] -Value ($_ -split ":")[1] } ; $TagList
   }},
