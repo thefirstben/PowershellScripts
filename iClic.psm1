@@ -10549,7 +10549,7 @@ Function Get-AzureCertificates { # Check All Azure Web Certificates -> Check key
    | Export-Csv "$iClic_TempPath\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
  }
 }
-Function Get-AzureReservation { # Check all Azure Reservation Orders
+Function Get-AzureReservation { # Check all Azure Reservation Orders # Uses AZ Cli
  Param (
   [Switch]$ShowPermissions
  )
