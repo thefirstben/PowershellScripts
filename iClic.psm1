@@ -16188,9 +16188,11 @@ Function Add-AzureADGroupMember { # Add  Azure Ad Group Member (TokenOnly)
   } else {
    Write-Verbose "Searching for $Type : $Member"
    if ($Type -eq "userPrincipalName") {
-    $MemberGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "$BaseURI/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$Member'").Value.Id
+    $MemberEscaped = [System.Uri]::EscapeDataString($Member)
+    $MemberGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "$BaseURI/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$MemberEscaped'").Value.Id
    } else { # For Service Principals or Groups
-    $MemberGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "$BaseURI/$Type`?`$filter=displayname eq '$Member'").Value.Id
+    $MemberEscaped = [System.Uri]::EscapeDataString($Member)
+    $MemberGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "$BaseURI/$Type`?`$filter=displayname eq '$MemberEscaped'").Value.Id
    }
   }
 
@@ -16206,7 +16208,8 @@ Function Add-AzureADGroupMember { # Add  Azure Ad Group Member (TokenOnly)
    Write-Verbose "Using Provided Group ID : $Member"
    $GroupGUID = $Group
   } else {
-   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "$BaseURI/groups?`$filter=displayname eq '$Group'").Value.Id
+   $GroupEscaped = [System.Uri]::EscapeDataString($Group)
+   $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "$BaseURI/groups?`$filter=displayname eq '$GroupEscaped'").Value.Id
   }
 
   # Member not found as provided type
