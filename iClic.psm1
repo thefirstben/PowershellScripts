@@ -11942,7 +11942,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
  Param (
   [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # App to update
   [parameter(Mandatory=$true)]$API, # Service Principal Object ID that holds the Permission - Example : 'Microsoft Graph'
-  [Parameter(Mandatory=$true)]$Permission, # Permission to add (Example : User.Read.All) / Can use the GUID of the permission for faster processing but less user friendly
+  [Parameter(Mandatory=$true)]$Permission, # Permission(s) to add (single value, array, or pasted string split by newline/comma/semicolon)
   [ValidateSet("Application","Delegated")]$PermissionType,
   $Token,
   [switch]$Consent
@@ -11969,80 +11969,106 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
   Write-Verbose "Check if value was found"
   if (! $ServicePrincipalID ) {Throw "API $API not found" } else { Write-Verbose "Found API ID : $ServicePrincipalID" }
 
-  # BLOCK 3 - Find Permission Detail
+  # BLOCK 3 - Find Permission Detail(s)
   Write-Verbose "Searching for Permissions Type $PermissionType"
-  if ($PermissionType) {
-   if (Assert-IsGUID -Value $Permission) {
-    write-Verbose "Permission provided as GUID, searching for $Permission in API $ServicePrincipalID with type $PermissionType"
-    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object {($_.RuleID -eq $Permission) -and ($_.PermissionType -eq $PermissionType) }
-   } else {
-    write-Verbose "Permission provided as Name, searching for $Permission in API $ServicePrincipalID with type $PermissionType"
-    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object {($_.Value -eq $Permission) -and ($_.PermissionType -eq $PermissionType) }
-   }
-  } else {
-   if (Assert-IsGUID -Value $Permission)
-   {
-    write-Verbose "Permission provided as GUID, searching for $Permission in API $ServicePrincipalID with no specific type"
-    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object { $_.RuleID -eq $Permission }
-   } else {
-    write-Verbose "Permission provided as Name, searching for $Permission in API $ServicePrincipalID with no specific type"
-    $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token | Where-Object { $_.Value -eq $Permission }
-   }
-  }
-  if (! $RightsToAdd) {
-   Throw "$Permission ($PermissionType) was not found in API $ServicePrincipalID, please check"
-  } elseif ($RightsToAdd.Count -gt 1) {
-   Throw "$Permission contains multiple values in API $ServicePrincipalID, please check or force the permission type"
-  }
+  $PolicyPermissions = @(Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token)
 
-  # BLOCK 4 - Add Permission to App Registration (Graph API)
+  # Backward compatible input handling: single value, array, or pasted content
+  $PermissionCandidates = @()
+  foreach ($PermissionItem in @($Permission)) {
+   if ($null -eq $PermissionItem) { continue }
+   $PermissionItemString = "$PermissionItem".Trim()
+   if (-not $PermissionItemString) { continue }
+   $PermissionCandidates += ($PermissionItemString -split "[\r\n,;]+")
+  }
+  $PermissionCandidates = @($PermissionCandidates | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+  if ($PermissionCandidates.Count -eq 0) { Throw "No valid permission value provided" }
+
+  $RightsToAdd = @()
+  foreach ($PermissionCandidate in $PermissionCandidates) {
+   if ($PermissionType) {
+    if (Assert-IsGUID -Value $PermissionCandidate) {
+     Write-Verbose "Permission provided as GUID, searching for $PermissionCandidate in API $ServicePrincipalID with type $PermissionType"
+     $MatchingRights = @($PolicyPermissions | Where-Object { ($_.RuleID -eq $PermissionCandidate) -and ($_.PermissionType -eq $PermissionType) })
+    } else {
+     Write-Verbose "Permission provided as Name, searching for $PermissionCandidate in API $ServicePrincipalID with type $PermissionType"
+     $MatchingRights = @($PolicyPermissions | Where-Object { ($_.Value -eq $PermissionCandidate) -and ($_.PermissionType -eq $PermissionType) })
+    }
+   } else {
+    if (Assert-IsGUID -Value $PermissionCandidate) {
+     Write-Verbose "Permission provided as GUID, searching for $PermissionCandidate in API $ServicePrincipalID with no specific type"
+     $MatchingRights = @($PolicyPermissions | Where-Object { $_.RuleID -eq $PermissionCandidate })
+    } else {
+      Write-Verbose "Permission provided as Name, searching for $PermissionCandidate in API $ServicePrincipalID with no specific type"
+      $MatchingRights = @($PolicyPermissions | Where-Object { $_.Value -eq $PermissionCandidate })
+    }
+   }
+
+   if (! $MatchingRights) {
+    Throw "$PermissionCandidate ($PermissionType) was not found in API $ServicePrincipalID, please check"
+   } elseif ($MatchingRights.Count -gt 1) {
+    Throw "$PermissionCandidate contains multiple values in API $ServicePrincipalID, please check or force the permission type"
+   }
+
+   $RightsToAdd += $MatchingRights
+  }
+  $RightsToAdd = @($RightsToAdd | Sort-Object PolicyID,RuleID,PermissionType -Unique)
+
+  # BLOCK 4 - Add Permission(s) to App Registration (Graph API)
   Write-Verbose "Processing App Registration Update..."
 
   # Get the Application Object (We need the Object ID, not the Client AppID)
   $AppObject = Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/applications(appId='$AppID')?`$select=id,requiredResourceAccess"
   if (-not $AppObject) { Throw "Could not retrieve Application Object for AppID: $AppID" }
 
-  # Prepare the permission object
-  $ApiAppID = $RightsToAdd.PolicyID # The Resource App ID (e.g. Graph 000003...)
-  $PermUUID = $RightsToAdd.RuleID   # The Permission UUID
-  $TypeStr  = If ($RightsToAdd.PermissionType -eq 'Delegated') { "Scope" } Else { "Role" }
+  # Logic to merge permissions (requiredResourceAccess is a list)
+  $CurrentAccessList = @($AppObject.requiredResourceAccess)
+  $HasManifestChanges = $false
 
-  # Logic to merge permissions (RequiredResourceAccess is a list)
-  $CurrentAccessList = $AppObject.requiredResourceAccess
-  $PermissionAlreadyPresent = $false
+  foreach ($RightToAdd in $RightsToAdd) {
+   $ApiAppID = $RightToAdd.PolicyID # The Resource App ID (e.g. Graph 000003...)
+   $PermUUID = $RightToAdd.RuleID   # The Permission UUID
+   $TypeStr  = If ($RightToAdd.PermissionType -eq 'Delegated') { "Scope" } Else { "Role" }
 
-  # Check if the API (Resource) is already listed in the app
-  $ApiEntry = $CurrentAccessList | Where-Object { $_.resourceAppId -eq $ApiAppID }
+   # Check if the API (Resource) is already listed in the app
+   $ApiEntry = @($CurrentAccessList | Where-Object { $_.resourceAppId -eq $ApiAppID } | Select-Object -First 1)
 
-  If ($null -eq $ApiEntry) {
-   # API not found, create new entry
-   Write-Verbose "Adding new API entry for $ApiAppID"
-   $NewEntry = @{
-    resourceAppId = $ApiAppID
-    resourceAccess = @( @{ id = $PermUUID; type = $TypeStr } )
-   }
-   $CurrentAccessList += $NewEntry
-  } Else {
-   # API found, check if specific permission exists
-   If (-not ($ApiEntry.resourceAccess | Where-Object { $_.id -eq $PermUUID -and $_.type -eq $TypeStr })) {
-    Write-Verbose "Adding permission $PermUUID to existing API entry"
-    $ApiEntry.resourceAccess += @{ id = $PermUUID; type = $TypeStr }
-   } Else {
-    Write-Host -ForegroundColor "Magenta" -Object "Permission '$($RightsToAdd.Value) [$($RightsToAdd.PermissionType)]' already exists on the App Registration '$Application'"
-    $PermissionAlreadyPresent = $true
+   if ($ApiEntry.Count -eq 0) {
+    # API not found, create new entry
+    Write-Verbose "Adding new API entry for $ApiAppID"
+    $NewEntry = @{
+     resourceAppId = $ApiAppID
+     resourceAccess = @( @{ id = $PermUUID; type = $TypeStr } )
+    }
+    $CurrentAccessList += $NewEntry
+    $HasManifestChanges = $true
+   } else {
+    # API found, check if specific permission exists
+    $PermissionExists = $ApiEntry[0].resourceAccess | Where-Object { $_.id -eq $PermUUID -and $_.type -eq $TypeStr }
+    if (-not $PermissionExists) {
+     Write-Verbose "Adding permission $PermUUID to existing API entry"
+     $ApiEntry[0].resourceAccess += @{ id = $PermUUID; type = $TypeStr }
+     $HasManifestChanges = $true
+    } else {
+     Write-Host -ForegroundColor "Magenta" -Object "Permission '$($RightToAdd.Value) [$($RightToAdd.PermissionType)]' already exists on the App Registration '$Application'"
+    }
    }
   }
 
-  if (-not $PermissionAlreadyPresent) {
+  if ($HasManifestChanges) {
    # Commit the Update (PATCH)
    Write-Verbose "Applying new permissions (Patch Method)"
    $Body = @{ requiredResourceAccess = $CurrentAccessList } | ConvertTo-Json -Depth 5 -Compress
    Invoke-RestMethod -Headers $Header -Method Patch -Body $Body -Uri "https://graph.microsoft.com/v1.0/applications/$($AppObject.id)"
+  } else {
+   Write-Verbose "No manifest change required, skipping PATCH"
   }
 
   if ($Consent) {
    Write-Verbose "Granting Consent"
-    Grant-AzureAppRegistrationConsent -AppRegistration $Application -API $API -Permission $Permission -PermissionType $PermissionType -Token $authDetails.Token
+    foreach ($RightToConsent in $RightsToAdd) {
+     Grant-AzureAppRegistrationConsent -AppRegistration $Application -API $API -Permission $RightToConsent.RuleID -PermissionType $RightToConsent.PermissionType -Token $authDetails.Token
+    }
   }
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -16893,11 +16919,11 @@ Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
  Param (
-  # This parameter is mandatory for all three authentication methods.
+  # TenantID is required for app-only flows; Interactive can default to a generic authority.
   [parameter(Mandatory = $True, ParameterSetName="ClientSecret")]
   [parameter(Mandatory = $True, ParameterSetName="CertificateThumbprint")]
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]
-  [parameter(Mandatory = $True, ParameterSetName="Interactive")]
+  [parameter(Mandatory = $False, ParameterSetName="Interactive")]
   $TenantID,
   # This parameter is optional for all sets and defaults to the Microsoft Graph Command Line Tools public App ID.
   [parameter(Mandatory = $False, ParameterSetName="ClientSecret")]
@@ -17057,7 +17083,8 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
 
   } elseif ($PSCmdlet.ParameterSetName -eq "Interactive") {
    Write-Verbose "Using Interactive Login"
-   $tokenEndpoint = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/token"
+   $interactiveTenant = if ($TenantID) { $TenantID } else { "organizations" }
+   $tokenEndpoint = "https://login.microsoftonline.com/$interactiveTenant/oauth2/v2.0/token"
    # --- Native Interactive Authentication Flow ---
 
    # 1. Set up a listener on localhost to catch the redirect
@@ -17093,7 +17120,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    }
 
    # 2. Build the authorization URL and launch the browser
-   $authUrl = "https://login.microsoftonline.com/$TenantID/oauth2/v2.0/authorize?" +
+  $authUrl = "https://login.microsoftonline.com/$interactiveTenant/oauth2/v2.0/authorize?" +
     "client_id=$ApplicationID" +
     "&response_type=code" +
     "&redirect_uri=$([System.Web.HttpUtility]::UrlEncode($redirectUri))" +
