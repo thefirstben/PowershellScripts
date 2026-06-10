@@ -16492,37 +16492,26 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
   [Switch]$ShowMemberOf,
   [Switch]$ShowOwnedObjects,
   [Switch]$ShowOwnedDevices,
+  [Switch]$ShowAppRoleAssignments,
   $Token
  )
 
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   if (Assert-IsGUID $UPNorID) {
    Write-Verbose "Using GUID"
    $UserGUID = $UPNorID
   } else {
    Write-Verbose "Using UPN, will have to get GUID"
-   if ($authDetails.Method -eq "Token") {
-    $UserGUID = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" -ErrorAction Stop).id
-   } else {
-    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
-   }
+   $UserGUID = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" -ErrorAction Stop).id
  }
  if (! $UserGUID) { Throw "User $UPNorID was not found" }
  Write-Verbose "Getting user detail using GUID $UserGUID"
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
-  if ($authDetails.Method -eq "Token") {
-    $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID" -ErrorAction Stop
-   } else {
-    $Result = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UPNorID" --headers Content-Type=application/json | ConvertFrom-Json
-   }
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID" -ErrorAction Stop
   } else {
    $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,mail,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
-   if ($authDetails.Method -eq "Token") {
-    $RestResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -ErrorAction Stop
-   } else {
-    $RestResult = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" --headers Content-Type=application/json | ConvertFrom-Json
-   }
+   $RestResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -ErrorAction Stop
    $Result = $RestResult | Select-Object `
    id,onPremisesImmutableId,displayName,userPrincipalName,mail,accountEnabled,createdDateTime,
    @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
@@ -16531,11 +16520,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  if ($ShowManager) {
   Write-Verbose "Getting Manager details"
-  if ($authDetails.Method -eq "Token") {
-   $ManagerJson = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/manager"
-  } else {
-   $ManagerJson = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/manager" --headers Content-Type=application/json | ConvertFrom-Json
-  }
+  $ManagerJson = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/manager" -ErrorAction SilentlyContinue
   $Manager = $ManagerJson | Select-Object `
     @{name="ManagerdisplayName";expression={$_.displayName}},
     @{name="ManagerUPN";expression={$_.userPrincipalName}},
@@ -16546,35 +16531,23 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  if ($ShowOwnedObjects) {
   Write-Verbose "Getting all Owned Objects"
-  if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
-   $OwnedObjects = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects"
-  } else {
-   $OwnedObjects = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects" --headers Content-Type=application/json | ConvertFrom-Json
-  }
+  $OwnedObjects = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/ownedObjects"
   $Result | Add-Member -NotePropertyName OwnedObjects -NotePropertyValue $OwnedObjects
  }
  if ($ShowOwnedDevices) {
   Write-Verbose "Getting all Owned Devices"
-  if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
-   $OwnedDevices = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices"
-  } else {
-   $OwnedDevices = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices" --headers Content-Type=application/json | ConvertFrom-Json
-  }
+  $OwnedDevices = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/OwnedDevices"
   $Result | Add-Member -NotePropertyName OwnedDevices -NotePropertyValue $OwnedDevices
+ }
+ if ($ShowAppRoleAssignments) {
+  Write-Verbose "Getting App Role Assignments"
+  $AppRoleAssignments = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments"
+  $Result | Add-Member -NotePropertyName AppRoleAssignments -NotePropertyValue $AppRoleAssignments
  }
  if ($ShowMemberOf) {
   Write-Verbose "Getting Member Of"
   $MemberOf=@()
-  if ($authDetails.Method -eq "Token") { # This is limited to the first 100 objects
-   $MemberOf = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/memberOf"
-  } else {
-   $MemberOfTmp = az rest --method GET --uri "https://graph.microsoft.com/beta/users/$UserGUID/memberOf" --headers Content-Type=application/json | ConvertFrom-Json
-   $MemberOf += $MemberOfTmp.Value
-   While ($MemberOfTmp.'@odata.nextLink') {
-    $MemberOf += $MemberOfTmp.Value
-    $MemberOfTmp = az rest --method get --uri $MemberOfTmp.'@odata.nextLink' --header Content-Type="application/json" -o json | convertfrom-json
-   }
-  }
+  $MemberOf = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID/memberOf"
   $MemberOfFinal = $MemberOf | Select-Object id,displayName,@{name="Type";expression={
    if (($_.'@odata.type' -eq '#microsoft.graph.group') -and ($_.securityEnabled) -and ($_.onPremisesSyncEnabled)) {
     "AD_SecurityGroup"
@@ -16602,7 +16575,7 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
  }
  $Result
  } catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : `n$_"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureADUserStartingWith { # Get all AAD Users starting with something [Token or Az Cli] - Can search for exact value or start with values
@@ -16827,38 +16800,6 @@ Function Enable-AzureADUser { # Enable Azure Ad User
     accountEnabled = 'true'
    } | ConvertTo-Json
    Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UPNorID/" -Body $Body -Method PATCH
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-Function Get-AzureADUserAppRoleAssignments { # Get all Application Assigned to a user in Azure
- Param (
-  [Parameter(Mandatory)]$UPNorID,
-  $Token
- )
- Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-
-  if (Assert-IsGUID $UPNorID) {
-   $UserGUID = $UPNorID
-  } else {
-   if ($authDetails.Method -eq "Token") {
-    $UserGUID = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" -ErrorAction Stop | Select-Object -ExpandProperty id
-    Write-Verbose "User GUID obtained using Graph API Token Authentication : $UserGUID"
-   } else {
-    $UserGUID = (az rest --method GET --uri "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" --headers Content-Type=application/json | ConvertFrom-Json).Value.Id
-    Write-Verbose "User GUID obtained using Azure CLI : $UserGUID"
-   }
-  }
-
-  if (! $UserGUID) { Write-Host -ForegroundColor "Red" -Object "User $UPNorID was not found" ; Return}
-
-  if ($authDetails.Method -eq "Token") {
-   $RestResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/users/$UserGUID/appRoleAssignments" -ErrorAction Stop
-  } else {
-   $RestResult = az rest --method GET --uri "https://graph.microsoft.com/v1.0/users/$UserGUID/appRoleAssignments" --headers Content-Type=application/json | ConvertFrom-Json
-  }
-  $RestResult
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
