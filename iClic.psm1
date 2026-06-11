@@ -11815,7 +11815,7 @@ Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Right
  Get-AzureRBACRightsAzCLI -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
   @{Name="PrincipalName";Expression={
    if (Assert-IsGUID $_.PrincipalName) {
-    (Get-AzureServicePrincipalInfo -AppID $_.PrincipalName).DisplayName
+    (Get-AzureServicePrincipal -AppID $_.PrincipalName).DisplayName
    } else {
     $_.PrincipalName
    }
@@ -12585,7 +12585,7 @@ Function Set-AzureAppRegistrationTags_OLD { # Set Tag on App Registration, can a
    --body $body
 
   If ($ShowResult) {
-   $SP_Info = Get-AzureServicePrincipalInfo @FunctionParams
+   $SP_Info = Get-AzureServicePrincipal @FunctionParams
    write-colored -Color Cyan -PrintDate -NonColoredText "New Tags on App Registration `'$($SP_Info.displayName)`' : " $TagsToAd_Converted_tmp
   }
  } catch {
@@ -13123,51 +13123,6 @@ Function Remove-AzureAppRegistration { # Remove Azure App Registration | Service
 
 # Service Principal (Enterprise Applications) [Only]
 
-Function Get-AzureServicePrincipalInfo { # Find Service Principal Info using REST | Using AzCli AzAD Cmdlet are 5 times slower than AzRest
- Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
-  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
-  [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
-  $ValuesToShow = "*", # Format is : value1,value2
-  [Switch]$HideGUID
- )
- Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if ($AppID) {             $FilterValue = 'AppID'       ; $ValueToCheck = $AppID
-   } elseif ($ID) {          $FilterValue = 'ID'          ; $ValueToCheck = $ID
-   } elseif ($DisplayName) { $FilterValue = 'DisplayName' ; $ValueToCheck = $DisplayName
-   }
-  $GraphURI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=$FilterValue eq '$ValueToCheck'"
-
-  if ($authDetails.Method -eq "Token") {
-   $Result = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $GraphURI).value
-  } else {
-   $Result = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
-  }
-
-  # Add Generic Redirect URLs with all the different redirect URLs
-  $RedirectURLS = @()
-  $RedirectURLS += [pscustomobject]@{Type="SPA";URLs=$Result.SPA.redirectUris}
-  $RedirectURLS += [pscustomobject]@{Type="WEB";URLs=$Result.WEB.redirectUris}
-  $RedirectURLS += [pscustomobject]@{Type="publicClient";URLs=$Result.publicClient.redirectUris}
-  $Result | Add-Member -MemberType NoteProperty -Name "RedirectURLS" -Value $RedirectURLS
-
-  if (! $Result) {Throw "No result found"}
-
-  if ($HideGUID) {
-   $Result | Select-Object -ExcludeProperty *ID
-  } else {
-   $Result
-  }
- } catch {
-  if ($_.ErrorDetails.Message) {
-   $ErrorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
-   Write-Error $ErrorDetails.error.Message
-  } else {
-   Write-Error $_
-  }
- }
-}
 Function Get-AzureServicePrincipal { # Get Service Principal, either specific or via filter
  [CmdletBinding(DefaultParameterSetName = 'Filter')]
  Param (
@@ -13175,6 +13130,8 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
   [Parameter(Mandatory = $false, HelpMessage = 'A security token is required.')]
   $Token,
   [Switch]$Fast,
+  [Parameter(ParameterSetName = 'Application', Mandatory = $true, HelpMessage = 'Specify the Application (GUID, AppID, ObjectID, or Display Name).')][string]$Application,
+  [Parameter(ParameterSetName = 'Application', HelpMessage = 'When Application is a GUID, prioritize ObjectID over AppID for lookup.')][switch]$PriorityObjectID,
   [Parameter(ParameterSetName = 'GetByAppID', Mandatory = $true, HelpMessage = 'Specify the Application ID.')][string]$AppID,
   [Parameter(ParameterSetName = 'GetByID', Mandatory = $true, HelpMessage = 'Specify the Object ID.')][string]$ID,
   [Parameter(ParameterSetName = 'GetByDisplayName', Mandatory = $true, HelpMessage = 'Specify the Display Name.')][string]$DisplayName,
@@ -13191,6 +13148,8 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
   # --- Script Body ---
   # You can determine which parameter set was used and branch your logic accordingly.
   Write-Verbose "The active parameter set is: $($PSCmdlet.ParameterSetName)"
+
+  $Result = $null
 
   switch ($PSCmdlet.ParameterSetName) {
    'Filter' {
@@ -13273,40 +13232,111 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      $ReplyURLColumn = $Result | get-member -MemberType NoteProperty -Name replyUrls
      if ($ReplyURLColumn) { $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}} }
      if ($ApplyClientSideURLFilter) { $Result = $Result | Where-Object URLs -like "*$URLFilter*" }
+   }
+   'Application' {
+     Write-Verbose "Running in Application mode."
+     Write-Verbose "Application: $Application"
 
-     $Result
+     $SearchByFilter = {
+      param (
+       [string]$CurrentFilter,
+       [string]$CurrentValue
+      )
+
+      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=$CurrentFilter eq '$CurrentValue'"
+      $QueryResult = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token -ErrorAction SilentlyContinue
+      
+      if ($QueryResult -and (@($QueryResult).Count -gt 1)) {
+       throw "Multiple Service Principals found for $CurrentFilter '$CurrentValue'. Use a unique identifier."
+      }
+
+      return $QueryResult
+     }
+
+     if (Assert-IsGUID $Application) {
+      if ($PriorityObjectID) {
+       $LookupOrder = @('ID','appID')
+      } else {
+       $LookupOrder = @('appID','ID')
+      }
+
+      $Result = $null
+      foreach ($CurrentFilter in $LookupOrder) {
+       $Result = & $SearchByFilter -CurrentFilter $CurrentFilter -CurrentValue $Application
+       if ($Result) { break }
+      }
+
+      if (! $Result) {
+       throw "No result found for search value '$Application' (lookup order: $($LookupOrder -join ' -> '))"
+      }
+     } else {
+      if ($PriorityObjectID) {
+       Write-Verbose "PriorityObjectID is ignored because Application '$Application' is not a GUID."
+      }
+      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$Application'"
+      $Result = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token -ErrorAction SilentlyContinue
+      if (! $Result) {
+       throw "No result found for search value '$Application'"
+      }
+     }
    }
    'GetByAppID' {
      Write-Verbose "Running in GetByAppID mode."
      Write-Verbose "AppID: $AppID"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=appID eq '$AppID'"
-     $RestResultObj = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
-     if (! $RestResultObj) { Throw "$AppID Not found as AppID"} else { $RestResultObj }
+     $Result = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
+     if (! $Result) { Throw "$AppID Not found as AppID"}
    }
    'GetByID' {
      Write-Verbose "Running in GetByID mode."
      Write-Verbose "ID: $ID"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=ID eq '$ID'"
-     $RestResultObj = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
-     if (! $RestResultObj) { Throw "$ID Not found as ID"} else { $RestResultObj }
+     $Result = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
+     if (! $Result) { Throw "$ID Not found as ID"}
    }
    'GetByDisplayName' {
      Write-Verbose "Running in GetByDisplayName mode."
      Write-Verbose "DisplayName: $DisplayName"
      $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=displayName eq '$DisplayName'"
-     $RestResultObj = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
-     if (! $RestResultObj) { Throw "$DisplayName Not found as DisplayName"} else { $RestResultObj }
+     $Result = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token
+     if (! $Result) { Throw "$DisplayName Not found as DisplayName"}
    }
   } # End Switch
+
+  # Single standardized output for all parameter sets
+  if ($Result) {
+   # Add URLs property if replyUrls exists
+   if ($Result.replyUrls -and -not $Result.URLs) {
+    $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
+   }
+
+   # Add appOwnerOrganizationName based on appOwnerOrganizationId
+   $TenantID = $null
+   if ($global:TenantID) {
+    $TenantID = $global:TenantID
+   }
+
+   if ($Result.appOwnerOrganizationId) {
+    $OrgName = switch ($Result.appOwnerOrganizationId) {
+     {$_ -eq $TenantID -and $TenantID} { "Current"; break }
+     "f8cdef31-a31e-4b4a-93e4-5f571e91255a" { "Microsoft Services"; break }
+     "72f988bf-86f1-41af-91ab-2d7cd011db47" { "Microsoft"; break }
+     "785ce69c-90cf-4dc7-a882-eaf312d1d15d" { "Genesys Telecommunications Laboratories, Inc."; break }
+     "87cd1f13-e6f8-4211-ba16-7da492b704a6" { "TwinCap First AG"; break }
+     "3e159d58-3c39-499b-a41a-dbe2a5c75429" { "Code Software"; break }
+     "280e37ca-a437-448e-b588-7b483084903e" { "clickup.com"; break }
+     "e33cd3fa-42bf-4a03-a276-d55c7db7e3c8" { "DOCUNIZE 365 Dev"; break }
+     default { $_ }
+    }
+    
+    $Result = $Result | Select-Object *,@{Name="appOwnerOrganizationName";Expression={$OrgName}}
+   }
+
+   $Result
+  }
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
-}
-Function Get-AzureServicePrincipalIDFromAppID { # Get Azure Service Principal (Enterprise App) information from APP ID (Not SP ObjectID)
- Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationID
- )
- ((az ad sp show --id $AppRegistrationID --query "{id:id}") | convertfrom-json).ID
 }
 Function Get-AzureServicePrincipalIDFromAppName { # Get Azure Service Principal (Enterprise App) information from APP Name (Not SP ObjectID)
  [CmdletBinding()]
@@ -13586,7 +13616,7 @@ Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add
   $FunctionParams.Remove('ShowResult') | Out-Null
 
   # Get Current Tags
-  $SP_Info = Get-AzureServicePrincipalInfo @FunctionParams
+  $SP_Info = Get-AzureServicePrincipal @FunctionParams
 
   write-colored -Color Cyan -PrintDate -NonColoredText "Current Tags on Service Principal `'$($SP_Info.displayName)`' : " $($SP_Info.Tags -join ",")
 
@@ -13628,7 +13658,7 @@ Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add
    --body $body
 
   If ($ShowResult) {
-   $SP_Info = Get-AzureServicePrincipalInfo @FunctionParams
+   $SP_Info = Get-AzureServicePrincipal @FunctionParams
    write-colored -Color Cyan -PrintDate -NonColoredText "New Tags on Service Principal `'$($SP_Info.displayName)`' : " $($SP_Info.Tags -join ",")
   }
  } catch {
@@ -16854,6 +16884,25 @@ Function Set-AzureADUserUPNAsMail { # Set the User Mail as UPN
  write-host "Setting Mail as UserUPN for user $UserUPN"
  Invoke-RestMethod -Method PATCH -headers $header -Uri $GraphURL -Body $ParamJson
 }
+Function Convert-AzureADUserType { # Convert User Type from Guest to Member or Member to Guest
+ Param (
+  $Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  [parameter(Mandatory = $true)]$UPNorID,
+  [parameter(Mandatory = $true)][ValidateSet("Member","Guest")]$TargetType
+ )
+  try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/" + "$UPNorID"
+  $params = @{
+   userType = $TargetType
+  }
+  $ParamJson = $params | convertto-json
+  write-host "Converting user $UPNorID type to $TargetType"
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL -Method PATCH -Body $ParamJson | Out-Null
+ } Catch {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
 
 # Token Management
 
@@ -18682,127 +18731,230 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
  }
 }
 Function Get-SentinelAuditInfo {
-    [CmdletBinding()]
-    Param (
-        $Initiator,
-        $Category,
-        $OperationName,
-        $TargetName,
-        $AzureMonitorToken,
-        $Duration = '1d',
-        $WorkspaceID,
-        [Switch]$ExcludeDefaultApps,
-        [Switch]$DefaultFilter,
-        [Switch]$Readable
-    )
+ [CmdletBinding()]
+ Param (
+  $Initiator,
+  $Category,
+  $OperationName,
+  $TargetName,
+  $AzureMonitorToken,
+  $Duration = '1d',
+  $WorkspaceID,
+  [Switch]$ExcludeDefaultApps,
+  [Switch]$DefaultFilter,
+  [Switch]$Readable
+ )
 
-    # 1. Setup & Auth
-    $WorkspaceID = $global:SentinelWorkspaceID
-    if (! $WorkspaceID) {Throw "Workspace ID Not Found"}
+ # 1. Setup & Auth
+ $WorkspaceID = $global:SentinelWorkspaceID
+ if (! $WorkspaceID) {Throw "Workspace ID Not Found"}
 
-    if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
-        # Provided via param
-    } elseif ($global:AzureMonitorToken) {
-        $AzureMonitorToken = $global:AzureMonitorToken
-    } else {
-        Throw 'Azure Monitor Token is not found'
-    }
-    if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
+ if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
+  # Provided via param
+ } elseif ($global:AzureMonitorToken) {
+  $AzureMonitorToken = $global:AzureMonitorToken
+ } else {
+  Throw 'Azure Monitor Token is not found'
+ }
+ if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
 
-    # 2. Build Safe Pre-Filters (Applied before Join)
-    $PreFilters = ""
-    if ($OperationName) { $PreFilters += "| where OperationName contains '$OperationName' `n" }
-    if ($Category) { $PreFilters += "| where Category contains '$Category' `n" }
-    if ($TargetName) { $PreFilters += "| where TargetResources contains '$TargetName' `n" }
+ # 2. Build Safe Pre-Filters (Applied before Join)
+ $PreFilters = ""
+ if ($OperationName) { $PreFilters += "| where OperationName contains '$OperationName' `n" }
+ if ($Category) { $PreFilters += "| where Category contains '$Category' `n" }
+ if ($TargetName) { $PreFilters += "| where TargetResources contains '$TargetName' `n" }
 
-    if ($ExcludeDefaultApps) {
-      $PreFilters += @"
-    | where InitiatedBy !in (
-    'Intune MonoDeviceService',
-    'Intune Compliance Client',
-    'Intune Application Protection',
-    'Intune Grouping and Targeting',
-    'Device Registration Service'
-    )
-    | where OperationName !in (
-    'GroupsODataV4_Get',
-    'Group_GetDynamicGroupProperties',
-    'Validate user authentication',
-    'Settings_GetSettingsAsync')
-    | where LoggedByService !in (
-    'Account Provisioning',
-    'B2C')
+ if ($ExcludeDefaultApps) {
+  $PreFilters += @"
+  | where InitiatedBy !in (
+  'Intune MonoDeviceService',
+  'Intune Compliance Client',
+  'Intune Application Protection',
+  'Intune Grouping and Targeting',
+  'Device Registration Service'
+  )
+  | where OperationName !in (
+  'GroupsODataV4_Get',
+  'Group_GetDynamicGroupProperties',
+  'Validate user authentication',
+  'Settings_GetSettingsAsync',
+  'Update StsRefreshTokenValidFrom Timestamp'
+  )
+  | where LoggedByService !in (
+  'Account Provisioning',
+  'B2C',
+  'PIM'
+  )
 "@
-    }
+ }
 
-    # 3. Construct KQL Query
-    $Query = @"
-    let UserDetails = IdentityInfo
-    | summarize arg_max(TimeGenerated, *) by AccountObjectId
-    | project InitiatorId = AccountObjectId, UserDisplayName = AccountDisplayName;
+ # 3. Construct KQL Query
+ $Query = @"
+  let UserDetails = IdentityInfo
+  | summarize arg_max(TimeGenerated, *) by AccountObjectId
+  | project InitiatorId = AccountObjectId, UserDisplayName = AccountDisplayName;
 
-    AuditLogs
-    | where TimeGenerated between (ago($Duration) .. now())
-    $PreFilters
+  AuditLogs
+  | where TimeGenerated between (ago($Duration) .. now())
+  $PreFilters
 
-    // MEMORY OPTIMIZATION: Project ONLY what we need immediately to prevent 'Low Memory' errors
-    | project TimeGenerated, OperationName, Category, LoggedByService, InitiatedBy, TargetResources, CorrelationId
+  // MEMORY OPTIMIZATION: Project ONLY what we need immediately to prevent 'Low Memory' errors
+  | project TimeGenerated, OperationName, Category, LoggedByService, InitiatedBy, TargetResources, CorrelationId
 
-    // Parse Initiator ID
-    | extend InitiatedByParams = parse_json(InitiatedBy)
-    | extend
-        InitiatorId = coalesce(tostring(InitiatedByParams.user.id), tostring(InitiatedByParams.app.appId), tostring(InitiatedByParams.app.servicePrincipalId)),
-        InitiatorNameFallback = coalesce(tostring(InitiatedByParams.user.userPrincipalName), tostring(InitiatedByParams.app.displayName))
+  // Parse Initiator ID
+  | extend InitiatedByParams = parse_json(InitiatedBy)
+  | extend
+    InitiatorId = coalesce(tostring(InitiatedByParams.user.id), tostring(InitiatedByParams.app.appId), tostring(InitiatedByParams.app.servicePrincipalId)),
+    InitiatorNameFallback = coalesce(tostring(InitiatedByParams.user.userPrincipalName), tostring(InitiatedByParams.app.displayName))
 
-    // Join User Details (Resolve GUID to Name)
-    | join kind=leftouter (UserDetails) on InitiatorId
-    | extend InitiatorName = coalesce(UserDisplayName, InitiatorNameFallback)
+  // Join User Details (Resolve GUID to Name)
+  | join kind=leftouter (UserDetails) on InitiatorId
+  | extend InitiatorName = coalesce(UserDisplayName, InitiatorNameFallback)
 
-    // FILTER BY INITIATOR (Done after join to ensure names are resolved)
-    $(if ($Initiator) { "| where InitiatorName contains '$Initiator'" })
-    $(if ($ExcludeDefaultApps) {
-        "| where InitiatorName !has 'Microsoft Substrate Management'
-         | where InitiatorName !has 'Microsoft Approval Management'
-         | where InitiatorName !has 'Modern Workplace Customer APIs'
-         | where InitiatorName !has 'Azure AD Identity Governance - User Management'"
-    })
+  // FILTER BY INITIATOR (Done after join to ensure names are resolved)
+  $(if ($Initiator) { "| where InitiatorName contains '$Initiator'" })
+  $(if ($ExcludeDefaultApps) {
+    "| where InitiatorName !has 'Microsoft Substrate Management'
+     | where InitiatorName !has 'Microsoft Approval Management'
+     | where InitiatorName !has 'Modern Workplace Customer APIs'
+     | where InitiatorName !has 'Azure AD Identity Governance - User Management'"
+  })
 
-    // Expand Targets
-    | extend TargetResources = parse_json(TargetResources)
-    | mv-expand TargetResources
-    | extend
-        ModifiedObjectDisplayName = tostring(TargetResources.displayName),
-        ModifiedObjectType = tostring(TargetResources.type),
-        ModifiedObjectID = tostring(TargetResources.id)
+  // Expand Targets
+  | extend TargetResources = parse_json(TargetResources)
+  | mv-expand TargetResources
+  | extend
+    ModifiedObjectDisplayName = tostring(TargetResources.displayName),
+    ModifiedObjectType = tostring(TargetResources.type),
+    ModifiedObjectID = tostring(TargetResources.id)
 
-    // Extract Properties (Safe Logic to preserve rows with no changes)
-    | extend mProps = TargetResources.modifiedProperties
-    | extend mProps = iff(isnull(mProps) or array_length(mProps) == 0, dynamic([null]), mProps)
+  // Extract Properties (Safe Logic to preserve rows with no changes)
+  | extend mProps = TargetResources.modifiedProperties
+  | extend mProps = iff(isnull(mProps) or array_length(mProps) == 0, dynamic([null]), mProps)
 
-    // Get Old/New Values
-    | mv-apply mProps on (
-        summarize
-            Change_ID_Details = take_anyif(mProps, mProps.displayName has "ObjectID" or mProps.displayName has "UniqueId"),
-            Change_Name_Details = take_anyif(mProps, mProps.displayName has "DisplayName" or mProps.displayName has "UserPrincipalName")
-    )
+  // Get Old/New Values
+  | mv-apply mProps on (
+    summarize
+      Change_ID_Details = take_anyif(mProps, mProps.displayName has "ObjectID" or mProps.displayName has "UniqueId"),
+      Change_Name_Details = take_anyif(mProps, mProps.displayName has "DisplayName" or mProps.displayName has "UserPrincipalName")
+  )
 
-    | extend
-        OldValue_ID   = tostring(Change_ID_Details.oldValue),
-        NewValue_ID   = tostring(Change_ID_Details.newValue),
-        OldValue_Name = tostring(Change_Name_Details.oldValue),
-        NewValue_Name = tostring(Change_Name_Details.newValue)
+  | extend
+    OldValue_ID   = tostring(Change_ID_Details.oldValue),
+    NewValue_ID   = tostring(Change_ID_Details.newValue),
+    OldValue_Name = tostring(Change_Name_Details.oldValue),
+    NewValue_Name = tostring(Change_Name_Details.newValue)
 
-    $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectID, OldValue_ID, NewValue_ID, OldValue_Name, NewValue_Name" })
-    | sort by TimeGenerated desc
+  $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectID, OldValue_ID, NewValue_ID, OldValue_Name, NewValue_Name" })
+  | sort by TimeGenerated desc
 "@
 
-    # 4. Execute
-  $Result = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
-  if ($Readable ) {
-   $Result | Select-Object -ExcludeProperty *ID
-  } else {
-   $Result
+ # 4. Execute
+ $Result = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+ if ($Readable ) {
+  $Result | Select-Object -ExcludeProperty *ID
+ } else {
+  $Result
+ }
+}
+Function Get-SentinelGraphActivityInfo {
+ [CmdletBinding()]
+ Param (
+  $AppId,
+  $UserId,
+  $RequestUri,
+  $IPAddress,
+  $UserAgent,
+  $ResponseStatusCode,
+  $AzureMonitorToken,
+  $Duration = '1d',
+  $WorkspaceID,
+  [string[]]$ExcludedAppIds,
+  [switch]$IncludeDefaultExcludedAppIds,
+  [switch]$DefaultFilter
+ )
+
+ # 1. Setup & Auth
+ $WorkspaceID = $global:SentinelWorkspaceID
+ if (! $WorkspaceID) { Throw "Workspace ID Not Found" }
+
+ if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
+  # Provided via param
+ } elseif ($global:AzureMonitorToken) {
+  $AzureMonitorToken = $global:AzureMonitorToken
+ } else {
+  Throw 'Azure Monitor Token is not found'
+ }
+ if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop)) { Return }
+
+ # Default AppId exclusion list (populate with Microsoft first-party AppIds).
+ # Example value: '00000003-0000-0000-c000-000000000000'
+ $DefaultExcludedAppIds = @(
+  '4354e225-50c9-4423-9ece-2d5afd904870', #Augmentation Loop
+  'd3590ed6-52b3-4102-aeff-aad2292ab01c', #Microsoft Office
+  'a150d169-7d37-47dd-9b20-156207b7b02f', #MIP Exchange Solutions
+  '8adc51cc-7477-49a4-be4e-263946b4d561', #MIP Exchange Solutions - ODB
+  '192644fe-6aac-4786-8d93-775a056aa1de', #MIP Exchange Solutions - SPO
+  '2c220739-d44d-4bf7-ba5f-95cf9fb7f10c', #MIP Exchange Solutions - Teams
+  '644c1b11-f63f-45fa-826b-a9d2801db711', #CompliancePolicy
+  '00000003-0000-0ff1-ce00-000000000000', #Office 365 SharePoint Online
+  'cc15fd57-2c6c-4117-a88c-83b1d56b4bbe', #Microsoft Teams Services
+  '1fec8e78-bce4-4aaf-ab1b-5451cc387264', #Microsoft Teams
+  '2793995e-0a7d-40d7-bd35-6968ba142197', #My Apps
+  '257601fd-462f-4a21-b623-7f719f0f90f4', #Centralized Deployment
+  '257601fd-462f-4a21-b623-7f719f0f90f4', #Centralized Deployment
+  '00000014-0000-0000-c000-000000000000', #Microsoft.Azure.SyncFabric
+  '7ab7862c-4c57-491e-8a45-d52a7e023983', #App Service
+  'a68e1e61-ad4f-45b6-897d-0a1ea8786345', #Office365 Shell WCSS-Server Default
+  '60ca1954-583c-4d1f-86de-39d835f3e452', #Microsoft Defender for Identity
+  '29d9ed98-a469-4536-ade2-f981bc1d605e', #Microsoft Authentication Broker
+  '394866fc-eedb-4f01-8536-3ff84b16be2a', #Microsoft People Cards Service
+  'cab96880-db5b-4e15-90a7-f3f1d62ffe39', #Microsoft Defender Platform
+  '00000007-0000-0000-c000-000000000000', #Dataverse
+  '00000009-0000-0000-c000-000000000000', #Power BI Service
+  '05a65629-4c1b-48c1-a78b-804c4abdd4af', #Microsoft Cloud App Security
+  'c98e5057-edde-4666-b301-186a01b4dc58'  #MicrosoftEndpointDLP
+ )
+ if (-not $ExcludedAppIds) {
+  $ExcludedAppIds = $DefaultExcludedAppIds
+ }
+
+ # 2. Build pre-filters
+ $QueryLines = @(
+  'MicrosoftGraphActivityLogs'
+  "| where TimeGenerated between (ago($Duration) .. now())"
+ )
+
+ if ($AppId) { $QueryLines += "| where AppId contains '$AppId'" }
+ if ($UserId) { $QueryLines += "| where UserId contains '$UserId'" }
+ if ($RequestUri) { $QueryLines += "| where RequestUri contains '$RequestUri'" }
+ if ($IPAddress) { $QueryLines += "| where IPAddress contains '$IPAddress'" }
+ if ($UserAgent) { $QueryLines += "| where UserAgent contains '$UserAgent'" }
+ if ($ResponseStatusCode) { $QueryLines += "| where ResponseStatusCode == $ResponseStatusCode" }
+
+ if (-not $IncludeDefaultExcludedAppIds) {
+  $NormalizedExcludedAppIds = $ExcludedAppIds |
+   Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+   ForEach-Object { $_.Trim() }
+  if ($null -eq $NormalizedExcludedAppIds) {
+   $NormalizedExcludedAppIds = @()
   }
+  if ($NormalizedExcludedAppIds.Count -gt 0) {
+   $ExcludedAppIdsKql = ($NormalizedExcludedAppIds | ForEach-Object { "'$_'" }) -join ', '
+   $QueryLines += "| where AppId !in~ ($ExcludedAppIdsKql)"
+  }
+ }
+
+ if ($DefaultFilter) {
+  $QueryLines += '| project TimeGenerated, AppId, UserId, IPAddress, RequestMethod, RequestUri, ResponseStatusCode, UserAgent, DurationMs, OperationId, RequestId'
+ }
+
+ $QueryLines += '| sort by TimeGenerated desc'
+ $Query = $QueryLines -join "`n"
+
+ write-verbose "Constructed KQL Query:`n$Query"
+ # 3. Execute
+ Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
 }
 Function Get-SentinelAppLastLogin {
  [CmdletBinding()]
