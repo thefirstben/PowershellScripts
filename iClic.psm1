@@ -18902,7 +18902,6 @@ Function Get-SentinelGraphActivityInfo {
   '1fec8e78-bce4-4aaf-ab1b-5451cc387264', #Microsoft Teams
   '2793995e-0a7d-40d7-bd35-6968ba142197', #My Apps
   '257601fd-462f-4a21-b623-7f719f0f90f4', #Centralized Deployment
-  '257601fd-462f-4a21-b623-7f719f0f90f4', #Centralized Deployment
   '00000014-0000-0000-c000-000000000000', #Microsoft.Azure.SyncFabric
   '7ab7862c-4c57-491e-8a45-d52a7e023983', #App Service
   'a68e1e61-ad4f-45b6-897d-0a1ea8786345', #Office365 Shell WCSS-Server Default
