@@ -16720,13 +16720,7 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
    }
   }
  } catch {
-  $Exception = $($Error[0])
-  $StatusCodeJson = $Exception.ErrorDetails.message
-  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-  $StatusMessageJson = $Exception.ErrorDetails.message
-  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-Error "Error setting extension attribute $ExtensionAttributeNumber for user $UPNorID ($StatusCode | $StatusMessage))"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expiration on Azure AD Account
