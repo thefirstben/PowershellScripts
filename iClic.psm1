@@ -14531,15 +14531,23 @@ Function Get-AzureAdministrativeUnit {
  Param (
   $Token,
   [string]$Name,
+  [guid]$Id,
   [switch]$ShowMembers
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directory/administrativeUnits"
-  
-  # Apply name filter if provided
-  if ($Name) {
-   $Result = $Result | Where-Object { $_.displayName -like "*$Name*" }
+
+  if ($Id) {
+   # Direct lookup by GUID — no need to enumerate all units
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directory/administrativeUnits/$Id"
+   if ($Result) { $Result = @($Result) }
+  } else {
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directory/administrativeUnits"
+
+   # Apply name filter if provided
+   if ($Name) {
+    $Result = $Result | Where-Object { $_.displayName -like "*$Name*" }
+   }
   }
   
   # Fetch members if ShowMembers flag is set
