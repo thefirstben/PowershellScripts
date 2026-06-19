@@ -14301,6 +14301,7 @@ Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service pr
  } catch {
   # write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $(($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message)"
   write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $($Error[0])"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Set-AzureServicePrincipalContact { # Set Contact on Service Principal, can be used to set an email to receive notification of expiring secrets or certificates. Uses Graph API
@@ -14331,7 +14332,7 @@ Function Set-AzureServicePrincipalContact { # Set Contact on Service Principal, 
   $BodyJSON = $Body | ConvertTo-JSON -Depth 6
   Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$($AppInfo.ID)" -Method PATCH -Body $BodyJSON
  } catch {
-  Write-Error $_
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal secrets. Uses MGGraph
@@ -14378,7 +14379,7 @@ Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal
    }
   }
  } Catch {
-  Write-Error $_
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 
@@ -19188,6 +19189,162 @@ Function Get-AzureSignInLogs {
    conditionalAccessStatus
    if ($HideGuid) {
     $Result = $Result | Select-Object -ExcludeProperty userId,appId,resourceId
+   }
+   return ($Result | Sort-Object Local_TimeGenerated)
+  }
+
+  return ($ResultRaw | Sort-Object Local_TimeGenerated)
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+
+Function Get-AzureServicePrincipalSignInLogs {
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true)]
+  [Alias("AppFilter","ServicePrincipalFilter","Application")]
+  $ServicePrincipal,
+  [switch]$ConditionalAccessShowOnlySuccess,
+  [switch]$ShowOnlySuccess,
+  [switch]$ShowOnlyFailures,
+  [switch]$ConditionalAccessIgnoreNotApplied,
+  [switch]$SimplifiedQuery,
+  [switch]$HideGuid,
+  $Token,
+  $ResultTypeExclusion,
+  $ResultTypeInclusion,
+  $Duration = '1d',
+  $StartDuration,
+  $EndDuration,
+  $AppDisplayNameFilter,
+  $IPAddressFilter,
+  [int]$Top = 1000
+ )
+
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  if ( ! (Assert-IsGUID $ServicePrincipal) ) {
+   Write-Verbose "Service principal GUID not provided, resolving via Get-AzureServicePrincipal -Application"
+   $ServicePrincipalInfo = Get-AzureServicePrincipal -Application $ServicePrincipal -PriorityObjectID -Token $authDetails.Token -ErrorAction Stop
+  } else {
+   Write-Verbose "Service principal GUID provided, resolving via Get-AzureServicePrincipal -Application"
+   $ServicePrincipalInfo = Get-AzureServicePrincipal -Application $ServicePrincipal -PriorityObjectID -Token $authDetails.Token -ErrorAction Stop
+  }
+
+  if (! $ServicePrincipalInfo) { Throw "Service Principal $ServicePrincipal Not Found" }
+
+  $ServicePrincipalAppID = $ServicePrincipalInfo.appID
+  $ServicePrincipalObjectID = $ServicePrincipalInfo.ID
+
+  if (! $ServicePrincipalAppID) {
+   Throw "Service Principal $ServicePrincipal did not resolve to an AppID"
+  }
+
+  $dateFormat = "yyyy-MM-ddTHH:mm:ssZ"
+  if (! $EndDuration) {
+   $EndDate = (Get-Date).ToUniversalTime()
+  } else {
+   $EndDate = (Get-Date $EndDuration).ToUniversalTime()
+   Write-Verbose "Using EndDuration $($EndDate.ToString($dateFormat))"
+  }
+
+  if (! $StartDuration) {
+   $DurationValue = if ($Duration) { $Duration } else { "1d" }
+   if ($DurationValue -match '^(?<n>\d+)d$') {
+    $StartDate = $EndDate.AddDays(-[int]$Matches['n'])
+   } elseif ($DurationValue -match '^(?<n>\d+)h$') {
+    $StartDate = $EndDate.AddHours(-[int]$Matches['n'])
+   } elseif ($DurationValue -match '^(?<n>\d+)m$') {
+    $StartDate = $EndDate.AddMinutes(-[int]$Matches['n'])
+   } else {
+    Throw "Invalid Duration format '$DurationValue'. Use formats like '1d', '12h', or '30m'."
+   }
+  } else {
+   $StartDate = (Get-Date $StartDuration).ToUniversalTime()
+   Write-Verbose "Using StartDuration $($StartDate.ToString($dateFormat))"
+  }
+
+  if ($StartDate -gt $EndDate) {
+   Throw "StartDuration must be earlier than EndDuration."
+  }
+
+  $filterParts = @()
+  $filterParts += "signInEventTypes/any(t:t eq 'servicePrincipal')"
+  $filterParts += "appId eq '$ServicePrincipalAppID'"
+  $filterParts += "createdDateTime ge $($StartDate.ToString($dateFormat))"
+  $filterParts += "createdDateTime le $($EndDate.ToString($dateFormat))"
+
+  if ($AppDisplayNameFilter) { $filterParts += "appDisplayName eq '$AppDisplayNameFilter'" }
+  if ($IPAddressFilter) { $filterParts += "ipAddress eq '$IPAddressFilter'" }
+  if ($ConditionalAccessShowOnlySuccess) { $filterParts += "conditionalAccessStatus eq 'success'" }
+  if ($ConditionalAccessIgnoreNotApplied) { $filterParts += "conditionalAccessStatus ne 'notApplied'" }
+  if ($ShowOnlySuccess) { $filterParts += "status/errorCode eq 0" }
+  if ($ShowOnlyFailures) { $filterParts += "status/errorCode ne 0" }
+
+  if ($ResultTypeInclusion) {
+   $includeFilters = @($ResultTypeInclusion | ForEach-Object { "status/errorCode eq $_" })
+   if ($includeFilters) { $filterParts += "(" + ($includeFilters -join " or ") + ")" }
+  }
+
+  if ($ResultTypeExclusion) {
+   $excludeFilters = @($ResultTypeExclusion | ForEach-Object { "status/errorCode ne $_" })
+   if ($excludeFilters) { $filterParts += "(" + ($excludeFilters -join " and ") + ")" }
+  }
+
+  $FilterString = $filterParts -join " and "
+  $EncodedFilter = [System.Uri]::EscapeDataString($FilterString)
+
+  $TopValue = if ($Top -gt 0) { $Top } else { 1000 }
+  $GraphRequest = "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=$EncodedFilter&`$top=$TopValue"
+
+  Write-Verbose "Service Principal AppID : $ServicePrincipalAppID"
+  Write-Verbose "Service Principal ObjectID : $ServicePrincipalObjectID"
+  Write-Verbose "Final Graph Request: $GraphRequest"
+
+  $ResultRaw = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphRequest -ErrorAction Stop
+
+  if (! $ResultRaw) {
+   Write-Verbose "No service principal sign-in logs found."
+   return
+  }
+
+  $localTz = if ($env:WEBSITE_TIME_ZONE) { [System.TimeZoneInfo]::FindSystemTimeZoneById($env:WEBSITE_TIME_ZONE) } else { [System.TimeZoneInfo]::Local }
+  $ResultRaw = @($ResultRaw | ForEach-Object {
+    $CurrentCAP = @($_.appliedConditionalAccessPolicies)
+    $CASuccess = @(
+     $CurrentCAP |
+     Where-Object { $_.result -eq "success" } |
+     ForEach-Object { if ($_.displayName) { $_.displayName } elseif ($_.policyDisplayName) { $_.policyDisplayName } } |
+     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+     Sort-Object -Unique
+    ) -join ";"
+    $CAFailure = @(
+     $CurrentCAP |
+     Where-Object { $_.result -eq "failure" } |
+     ForEach-Object { if ($_.displayName) { $_.displayName } elseif ($_.policyDisplayName) { $_.policyDisplayName } } |
+     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+     Sort-Object -Unique
+    ) -join ";"
+
+   $_ | Add-Member -MemberType NoteProperty -Name 'Local_TimeGenerated' -Value ([System.TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind($_.createdDateTime, [System.DateTimeKind]::Utc), $localTz)) -Force
+   $_ | Add-Member -MemberType NoteProperty -Name 'Local_Timezone' -Value $localTz.Id -Force
+   $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Success' -Value $CASuccess -Force
+   $_ | Add-Member -MemberType NoteProperty -Name 'Conditional_Access_Failure' -Value $CAFailure -Force
+   $_
+  })
+
+  if ($SimplifiedQuery) {
+   $Result = $ResultRaw | Select-Object `
+   Local_TimeGenerated,signInEventTypes,servicePrincipalName,servicePrincipalId,appDisplayName,appId,
+   resourceDisplayName,resourceId,ipAddress,clientAppUsed,isInteractive,servicePrincipalCredentialKeyId,servicePrincipalCredentialThumbprint,
+   @{name='ResultType';expression={ $_.status.errorCode }},
+   @{name='ResultDescription';expression={ $_.status.failureReason }},
+   Conditional_Access_Success,Conditional_Access_Failure,
+   conditionalAccessStatus
+   if ($HideGuid) {
+    $Result = $Result | Select-Object -ExcludeProperty servicePrincipalId,appId,resourceId,servicePrincipalCredentialKeyId,servicePrincipalCredentialThumbprint
    }
    return ($Result | Sort-Object Local_TimeGenerated)
   }
