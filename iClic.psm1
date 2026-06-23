@@ -56,6 +56,7 @@
 # To generate Self Signed Certificate for App Registration : $Certificate=New-SelfSignedCertificate -Subject "$AppName" -CertStoreLocation "Cert:\CurrentUser\My" -KeySpec Signature -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -NotAfter $((get-date).addmonths(6))
 # Export Cert : $Certificate | Export-Certificate -Type CERT -FilePath "$iClic_TempPath\$AppName.cer"
 # Export PFX : $Password = New-Password ;  $Certificate | Export-PfxCertificate -FilePath "$iClic_TempPath\$AppName.pfx" -Password (ConvertTo-SecureString -String $Password -Force -AsPlainText)
+# Full EXPORT : $AppName = "AppName" ; $Password = New-Password ;  gci cert:\CurrentUser\My | ? Subject -like "*$AppName" | Export-PfxCertificate -FilePath "$iClic_TempPath\$AppName.pfx" -Password (ConvertTo-SecureString -String $Password -Force -AsPlainText)
 # Default Catch : Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
 # Catch with Graph : $_.ErrorDetails.Message
 # Query in Azure without any specific module, check example : Get-AzureManagementGroups
