@@ -13139,7 +13139,8 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
   [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on URL of Service Principals.')]$URLFilter,
   [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Filter on Name of Service Principals.')]$NameFilter, # Filter must not contain wildcards, it will search value automatically
   [Parameter(ParameterSetName = 'Filter', HelpMessage = 'Raw OData filter expression applied on Graph query.')][string]$GraphFilter,
-  [Parameter(Mandatory = $false, HelpMessage = 'A comma-separated list of properties to display.')]$ValuesToShow = "*"
+  [Parameter(Mandatory = $false, HelpMessage = 'A comma-separated list of properties to display.')]$ValuesToShow = "*",
+  [switch]$SearchExternalOrgIDNames
  )
 
  try {
@@ -13310,31 +13311,101 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
     $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}}
    }
 
-   # Add appOwnerOrganizationName based on appOwnerOrganizationId
+  # Add appOwnerOrganizationName based on appOwnerOrganizationId
    $TenantID = $null
    if ($global:TenantID) {
     $TenantID = $global:TenantID
    }
 
-   if ($Result.appOwnerOrganizationId) {
-    $OrgName = switch ($Result.appOwnerOrganizationId) {
-     {$_ -eq $TenantID -and $TenantID} { "Current"; break }
-     "f8cdef31-a31e-4b4a-93e4-5f571e91255a" { "Microsoft Services"; break }
-     "72f988bf-86f1-41af-91ab-2d7cd011db47" { "Microsoft"; break }
-     "785ce69c-90cf-4dc7-a882-eaf312d1d15d" { "Genesys Telecommunications Laboratories, Inc."; break }
-     "87cd1f13-e6f8-4211-ba16-7da492b704a6" { "TwinCap First AG"; break }
-     "3e159d58-3c39-499b-a41a-dbe2a5c75429" { "Code Software"; break }
-     "280e37ca-a437-448e-b588-7b483084903e" { "clickup.com"; break }
-     "e33cd3fa-42bf-4a03-a276-d55c7db7e3c8" { "DOCUNIZE 365 Dev"; break }
-     default { $_ }
+  # Build cache to store organization names
+   $orgNameCache = @{}
+   $Result = $Result | ForEach-Object {
+   $OrgId = $_.appOwnerOrganizationId
+
+   if (-not $OrgId) {
+    $_ | Add-Member -NotePropertyName appOwnerOrganizationName -NotePropertyValue "" -Force
+    return $_
+   }
+
+   if (-not $orgNameCache.ContainsKey($OrgId)) {
+    $OrgName = switch ($OrgId) {
+    {$_ -eq $TenantID -and $TenantID} { "Current"; break }
+    "f8cdef31-a31e-4b4a-93e4-5f571e91255a" { "Microsoft Services"; break }
+    "9188040d-6c67-4c5b-b112-36a304b66dad" { "Microsoft Accounts"; break }
+    "72f988bf-86f1-41af-91ab-2d7cd011db47" { "Microsoft"; break }
+    "33e01921-4d64-4f8c-a055-5bdaffd5e33d" { "MS Azure Cloud"; break }
+    default { $null }
     }
-    
-    $Result = $Result | Select-Object *,@{Name="appOwnerOrganizationName";Expression={$OrgName}}
+
+    if (-not $OrgName) {
+     if ($SearchExternalOrgIDNames) {
+      $TenantInfo = Get-AzureTenantInformationByTenantId -TenantId $OrgId -Token $authDetails.Token -ErrorAction SilentlyContinue
+      if ($TenantInfo.displayName) {
+       $OrgName = $TenantInfo.displayName
+      } else {
+       $OrgName = "ExternalTenant"
+      }
+     } else {
+      $OrgName = "ExternalTenant"
+     }
+    }
+
+    $orgNameCache[$OrgId] = $OrgName
+   }
+
+   $_ | Add-Member -NotePropertyName appOwnerOrganizationName -NotePropertyValue $orgNameCache[$OrgId] -Force
+    $_
    }
 
    $Result
   }
  } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-AzureTenantInformationByTenantId { # Resolve Entra tenant public information from tenant ID (with script cache)
+ [CmdletBinding(DefaultParameterSetName = 'Single')]
+ Param (
+  [Parameter(Mandatory = $true, ParameterSetName = 'Single')][string]$TenantId,
+  [Parameter(Mandatory = $true, ParameterSetName = 'Batch')][string[]]$TenantIdList,
+  [Parameter(ParameterSetName = 'Batch')][switch]$AsHashTable,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  if (-not $script:AzureTenantInformationCache) {
+   $script:AzureTenantInformationCache = @{}
+  }
+
+  $ResolvedTenantIdList = if ($PSCmdlet.ParameterSetName -eq 'Single') { @($TenantId) } else { @($TenantIdList) }
+  $ResolvedTenantIdList = $ResolvedTenantIdList | Where-Object { $_ } | Select-Object -Unique
+
+  foreach ($CurrentTenantId in $ResolvedTenantIdList) {
+   if (-not $script:AzureTenantInformationCache.ContainsKey($CurrentTenantId)) {
+    try {
+     $GraphUrl = "https://graph.microsoft.com/v1.0/tenantRelationships/findTenantInformationByTenantId(tenantId='$CurrentTenantId')"
+     $TenantInfo = Get-AzureGraph -GraphRequest $GraphUrl -Token $authDetails.Token -ErrorAction Stop
+     $script:AzureTenantInformationCache[$CurrentTenantId] = $TenantInfo
+    } catch {
+     Write-Verbose "Could not resolve tenant information for $CurrentTenantId : $_"
+     $script:AzureTenantInformationCache[$CurrentTenantId] = $null
+    }
+   }
+  }
+
+  if ($PSCmdlet.ParameterSetName -eq 'Single') {
+   return $script:AzureTenantInformationCache[$TenantId]
+  }
+
+  if ($AsHashTable) {
+   $ResultHash = @{}
+   $ResolvedTenantIdList | ForEach-Object { $ResultHash[$_] = $script:AzureTenantInformationCache[$_] }
+   return $ResultHash
+  }
+
+  return ($ResolvedTenantIdList | ForEach-Object { $script:AzureTenantInformationCache[$_] })
+ } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
@@ -16175,13 +16246,7 @@ Function Add-AzureADGroupOwner { # Add Owner from group using Rest
   Invoke-RestMethod -Method POST -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$GroupID/owners/`$ref" -Body $BodyJSON
 
  } catch {
-  $Exception = $($Error[0])
-  $StatusCodeJson = $Exception.ErrorDetails.message
-  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-  $StatusMessageJson = $Exception.ErrorDetails.message
-  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error addin user $UserID as owner of group $GroupID ($StatusCode | $StatusMessage))"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureADGroupOwner { # See Owner from group using Rest
@@ -16735,29 +16800,19 @@ Function Set-AzureADUserExtensionAttribute { # Set Extension Attribute on Cloud 
 Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expiration on Azure AD Account
  Param (
   [Parameter(Mandatory)]$UPNorID,
-  [Parameter(Mandatory)]$Token
+  $Token
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   $params = @{
    "passwordPolicies" = "DisablePasswordExpiration"
   }
-
+ 
   $ParamJson = $params | convertto-json
-  Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UPNorID"  -Body $ParamJson | Out-Null
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID" -Method PATCH -Body $ParamJson
  } catch {
-  $Exception = $($Error[0])
-  $StatusCodeJson = $Exception.ErrorDetails.message
-  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-  $StatusMessageJson = $Exception.ErrorDetails.message
-  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error setting Password Never Expires for user $UPNorID ($StatusCode | $StatusMessage))"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureADRiskyUsers { # Can only get 500 users at the time
@@ -16923,7 +16978,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   [parameter(Mandatory = $False, ParameterSetName="CertificateThumbprint")]
   [parameter(Mandatory = $False, ParameterSetName="Certificate")]
   [parameter(Mandatory = $False, ParameterSetName="Interactive")]
-  $ApplicationID = "14d82eec-204b-4c2f-b7e8-296a70dab67e", # Microsoft Graph Command Line Tools Public App ID
+  $ApplicationID = "14d82eec-204b-4c2f-b7e8-296a70dab67e", # "Microsoft Graph Command Line Tools" Public App ID
   # Optional resource parameter, available to all sets /.default is the modern recommended scope.
   [parameter(Mandatory = $False)]$Scope = "https://graph.microsoft.com/.default",
   # Optional switch to print the full token response (including refresh token if applicable) instead of just the access token.
@@ -16947,6 +17002,11 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   $tokenResponse = $null
   $CertObject = $null
   $LocalAppID = $ApplicationID
+
+  if (($Scope -eq 'https://api.loganalytics.io/.default') -and ($ApplicationID -eq '14d82eec-204b-4c2f-b7e8-296a70dab67e')) {
+   Write-Verbose "Log Analytics API scope detected with default Microsoft Graph App ID. Switching to Microsoft Azure PowerShell Public App ID for proper token acquisition."
+   $ApplicationID = "1950a258-227b-4e31-a9cf-717495945fc2" #"Microsoft Azure PowerShell" Public App ID
+  }
 
   if ($PSCmdlet.ParameterSetName -eq "ManagedIdentity") {
    # --- MANAGED IDENTITY AUTHENTICATION FLOW ---
@@ -18218,7 +18278,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
  try {
 
   Write-Verbose "Getting WorkspaceID"
-  $WorkspaceID = $global:SentinelWorkspaceID
+  if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
   if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
 
   if ( ! (Assert-IsGUID $User) ) {
@@ -18638,7 +18698,7 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
  try {
 
   Write-Verbose "Getting WorkspaceID"
-  $WorkspaceID = $global:SentinelWorkspaceID
+  if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
   if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
 
   # Get and check Azure Monitor Token
@@ -18749,7 +18809,7 @@ Function Get-SentinelAuditInfo {
  )
 
  # 1. Setup & Auth
- $WorkspaceID = $global:SentinelWorkspaceID
+ if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
  if (! $WorkspaceID) {Throw "Workspace ID Not Found"}
 
  if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
@@ -18878,7 +18938,7 @@ Function Get-SentinelGraphActivityInfo {
  )
 
  # 1. Setup & Auth
- $WorkspaceID = $global:SentinelWorkspaceID
+ if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
  if (! $WorkspaceID) { Throw "Workspace ID Not Found" }
 
  if ($PSBoundParameters.ContainsKey('AzureMonitorToken')) {
@@ -19043,7 +19103,7 @@ Function Get-AzureSignInLogs {
   $AppDisplayNameFilter,
   $IPAddressFilter,
   [ValidateSet("DisplayName","Mail","UserPrincipalName")][string]$UserType = "UserPrincipalName",
-  [int]$Top = 1000
+  [int]$Top = 999
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
@@ -19143,7 +19203,7 @@ Function Get-AzureSignInLogs {
   $FilterString = $filterParts -join " and "
   $EncodedFilter = [System.Uri]::EscapeDataString($FilterString)
 
-  $TopValue = if ($Top -gt 0) { $Top } else { 1000 }
+  $TopValue = if ($Top -gt 0) { $Top } else { 999 }
   $GraphRequest = "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=$EncodedFilter&`$top=$TopValue"
 
   Write-Verbose "Final Graph Request: $GraphRequest"
@@ -19198,7 +19258,6 @@ Function Get-AzureSignInLogs {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
 Function Get-AzureServicePrincipalSignInLogs {
  [CmdletBinding()]
  Param (
