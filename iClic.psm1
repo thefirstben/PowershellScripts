@@ -81,14 +81,18 @@ if ( ($host.Name -match 'consolehost') ) {
  }
 }
 
-if ($env:LOCALAPPDATA) {
- $iClic_TempPath = "$($env:USERPROFILE)\iClic\"
+if ($IsWindows) {
+ if ($env:LOCALAPPDATA) {
+  $iClic_TempPath = Join-Path $env:USERPROFILE 'iClic'
+ } else {
+  $iClic_TempPath = Join-Path $env:TEMP 'iClic'
+ }
 } else {
- $iClic_TempPath = "C:\Temp\"
+ $iClic_TempPath = Join-Path ([System.IO.Path]::GetTempPath()) 'iClic'
 }
 
 if (! (Test-Path $iClic_TempPath)) {
- New-item -ItemType Directory $iClic_TempPath\ -Force | Out-Null
+ New-item -ItemType Directory $iClic_TempPath -Force | Out-Null
  # Set-Location -Path "$iClic_TempPath"
 } else {
  # Set-Location -Path "$iClic_TempPath"
@@ -99,8 +103,8 @@ $defaultblue="Cyan"
 # Set Azure Prompt as False by default as this slows down display
 [Switch]$global:AzurePrompt=$False
 
-if ($IsLinux) {
- $username=users
+if ($IsLinux -or $IsMacOS) {
+ $username=[System.Environment]::UserName
 } else {
  $username=([System.Security.Principal.WindowsIdentity]::GetCurrent().name).ToUpper()
 }
@@ -196,10 +200,16 @@ Function Title { # Used to manage the title of the Powershell Window
  if (Assert-IsAdmin) {$TitleAdmin="[*]"} else {$TitleAdmin=""}
  if (! $([Environment]::Is64BitProcess)) {$TitleArchitecture="<32>"} else {$TitleArchitecture=""}
  # $TitleUsername=$env:USERNAME
- $WHOAMI = whoami /UPN 2>$null
- $TitleUsername = if ($WHOAMI) {($WHOAMI -split("@"))[0]} else {((whoami).split("\"))[1]}
- $TitleUserDomain = $env:USERDOMAIN
- $TitleHostname=$env:COMPUTERNAME
+ if ($IsWindows) {
+  $WHOAMI = whoami /UPN 2>$null
+  $TitleUsername = if ($WHOAMI) {($WHOAMI -split("@"))[0]} else { [System.Environment]::UserName }
+  $TitleUserDomain = $env:USERDOMAIN
+  $TitleHostname = $env:COMPUTERNAME
+ } else {
+  $TitleUsername = [System.Environment]::UserName
+  $TitleUserDomain = if ($env:USERDOMAIN) { $env:USERDOMAIN } elseif ($env:HOSTNAME) { $env:HOSTNAME } else { 'local' }
+  $TitleHostname = [System.Net.Dns]::GetHostName()
+ }
  $TitleUserInfo="[$TitleUsername`@$TitleUserDomain`|$TitleHostname]"
  #Check if in RemoteSession
  if (! $PSSenderInfo) {
@@ -219,18 +229,19 @@ Function prompt { # Used to have a "pretty" Powershell prompt showing important 
  # $frontcolor=[console]::foregroundcolor
 
  #When using admin session :
- if ($IsLinux) {
+ if ($IsLinux -or $IsMacOS) {
   $promptcolor="green"
   $ColorGray="Gray"
   $P_UserName=$username
-  $P_ComputerName=hostname
+  $P_UserDomain = if ($env:USERDOMAIN) { $env:USERDOMAIN } else { 'local' }
+  $P_ComputerName=[System.Net.Dns]::GetHostName().ToLower()
  } else {
    if( Assert-IsAdmin ) { $promptcolor = "red" } else {$promptcolor = "green"}
    if ($PSSenderInfo) {$promptcolor = "Magenta"}
    $ColorGray = "DarkGray"
    # $P_UserName = $env:USERNAME
    $WHOAMI = whoami /UPN 2>$null
-   $P_UserName = if ($WHOAMI) {($WHOAMI -split("@"))[0]} else {((whoami).split("\"))[1]}
+   $P_UserName = if ($WHOAMI) {($WHOAMI -split("@"))[0]} else {[System.Environment]::UserName}
    $P_UserDomain = $env:USERDOMAIN
    $P_ComputerName = $($env:COMPUTERNAME).tolower()
  }
@@ -1143,9 +1154,17 @@ Function Assert-IsNumeric {
  return $Value -match "^[\d\.]+$"
 }
 Function Assert-IsAdmin {
- if( ( New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  return $true
- } else {
+ if ($IsWindows) {
+  if( ( New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+   return $true
+  } else {
+   return $false
+  }
+ }
+
+ try {
+  return ((id -u) -eq 0)
+ } catch {
   return $false
  }
 }
