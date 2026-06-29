@@ -10541,42 +10541,104 @@ Function Remove-AzurePolicyExemption {
  }
 }
 Function Get-AzureWebAppSSL { # Get All Azure App Service Certificate in the tenant
- Get-AzureSubscriptionsAZCLI | ForEach-Object {
-  $subscriptionId = $_.id
-  $subscriptionName = $_.name
-  Progress -Message "Checking App Service Certificates of subscription : " -Value $subscriptionName -PrintTime
-  az account set --subscription $subscriptionId
-  $RG_WithCertificates = ($(az resource list --output json).tolower() | convertfrom-json | Where-Object type -like "*certificate*" | Select-Object resourcegroup -Unique).resourcegroup
-  if ($RG_WithCertificates.count -gt 0) { # Skip if no Certificate found in Subscription
-   $RG_WithCertificates | ForEach-Object {
-    $CurrentSubscriptionResources = az webapp config ssl list -g $_ | convertfrom-json
-    $CurrentSubscriptionResources | ForEach-Object {
-     $_ | Add-Member -NotePropertyName SubscriptionName -NotePropertyValue $subscriptionName
-     $_ | Add-Member -NotePropertyName subscriptionId -NotePropertyValue $subscriptionId
-    }
-    $CurrentSubscriptionResources | Export-Csv "$iClic_TempPath\WebAppCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ [CmdletBinding()]
+ Param (
+  $Token,
+  $APIVersion = "2022-03-01"
+ )
+
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $SubscriptionList = Get-AzureSubscriptions -Token $authDetails.Token
+  $ExportPath = "$iClic_TempPath\WebAppCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+
+  $SubscriptionList | ForEach-Object {
+   $subscriptionId = $_.subscriptionId
+   $subscriptionName = $_.name
+   Progress -Message "Checking App Service Certificates of subscription : " -Value $subscriptionName -PrintTime
+
+   $CurrentSubscriptionResources = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Web/certificates?api-version=$APIVersion" -ErrorAction Stop
+
+   if ($CurrentSubscriptionResources) {
+    $CurrentSubscriptionResources | Select-Object *,@{Name="SubscriptionName";Expression={$subscriptionName}},@{Name="subscriptionId";Expression={$subscriptionId}} |
+     Export-Csv $ExportPath -Append
    }
+  }
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
   }
  }
 }
 Function Get-AzureCertificates { # Check All Azure Web Certificates -> Check keyVaultId error
- Get-AzureSubscriptionsAZCLI | ForEach-Object {
-  $subscriptionId = $_.id
-  $subscriptionName = $_.name
-  Progress -Message "Checking Certificates of subscription : " -Value $subscriptionName -PrintTime
-  $CertificateList = (az rest --method GET --uri "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Web/certificates?api-version=2022-03-01" | convertfrom-json).value
-  $CertificateList | Select-Object -ExpandProperty properties -ExcludeProperty tags,properties,keyVaultId *,@{Name="SubscriptionID";Expression={$subscriptionId}},@{Name="SubscriptionName";Expression={$subscriptionName}} `
-   | Export-Csv "$iClic_TempPath\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv" -Append
+ [CmdletBinding()]
+ Param (
+  $Token,
+  $APIVersion = "2022-03-01"
+ )
+
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $SubscriptionList = Get-AzureSubscriptions -Token $authDetails.Token
+  $ExportPath = "$iClic_TempPath\AzureCertificates_$([DateTime]::Now.ToString("yyyyMMdd")).csv"
+
+  $SubscriptionList | ForEach-Object {
+   $subscriptionId = $_.subscriptionId
+   $subscriptionName = $_.name
+   Progress -Message "Checking Certificates of subscription : " -Value $subscriptionName -PrintTime
+
+   $CertificateList = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Web/certificates?api-version=$APIVersion" -ErrorAction Stop
+
+   if ($CertificateList) {
+    $CertificateList | Select-Object -ExpandProperty properties -ExcludeProperty tags,properties,keyVaultId *,@{Name="SubscriptionID";Expression={$subscriptionId}},@{Name="SubscriptionName";Expression={$subscriptionName}} `
+     | Export-Csv $ExportPath -Append
+   }
+  }
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
  }
 }
-Function Get-AzureReservation { # Check all Azure Reservation Orders # Uses AZ Cli
+Function Get-AzureReservation { # Check all Azure Reservation Orders
+ [CmdletBinding()]
  Param (
-  [Switch]$ShowPermissions
+  [Switch]$ShowPermissions,
+  $Token,
+  $APIVersion = "2022-11-01",
+  $RBACAPIVersion = "2022-04-01"
  )
- $Reservationlist = az reservations reservation-order list | convertfrom-json
- if (! $ShowPermissions) { Return $Reservationlist} else {
-  $Reservationlist | ForEach-Object {
-   az role assignment list --scope $_.id | convertfrom-json
+
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  $ReservationList = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.Capacity/reservationOrders?api-version=$APIVersion" -ErrorAction Stop
+
+  if (! $ShowPermissions) {
+   Return $ReservationList
+  }
+
+  $ReservationList | ForEach-Object {
+   Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com$($_.id)/providers/Microsoft.Authorization/roleAssignments?api-version=$RBACAPIVersion" -ErrorAction Stop
+  }
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
   }
  }
 }
@@ -19225,6 +19287,26 @@ Function Get-AzureSignInLogs {
 
   $TopValue = if ($Top -gt 0) { $Top } else { 999 }
   $GraphRequest = "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=$EncodedFilter&`$top=$TopValue"
+  if ($SimplifiedQuery) {
+   $SelectProperties = @(
+    'createdDateTime',
+    'userDisplayName',
+    'userPrincipalName',
+    'userId',
+    'appDisplayName',
+    'appId',
+    'resourceDisplayName',
+    'resourceId',
+    'ipAddress',
+    'clientAppUsed',
+    'isInteractive',
+    'authenticationRequirement',
+    'conditionalAccessStatus',
+    'appliedConditionalAccessPolicies',
+    'status'
+   ) -join ','
+   $GraphRequest += "&`$select=$SelectProperties"
+  }
 
   Write-Verbose "Final Graph Request: $GraphRequest"
   $ResultRaw = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphRequest -ErrorAction Stop
@@ -19262,7 +19344,7 @@ Function Get-AzureSignInLogs {
   if ($SimplifiedQuery) {
    $Result = $ResultRaw | Select-Object `
    Local_TimeGenerated,userDisplayName,userPrincipalName,userId,appDisplayName,appId,
-   resourceDisplayName,resourceId,ipAddress,clientAppUsed,isInteractive,
+   resourceDisplayName,resourceId,ipAddress,clientAppUsed,isInteractive,authenticationRequirement,
    @{name='ResultType';expression={ $_.status.errorCode }},
    @{name='ResultDescription';expression={ $_.status.failureReason }},
   Conditional_Access_Success,Conditional_Access_Failure,
