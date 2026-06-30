@@ -11631,7 +11631,7 @@ Function New-AzureServicePrincipal { # Created a new Service Principal that can 
 
 }
 
-# App Registration [Only]
+# App Registration Only
 
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
@@ -12798,40 +12798,81 @@ Function Set-AzureAppRegistrationAcceptMappedClaims { # Set acceptMappedClaims a
 }
 Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationID")]$AppRegistrationID,
-  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationName")]$AppRegistrationName,
-  [parameter(Mandatory=$true,ParameterSetName="AppRegistrationObjectID")]$AppRegistrationObjectID,
+  [parameter(Mandatory=$true,ParameterSetName="Application")][Alias("AppRegistration","AppRegistrationID","AppRegistrationName","AppRegistrationObjectID")][string]$Application,
   [switch]$Count,
   $Token
  )
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   Write-Verbose "Getting Application Details using Token"
-  $header = $authDetails.Header
-  if ($AppRegistrationID) {$AppRegistrationInfo = Get-AzureAppRegistration -AppID $AppRegistrationID -ValuesToShow "id,appId,displayName" -Token $authDetails.Token }
-  elseif ($AppRegistrationName) {$AppRegistrationInfo = Get-AzureAppRegistration -DisplayName $AppRegistrationName -ValuesToShow "id,appId,displayName" -Token $authDetails.Token }
-  else {$AppRegistrationInfo = Get-AzureAppRegistration -ID $AppRegistrationObjectID -ValuesToShow "id,appId,displayName" -Token $authDetails.Token}
+  $AppRegistrationInfo = Get-AzureAppRegistration -Application $Application -ValuesToShow "id,appId,displayName" -Token $authDetails.Token
 
   $SecretRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)"
   $FederatedCredRequest = "https://graph.microsoft.com/beta/applications/$($AppRegistrationInfo.ID)/federatedIdentityCredentials"
 
-  $AppInfoFull = Invoke-RestMethod -Method GET -headers $header -Uri $SecretRequest
-  $FederatedCredentialFull = Invoke-RestMethod -Method GET -headers $header -Uri $FederatedCredRequest
+  $AppinfoFull = Get-AzureGraph -Token $authDetails.Token -GraphRequest $SecretRequest -ErrorAction Stop
+  $FederatedCredentialFull = Get-AzureGraph -Token $authDetails.Token -GraphRequest $FederatedCredRequest -ErrorAction Stop
 
   $FederatedCredential = $FederatedCredentialFull.Value
   $AppInfo = $AppInfoFull | Select-Object AppId,ID,displayName,passwordCredentials,keyCredentials
   # Merge Data
   $AppInfo | Add-Member -Name FederatedCredential -Value $FederatedCredential -MemberType NoteProperty
 
-  # Add Unique Column with the secrets
-  $FullSecrets = @()
-  $FullSecrets += [pscustomobject]@{Type="Certificates";Value=$AppInfo.keyCredentials}
-  $FullSecrets += [pscustomobject]@{Type="Client secrets";Value=$AppInfo.passwordCredentials}
-  $FullSecrets += [pscustomobject]@{Type="Federated credentials";Value=$AppInfo.FederatedCredential}
-  $AppInfo | Add-Member -MemberType NoteProperty -Name "Secrets" -Value $FullSecrets
+  # Add a normalized secret list and a compact summary.
+  $CertificateSecrets = @($AppInfo.keyCredentials | Where-Object { $_ })
+  $ClientSecrets = @($AppInfo.passwordCredentials | Where-Object { $_ })
+  $FederatedSecrets = @($AppInfo.FederatedCredential | Where-Object { $_ })
+
+  $Secrets = @()
+  $Secrets += $CertificateSecrets | ForEach-Object {
+   [pscustomobject]@{
+    SecretType = "Certificate"
+    KeyId = $_.KeyId
+    DisplayName = $_.DisplayName
+    StartDateTime = $_.StartDateTime
+    EndDateTime = $_.EndDateTime
+    Usage = $_.Usage
+    CustomKeyIdentifier = $_.CustomKeyIdentifier
+    Raw = $_
+   }
+  }
+  $Secrets += $ClientSecrets | ForEach-Object {
+   [pscustomobject]@{
+    SecretType = "Client secret"
+    KeyId = $_.KeyId
+    DisplayName = $_.DisplayName
+    StartDateTime = $_.StartDateTime
+    EndDateTime = $_.EndDateTime
+    Hint = $_.Hint
+    Raw = $_
+   }
+  }
+  $Secrets += $FederatedSecrets | ForEach-Object {
+   [pscustomobject]@{
+    SecretType = "Federated credential"
+    KeyId = $_.KeyId
+    DisplayName = $_.DisplayName
+    StartDateTime = $_.StartDateTime
+    EndDateTime = $_.EndDateTime
+    Issuer = $_.Issuer
+    Subject = $_.Subject
+    Audiences = ($_.Audiences -join ",")
+    Raw = $_
+   }
+  }
+
+  $SecretSummary = [pscustomobject]@{
+  Certificates = $CertificateSecrets.Count
+  ClientSecrets = $ClientSecrets.Count
+  FederatedCredentials = $FederatedSecrets.Count
+   Total = $Secrets.Count
+  }
+
+  $AppInfo | Add-Member -MemberType NoteProperty -Name "Secrets" -Value $Secrets
+  $AppInfo | Add-Member -MemberType NoteProperty -Name "SecretSummary" -Value $SecretSummary
 
   if ($Count) {
-   $KeyCount = $AppInfo.keyCredentials.Count + $AppInfo.passwordCredentials.Count + $AppInfo.FederatedCredential.Count
+  $KeyCount = $SecretSummary.Total
    return $KeyCount
   } else {
    Return $AppInfo
@@ -12844,7 +12885,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
  [CmdletBinding()]
  Param (
   [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # Accepts App Registration Name or AppID (GUID)
-  $SecretDescription= "Automatically Generated by $env:username",
+  $SecretDescription = "Automatically Generated by $env:username",
   $AppMonths = "6",
   [switch]$ShowObjectID,
   [switch]$Force,
@@ -12855,7 +12896,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
   $header = $authDetails.Header
   $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
   if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
-  if ($(Get-AzureAppRegistrationSecrets -AppRegistrationID $AppInfo.AppID -Count -Token $authDetails.Token) -gt 1) {
+  if ($(Get-AzureAppRegistrationSecrets -Application $AppInfo.AppID -Count -Token $authDetails.Token) -gt 1) {
    write-host -ForegroundColor "Red" -Object "There is already more than 1 Key for this App $($AppInfo.displayName) ($($AppInfo.AppID)), remove existing keys to have maximum 1 before renewing"
    if (! $Force) { return }
   }
@@ -12880,11 +12921,15 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
   $Result | Add-Member -Name ApplicationDisplayName -Value $AppName -MemberType NoteProperty
   if ($Global:TenantID) {
    $Result | Add-Member -Name TenantID -Value $Global:TenantID -MemberType NoteProperty
+   $Result | Add-Member -Name Description -Value $SecretDescription -MemberType NoteProperty
   }
 
   # Remove uneeded data
   $Result = $Result | Select-Object -ExcludeProperty customKeyIdentifier,'@odata.context',hint,keyId -Property TenantID,ApplicationDisplayName,
-   ApplicationID,ApplicationObjectID,@{Name="Secret";Expression={$_.secretText}}, @{Name="Secret_Start_Date";Expression={$_.startDateTime}}, @{Name="Secret_End_Date";Expression={$_.endDateTime}}
+   ApplicationID,ApplicationObjectID,
+    @{Name="Secret";Expression={$_.secretText}}, Description,
+    @{Name="Secret_Start_Date";Expression={$_.startDateTime}}, 
+    @{Name="Secret_End_Date";Expression={$_.endDateTime}}
   if ( ! $ShowObjectID) { $Result = $Result | Select-Object -ExcludeProperty ApplicationObjectID }
 
   # Print Result
@@ -17781,11 +17826,19 @@ Function Get-AzureConditionalAccessLocations { # Get all conditional Access Poli
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $header = $authDetails.Header
   Write-Verbose "Getting all Conditional Access Policies Locations"
-  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations").value | Select-Object `
-  id,displayName,@{name="Location_Type";expression={($'@odata.type' -split('.'))[-1]}},isTrusted,@{name="Country";expression={$_.countriesAndRegions -join(";")}},
-  countryLookupMethod,@{name="IP_Range";expression={$_.iPRanges.cidrAddress -join(";")}}
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations" -ErrorAction Stop
+  foreach ($Location in $Result) {
+   [pscustomobject]@{
+    id = $Location.id
+    displayName = $Location.displayName
+    Location_Type = ($Location.'@odata.type' -split '\.')[-1]
+    isTrusted = $Location.isTrusted
+    Country = $Location.countriesAndRegions -join(";")
+    countryLookupMethod = $Location.countryLookupMethod
+    IP_Range = $Location.iPRanges.cidrAddress -join(";")
+   }
+  }
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
@@ -17813,6 +17866,10 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
  $RoleNames = Get-AzureRoleDefinitions -Token $authDetails.Token
  $RoleNamesHash = @{} ; $RoleNames | ForEach-Object { $RoleNamesHash[$_.ID] = $_ }
 
+ Write-Verbose "Getting all Terms Of Use Agreements"
+ $TermsOfUse = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identityGovernance/termsOfUse/agreements?`$select=id,displayName"
+ $TermsOfUseHash = @{} ; $TermsOfUse | ForEach-Object { $TermsOfUseHash[$_.ID] = $_ }
+
  if ($NameFilter) {
   Write-Verbose "Filter on only named values"
   $Result = $Result | Where-Object displayName -like $NameFilter
@@ -17839,114 +17896,175 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
   $AppListHash = $AppList | Group-Object -Property AppID -AsHashTable
  }
 
+ [array]$ExternalTenantIdToConvertList = $Result | ForEach-Object {
+  $_.conditions.users.includeGuestsOrExternalUsers.externalTenants.members
+  $_.conditions.users.excludeGuestsOrExternalUsers.externalTenants.members
+ } | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) } | Sort-Object -Unique
+ $ExternalTenantInfoHash = @{}
+ if ($ExternalTenantIdToConvertList) {
+  Write-Verbose "Get details of all individual IDs [External Tenants]"
+  $ExternalTenantInfoHash = Get-AzureTenantInformationByTenantId -Token $authDetails.Token -TenantIdList $ExternalTenantIdToConvertList -AsHashTable
+ }
+
+ $FormatGuestOrExternalUsers = {
+  param($GuestOrExternalUsers)
+
+  if (-not $GuestOrExternalUsers) { return $null }
+
+  $GuestTypes = $GuestOrExternalUsers.guestOrExternalUserTypes
+  $GuestTypesFormatted = if ($GuestTypes) { $GuestTypes -replace ",",";" } else { "" }
+
+  if (-not $GuestOrExternalUsers.externalTenants) {
+   return $GuestTypesFormatted
+  }
+
+  $MembershipKind = $GuestOrExternalUsers.externalTenants.membershipKind
+  $ExternalTenantDetails = $null
+
+  if (($MembershipKind -eq "enumerated") -and $GuestOrExternalUsers.externalTenants.members) {
+   $ExternalTenantDetails = ($GuestOrExternalUsers.externalTenants.members | ForEach-Object {
+    if ($ExternalTenantInfoHash.ContainsKey($_) -and $ExternalTenantInfoHash[$_] -and $ExternalTenantInfoHash[$_].displayName) {
+     $ExternalTenantInfoHash[$_].displayName
+    } else {
+     $_
+    }
+   }) -join ";"
+  } elseif ($MembershipKind -eq "all") {
+   $ExternalTenantDetails = "all"
+  } elseif ($MembershipKind) {
+   $ExternalTenantDetails = $MembershipKind
+  }
+
+  if ($ExternalTenantDetails) {
+   if ($GuestTypesFormatted) {
+    "$GuestTypesFormatted [ExternalTenants: $ExternalTenantDetails]"
+   } else {
+    "ExternalTenants: $ExternalTenantDetails"
+   }
+  } else {
+   $GuestTypesFormatted
+  }
+ }
+
  Write-Verbose "Convert result"
- $ResultConverted = $Result | Select-Object `
- id,displayName,createdDateTime,modifiedDateTime,state,
- @{name="Access_Control";expression={
+ $ResultConverted = foreach ($Policy in $Result) {
   $Controls = @()
-  if ($_.grantControls.builtInControls) {
-   $Controls += $_.grantControls.builtInControls
+  if ($Policy.grantControls.builtInControls) {
+   $Controls += $Policy.grantControls.builtInControls
   }
-  if ($_.grantcontrols.authenticationStrength) {
-   $Controls += "$($_.grantcontrols.authenticationStrength.displayname) [$($_.grantcontrols.authenticationStrength.allowedCombinations -replace ",","+" -join ";")]"
+
+  if ($Policy.grantControls.termsOfUse) {
+   $Controls += "termsOfUse: " + (($Policy.grantControls.termsOfUse | ForEach-Object {
+    if ($TermsOfUseHash.ContainsKey($_)) { $TermsOfUseHash[$_].displayName } else { $_ }
+   }) -join ";")
   }
-  if ($Controls.Count -gt 1) {
-   $Controls -join(" "+$_.grantControls.operator+" ")
+
+  if ($Policy.grantcontrols.authenticationStrength) {
+   $Controls += "$($Policy.grantcontrols.authenticationStrength.displayname) [$($Policy.grantcontrols.authenticationStrength.allowedCombinations -replace ",","+" -join ";")]"
+  }
+
+  $AccessControl = if ($Controls.Count -gt 1) {
+   $Controls -join(" "+$Policy.grantControls.operator+" ")
   } else {
    $Controls
   }
- }},
- @{name="Sign-in frequency";expression={
-  if ($_.sessionControls.signInFrequency.isEnabled) {
-   $_.sessionControls.signInFrequency.frequencyInterval
+
+  $SignInFrequency = if ($Policy.sessionControls.signInFrequency.isEnabled) {
+   $Policy.sessionControls.signInFrequency.frequencyInterval
   } else {
    "False"
   }
- }},
- @{name="IncludedUsers";expression={
-  if (($_.conditions.users.includeUsers) -and ($_.conditions.users.includeUsers -ne "All")) {
-   ($_.conditions.users.includeUsers | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
+
+  $IncludedUsers = if (($Policy.conditions.users.includeUsers) -and ($Policy.conditions.users.includeUsers -ne "All")) {
+   ($Policy.conditions.users.includeUsers | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
   } else {
-   $_.conditions.users.includeUsers
+   $Policy.conditions.users.includeUsers
   }
- }},
- @{name="includeGroups";expression={
-  if ($_.conditions.users.includeGroups) {
-   ($_.conditions.users.includeGroups | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
+
+  $IncludeGroups = if ($Policy.conditions.users.includeGroups) {
+   ($Policy.conditions.users.includeGroups | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
   } else {
-   $_.conditions.users.includeGroups
+   $Policy.conditions.users.includeGroups
   }
- }},
- @{name="includeRoles";expression={
-  ($_.conditions.users.includeRoles | ForEach-Object { $RoleNamesHash[$_].displayName }) -join(";")
- }},
- @{name="includeGuestsOrExternalUsers";expression={($_.conditions.users.includeGuestsOrExternalUsers.guestOrExternalUserTypes -replace ",",";") -join(";")}},
- @{name="excludeUsers";expression={
-  ($_.conditions.users.excludeUsers | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
- }},
- @{name="excludeGroups";expression={
-  ($_.conditions.users.excludeGroups | ForEach-Object { $UsersListHash[$_].displayName } ) -Join(";")
- }},
- @{name="excludeRoles";expression={
-  ($_.conditions.users.excludeRoles | ForEach-Object {
-   $RoleNamesHash[$_].displayName
+
+  $IncludeRoles = ($Policy.conditions.users.includeRoles | ForEach-Object { $RoleNamesHash[$_].displayName }) -join(";")
+  $IncludeGuestsOrExternalUsers = & $FormatGuestOrExternalUsers $Policy.conditions.users.includeGuestsOrExternalUsers
+  $ExcludeUsers = ($Policy.conditions.users.excludeUsers | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
+  $ExcludeGroups = ($Policy.conditions.users.excludeGroups | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
+  $ExcludeRoles = ($Policy.conditions.users.excludeRoles | ForEach-Object { $RoleNamesHash[$_].displayName }) -join(";")
+  $ExcludeGuestsOrExternalUsers = & $FormatGuestOrExternalUsers $Policy.conditions.users.excludeGuestsOrExternalUsers
+
+  $IncludeApplications = ($Policy.conditions.applications.includeApplications | ForEach-Object {
+   if (Assert-IsGUID -Value $_) { $AppListHash[$_].DisplayName } else { $_ }
   }) -join(";")
- }},
- @{name="excludeGuestsOrExternalUsers";expression={
-  $_.conditions.users.excludeGuestsOrExternalUsers.guestOrExternalUserTypes -replace ",",";" -join(";")
- }},
- @{name="includeApplications";expression={
-  ($_.conditions.applications.includeApplications | ForEach-Object { if (Assert-IsGUID -Value $_) {$AppListHash[$_].DisplayName} else {$_} }) -Join(";")
- }},
- @{name="excludeApplications";expression={
-  ($_.conditions.applications.excludeApplications | ForEach-Object { if (Assert-IsGUID -Value $_) {$AppListHash[$_].DisplayName} else {$_} }) -Join(";")
- }},
- @{name="applicationFilter_Include";expression={
-  ($_.conditions.applications.applicationFilter | Where-Object mode -eq include).Rule
- }},
- @{name="applicationFilter_Exclude";expression={
-  ($_.conditions.applications.applicationFilter | Where-Object mode -eq exclude).Rule
- }},
- @{name="includePlatforms";expression={
-  $_.conditions.platforms.includePlatforms -Join(";")
- }},
- @{name="excludePlatforms";expression={
-  $_.conditions.platforms.excludePlatforms -Join(";")
- }},
- @{name="signInRiskLevels";expression={
-  $_.conditions.signInRiskLevels -Join(";")
- }},
- @{name="userRiskLevels";expression={
-  $_.conditions.userRiskLevels -Join(";")
- }},
- @{name="clientAppTypes";expression={
-  $_.conditions.clientAppTypes -Join(";")
- }},
- @{name="authenticationProtocolFilter";expression={
-  $_.conditions.authenticationFlows.transferMethods -Join(";")
- }},
- @{name="deviceFilterIncluded";expression={
-  if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "include"}).Rule }
- }},
- @{name="deviceFilterExluded";expression={
-  if ($_.conditions.devices.deviceFilter) { ($_.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "exclude"}).Rule }
- }},
- @{name="includeLocations";expression={
-  if (($_.conditions.locations.includeLocations ) -and ($_.conditions.locations.includeLocations -ne "All")) {
-   ($_.conditions.locations.includeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName } ) -Join(";")
-  } else {
-   $_.conditions.locations.includeLocations
+  $ExcludeApplications = ($Policy.conditions.applications.excludeApplications | ForEach-Object {
+   if (Assert-IsGUID -Value $_) { $AppListHash[$_].DisplayName } else { $_ }
+  }) -join(";")
+
+  $ApplicationFilterInclude = ($Policy.conditions.applications.applicationFilter | Where-Object mode -eq include).Rule
+  $ApplicationFilterExclude = ($Policy.conditions.applications.applicationFilter | Where-Object mode -eq exclude).Rule
+  $IncludePlatforms = $Policy.conditions.platforms.includePlatforms -join(";")
+  $ExcludePlatforms = $Policy.conditions.platforms.excludePlatforms -join(";")
+  $SignInRiskLevels = $Policy.conditions.signInRiskLevels -join(";")
+  $UserRiskLevels = $Policy.conditions.userRiskLevels -join(";")
+  $ClientAppTypes = $Policy.conditions.clientAppTypes -join(";")
+
+  $TermsOfUse = if ($Policy.grantControls.termsOfUse) {
+   ($Policy.grantControls.termsOfUse | ForEach-Object {
+    if ($TermsOfUseHash.ContainsKey($_)) { $TermsOfUseHash[$_].displayName } else { $_ }
+   }) -join(";")
   }
- }},
- @{name="excludeLocations";expression={
-  if (($_.conditions.locations.excludeLocations ) -and ($_.conditions.locations.excludeLocations  -ne "All")) {
-   ($_.conditions.locations.excludeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName } ) -Join(";")
+
+  $AuthenticationProtocolFilter = $Policy.conditions.authenticationFlows.transferMethods -join(";")
+  $DeviceFilterIncluded = if ($Policy.conditions.devices.deviceFilter) { ($Policy.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "include"}).Rule }
+  $DeviceFilterExluded = if ($Policy.conditions.devices.deviceFilter) { ($Policy.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "exclude"}).Rule }
+
+  $IncludeLocations = if (($Policy.conditions.locations.includeLocations) -and ($Policy.conditions.locations.includeLocations -ne "All")) {
+   ($Policy.conditions.locations.includeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName }) -join(";")
   } else {
-   $_.conditions.locations.excludeLocations
-  }}},
-  @{name="Full_JSON";expression={
-   $_ | ConvertTo-Json -Depth 6
-  }}
+   $Policy.conditions.locations.includeLocations
+  }
+
+  $ExcludeLocations = if (($Policy.conditions.locations.excludeLocations) -and ($Policy.conditions.locations.excludeLocations -ne "All")) {
+   ($Policy.conditions.locations.excludeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName }) -join(";")
+  } else {
+   $Policy.conditions.locations.excludeLocations
+  }
+
+  [pscustomobject]@{
+   id = $Policy.id
+   displayName = $Policy.displayName
+   createdDateTime = $Policy.createdDateTime
+   modifiedDateTime = $Policy.modifiedDateTime
+   state = $Policy.state
+   Access_Control = $AccessControl
+   "Sign-in frequency" = $SignInFrequency
+   IncludedUsers = $IncludedUsers
+   includeGroups = $IncludeGroups
+   includeRoles = $IncludeRoles
+   includeGuestsOrExternalUsers = $IncludeGuestsOrExternalUsers
+   excludeUsers = $ExcludeUsers
+   excludeGroups = $ExcludeGroups
+   excludeRoles = $ExcludeRoles
+   excludeGuestsOrExternalUsers = $ExcludeGuestsOrExternalUsers
+   includeApplications = $IncludeApplications
+   excludeApplications = $ExcludeApplications
+   applicationFilter_Include = $ApplicationFilterInclude
+   applicationFilter_Exclude = $ApplicationFilterExclude
+   includePlatforms = $IncludePlatforms
+   excludePlatforms = $ExcludePlatforms
+   signInRiskLevels = $SignInRiskLevels
+   userRiskLevels = $UserRiskLevels
+   clientAppTypes = $ClientAppTypes
+   termsOfUse = $TermsOfUse
+   authenticationProtocolFilter = $AuthenticationProtocolFilter
+   deviceFilterIncluded = $DeviceFilterIncluded
+   deviceFilterExluded = $DeviceFilterExluded
+   includeLocations = $IncludeLocations
+   excludeLocations = $ExcludeLocations
+   Full_JSON = $Policy | ConvertTo-Json -Depth 6
+  }
+ }
   if ($ContentFilter) {
    $ResultConverted = $ResultConverted | Where-Object { $_.Full_JSON.Contains("$ContentFilter")}
   }
@@ -18600,8 +18718,8 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
     Write-Verbose "Getting App Token"
     $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
    }
-   $SecretsInfo = Get-AzureAppRegistrationSecrets -AppRegistrationID $AppID -Token $authDetails.Token
-   $SecretsInfoHash = $SecretsInfo.secrets.value | Group-Object -Property keyId -AsHashTable
+  $SecretsInfo = Get-AzureAppRegistrationSecrets -Application $AppID -Token $authDetails.Token
+   $SecretsInfoHash = $SecretsInfo.Secrets | Where-Object KeyId | Group-Object -Property KeyId -AsHashTable
   }
 
   # Get and check Azure Monitor Token
