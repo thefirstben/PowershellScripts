@@ -11631,8 +11631,26 @@ Function New-AzureServicePrincipal { # Created a new Service Principal that can 
 
 }
 
-# App Registration Only
 
+
+Function Get-AzureAppRegistrationFromAppID { # Get the App Registration information from AppID | Uses Token
+ Param (
+  [Parameter(Mandatory)]$AppID,
+  $Value = "displayName", # or UserPrincipalName
+  [Parameter(Mandatory)]$Token
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
+ $headers = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'").Value.$Value
+ if ($Result) {
+  $Result
+ } else {
+  "$AppID ($Value not found)"
+ }
+}
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
  Param (
@@ -11724,24 +11742,6 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   } else {
    Write-Error $_
   }
- }
-}
-Function Get-AzureAppRegistrationFromAppID { # Get the App Registration information from AppID | Uses Token
- Param (
-  [Parameter(Mandatory)]$AppID,
-  $Value = "displayName", # or UserPrincipalName
-  [Parameter(Mandatory)]$Token
- )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'").Value.$Value
- if ($Result) {
-  $Result
- } else {
-  "$AppID ($Value not found)"
  }
 }
 Function Get-AzureAppRegistrations { # Get all App Registration of a Tenant # SPA = SinglePage Authentication ; WEB = Web ; Public Client =  Client
@@ -12148,7 +12148,13 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
 
   if ($Consent) {
    Write-Verbose "Granting Consent"
+    $ConsentDelaySeconds = 2
+    $ConsentGrantIndex = 0
     foreach ($RightToConsent in $RightsToAdd) {
+     $ConsentGrantIndex++
+     if ($ConsentGrantIndex -gt 1) {
+      Start-Sleep -Seconds $ConsentDelaySeconds
+     }
      Grant-AzureAppRegistrationConsent -AppRegistration $Application -API $API -Permission $RightToConsent.RuleID -PermissionType $RightToConsent.PermissionType -Token $authDetails.Token
     }
   }
@@ -12363,35 +12369,21 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   $Header = $authDetails.Header
   $ContentType = "application/json"
+  $ConsistencyDelaySeconds = 3
+
+  function Get-GraphErrorText {
+   Param([Parameter(Mandatory=$true)]$ErrorRecord)
+   return (("$($ErrorRecord.Exception.Message)`n$($ErrorRecord.ErrorDetails.Message)").Trim())
+  }
 
   # --- 1. Resolve IDs (We need the Service Principal IDs for BOTH sides) ---
 
   # A. Client Service Principal (object that "Receives" the permission)
-  if (Assert-IsGUID $AppRegistration) {
-   Write-Verbose "Using App Registration AppID Checking if proper AppSP ID"
-   $AppSPID = (Get-AzureServicePrincipal -ID $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
-   if (! $AppSPID) {
-    Write-Verbose "Not proper AppSP ID found will search for AppID"
-    $AppSPID = (Get-AzureServicePrincipal -AppID $AppRegistration -Token $authDetails.Token).ID
-   }
-  } else {
-   Write-Verbose "Using App Registration Name, will search for AppID"
-   $AppSPID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue
-  }
+  $AppSPID = (Get-AzureServicePrincipal -Application $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
   if (!$AppSPID) { Throw "Service Principal for '$AppRegistration' not found. (Check Enterprise Applications)" } else { Write-Verbose "Using AppID : $AppSPID" }
 
   # B. Resource Service Principal (The API, e.g., Microsoft Graph)
-  if (Assert-IsGUID $API) {
-   Write-Verbose "Using API ID - Will Search for Service Principal via ID : $API"
-   $ResSP = get-azureservicePrincipal -ID $API -Token $authDetails.Token -ErrorAction SilentlyContinue
-   if (! $ResSP) {
-    Write-Verbose "ID not found - Will Search for Service Principal via AppID : $API"
-    $ResSP = get-azureservicePrincipal -AppID $API -Token $authDetails.Token -ErrorAction SilentlyContinue
-   }
-  } else {
-   Write-Verbose "Using API Name - Will Search for Service Principal via Name : $API"
-   $ResSP = get-azureservicePrincipal -DisplayName $API -Token $authDetails.Token
-  }
+  $ResSP = get-azureservicePrincipal -Application $API -Token $authDetails.Token
   if (!$ResSP) { Throw "Service Principal for API '$API' not found." } else { Write-Verbose "Using API ID : $($ResSP.id)" }
 
   Write-Verbose "Resolving permission details"
@@ -12437,47 +12429,108 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
      appRoleId   = $RoleID       # The Permission (Sites.Selected)
     } | ConvertTo-Json
 
-    Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
-    Write-Verbose "Success: Permission Granted."
+      try {
+       Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
+      } catch {
+       $GraphErrorText = Get-GraphErrorText -ErrorRecord $_
+       if ($GraphErrorText -notmatch "Request_MultipleObjectsWithSameKeyValue|Permission entry already exists|Request_ResourceNotFound") {
+        throw
+       }
+       Write-Verbose "App role grant returned transient/duplicate status. Will verify after delay."
+      }
+
+      Start-Sleep -Seconds $ConsistencyDelaySeconds
+      $AllGrantsCheck = (Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments?`$filter=resourceId eq $($ResSP.id)" -ErrorAction SilentlyContinue).value
+      $AlreadyGrantedCheck = $AllGrantsCheck | Where-Object { $_.appRoleId -eq $RoleID }
+      if ($AlreadyGrantedCheck) {
+       Write-Host -ForegroundColor Magenta -Object "App Role $PermissionValue from API $API already granted for App $AppRegistration ($PermissionType)"
+      } else {
+       Throw "Unable to confirm app role '$PermissionValue' after waiting $ConsistencyDelaySeconds second(s)."
+      }
    } else {
-      Write-Host -ForegroundColor Magenta -Object "App Role $PermissionValue from API $API already granted for App $AppRegistration ($PermissionType)"
+     Write-Host -ForegroundColor Magenta -Object "App Role $PermissionValue from API $API already granted for App $AppRegistration ($PermissionType)"
    }
   } else {
    # === Delegated Permission (Scope) ===
    # Delegated grants use a different endpoint that DOES support filtering safely.
    Write-Verbose "Get Current Delegated Grants"
-   # $ExistingGrant = (Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue).value
    # Used the Get-AzureGraph to avoid Error as the ErrorAction SilentlyContinue on the Invoke-RestMethod was still failing when not finding existing grants
-  $ExistingGrant = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue
+   $ExistingGrant = @(get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+   if ($ExistingGrant.Count -gt 1) {
+    Write-Warning "Found multiple delegated grant objects. Using the first one."
+   }
+   $ExistingGrant = @($ExistingGrant | Select-Object -First 1)
 
    Write-Verbose "Searching for API Scope Name"
-  # Look up the OFFICIAL case-sensitive name from the API # This fixes the "Profile" vs "profile" issue.
-  $OfficialScope = $ResSP.oauth2PermissionScopes | Where-Object { $_.id -eq $PermissionId } | Select-Object -ExpandProperty value
-  if (!$OfficialScope) { Throw "Scope '$Permission' not found in API definitions." }
-  if (($Permission -is [string]) -and (-not (Assert-IsGUID -Value $Permission)) -and ($OfficialScope -cne $Permission)) { Write-Warning "Case mismatch detected. Auto-correcting '$Permission' to '$OfficialScope'." }
+   # Look up the OFFICIAL case-sensitive name from the API # This fixes the "Profile" vs "profile" issue.
+   $OfficialScope = $ResSP.oauth2PermissionScopes | Where-Object { $_.id -eq $PermissionId } | Select-Object -ExpandProperty value
+   if (!$OfficialScope) { Throw "Scope '$Permission' not found in API definitions." }
+   if (($Permission -is [string]) -and (-not (Assert-IsGUID -Value $Permission)) -and ($OfficialScope -cne $Permission)) { Write-Warning "Case mismatch detected. Auto-correcting '$Permission' to '$OfficialScope'." }
 
    if (!$ExistingGrant) {
     # Create New
-   Write-Verbose "Creating new Grant for Scope: $OfficialScope"
+    Write-Verbose "Creating new Grant for Scope: $OfficialScope"
     $Body = @{
      clientId = $AppSPID
      consentType = "AllPrincipals"
      resourceId = $ResSP.id
      scope = $OfficialScope
     } | ConvertTo-Json
-    # return $body
-    Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
+
+    try {
+     Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
+    } catch {
+     $GraphErrorText = Get-GraphErrorText -ErrorRecord $_
+     if ($GraphErrorText -notmatch "Request_MultipleObjectsWithSameKeyValue|Permission entry already exists|Request_ResourceNotFound") {
+      throw
+     }
+     Write-Verbose "Delegated grant create returned transient/duplicate status. Will verify after delay."
+    }
+
+    Start-Sleep -Seconds $ConsistencyDelaySeconds
+    $ExistingGrant = @(get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+    if ($ExistingGrant.Count -gt 1) {
+     Write-Warning "Found multiple delegated grant objects. Using the first one."
+    }
+    $ExistingGrant = @($ExistingGrant | Select-Object -First 1)
+    if (!$ExistingGrant) {
+     Throw "Delegated grant object not visible after waiting $ConsistencyDelaySeconds second(s)."
+    }
    } else {
     # Update Existing (Merge)
-    $CurrentScopes = $ExistingGrant.scope
-    if ($CurrentScopes -notmatch "\b$OfficialScope\b") {
-     Write-Verbose "Appending Scope: $OfficialScope"
-     $NewScopes = "$CurrentScopes $OfficialScope"
-     $Body = @{ scope = $NewScopes } | ConvertTo-Json
-     Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($ExistingGrant.id)" -Headers $Header -Method Patch -Body $Body -ContentType $ContentType
-    } else {
-    Write-Host -ForegroundColor Magenta -Object "Scope $OfficialScope from API $API already granted for App $AppRegistration ($PermissionType)"
+    Write-Verbose "Delegated grant object exists. Checking scope membership."
+     }
+
+     $CurrentScopesList = @("$($ExistingGrant[0].scope)" -split " " | Where-Object { $_ })
+     if ($CurrentScopesList -notcontains $OfficialScope) {
+    Write-Verbose "Appending Scope: $OfficialScope"
+    $NewScopes = @($CurrentScopesList + $OfficialScope | Select-Object -Unique) -join " "
+    $Body = @{ scope = $NewScopes } | ConvertTo-Json
+
+    try {
+     Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($ExistingGrant[0].id)" -Headers $Header -Method Patch -Body $Body -ContentType $ContentType
+    } catch {
+     $GraphErrorText = Get-GraphErrorText -ErrorRecord $_
+     if ($GraphErrorText -notmatch "Request_MultipleObjectsWithSameKeyValue|Permission entry already exists|Request_ResourceNotFound") {
+      throw
+     }
+     Write-Verbose "Delegated grant update returned transient/duplicate status. Will verify after delay."
     }
+
+    Start-Sleep -Seconds $ConsistencyDelaySeconds
+    $ExistingGrantCheck = @(get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+    $ExistingGrantCheck = @($ExistingGrantCheck | Select-Object -First 1)
+    if (-not $ExistingGrantCheck) {
+     Throw "Delegated grant object not visible after update wait."
+    }
+    $CurrentScopesCheck = @("$($ExistingGrantCheck[0].scope)" -split " " | Where-Object { $_ })
+    if ($CurrentScopesCheck -contains $OfficialScope) {
+     Write-Host -ForegroundColor Magenta -Object "Scope $OfficialScope from API $API already granted for App $AppRegistration ($PermissionType)"
+    } else {
+     Throw "Unable to confirm delegated scope '$OfficialScope' after waiting $ConsistencyDelaySeconds second(s)."
+    }
+     } else {
+    Write-Host -ForegroundColor Magenta -Object "Scope $OfficialScope from API $API already granted for App $AppRegistration ($PermissionType)"
    }
   }
  } Catch {
@@ -12893,7 +12946,6 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
  )
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $header = $authDetails.Header
   $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
   if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
   if ($(Get-AzureAppRegistrationSecrets -Application $AppInfo.AppID -Count -Token $authDetails.Token) -gt 1) {
@@ -12914,7 +12966,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
    }
   }
   $ParamJson = $params | ConvertTo-Json
-  $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL -Method POST -Body $ParamJson
 
   $Result | Add-Member -Name ApplicationID -Value $AppInfo.AppID -MemberType NoteProperty
   $Result | Add-Member -Name ApplicationObjectID -Value $AppObjectId -MemberType NoteProperty
@@ -12935,6 +12987,70 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
   # Print Result
   $Result
 
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Add-AzureAppRegistrationRedirectURI { # Add Redirect URI to App Registration without removing existing values
+ [CmdletBinding()]
+ Param (
+  [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # Accepts App Registration Name or AppID (GUID)
+  [parameter(Mandatory=$true)]$RedirectURI, # Single value, array, or pasted string split by newline/comma/semicolon
+  [ValidateSet("WEB","SPA","PublicClient")]
+  [string]$Platform = "WEB",
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
+
+  # Normalize input list to support single value, array, multiline paste, CSV, and semicolon lists.
+  $RedirectCandidates = @()
+  foreach ($RedirectItem in @($RedirectURI)) {
+   if ($null -eq $RedirectItem) { continue }
+   $RedirectItemString = "$RedirectItem".Trim()
+   if (-not $RedirectItemString) { continue }
+   $RedirectCandidates += ($RedirectItemString -split "[\r\n,;]+")
+  }
+  $RedirectCandidates = @($RedirectCandidates | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+  if ($RedirectCandidates.Count -eq 0) { Throw "No valid Redirect URI value provided" }
+
+  # Use PublicClient for Mobile/Desktop, Android, and IOS redirect URIs.
+  switch ($Platform) {
+   "WEB" { $TargetProperty = "web" }
+   "SPA" { $TargetProperty = "spa" }
+   "PublicClient" { $TargetProperty = "publicClient" }
+   default { Throw "Unsupported platform: $Platform" }
+  }
+
+  switch ($TargetProperty) {
+   "web" { $ExistingRedirectUris = @($AppInfo.web.redirectUris | Where-Object { $_ }) }
+   "spa" { $ExistingRedirectUris = @($AppInfo.spa.redirectUris | Where-Object { $_ }) }
+   "publicClient" { $ExistingRedirectUris = @($AppInfo.publicClient.redirectUris | Where-Object { $_ }) }
+   default { Throw "Unsupported target property: $TargetProperty" }
+  }
+
+  $MergedRedirectUris = @($ExistingRedirectUris + $RedirectCandidates | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique)
+  $AddedRedirectUris = @($MergedRedirectUris | Where-Object { $_ -notin $ExistingRedirectUris })
+
+  if ($AddedRedirectUris.Count -eq 0) {
+   Write-Host -ForegroundColor "Magenta" -Object "All provided Redirect URI values already exist on '$($AppInfo.displayName)' for platform '$Platform'"
+  } else {
+   $Body = @{ $TargetProperty = @{ redirectUris = @($MergedRedirectUris) } } | ConvertTo-Json -Depth 10 -Compress
+   Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/applications/$($AppInfo.ID)" -Method PATCH -Body $Body -ErrorAction Stop | Out-Null
+   Write-Host -ForegroundColor "Green" -Object "Added $($AddedRedirectUris.Count) Redirect URI value(s) to '$($AppInfo.displayName)' for platform '$Platform'"
+  }
+
+  [pscustomobject]@{
+   ApplicationDisplayName = $AppInfo.displayName
+   ApplicationID = $AppInfo.AppID
+   ApplicationObjectID = $AppInfo.ID
+   Platform = $Platform
+   Target = $TargetProperty
+   AddedRedirectUris = @($AddedRedirectUris)
+   RedirectUris = @($MergedRedirectUris)
+  }
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
