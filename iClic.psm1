@@ -12363,13 +12363,11 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
   [parameter(Mandatory=$true)]$API,
   [Alias("RightName")][Parameter(Mandatory=$true)]$Permission,
   [ValidateSet("Application","Delegated")]$PermissionType,
+  [INT]$ConsistencyDelaySeconds = 5,
   $Token
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $Header = $authDetails.Header
-  $ContentType = "application/json"
-  $ConsistencyDelaySeconds = 3
 
   function Get-GraphErrorText {
    Param([Parameter(Mandatory=$true)]$ErrorRecord)
@@ -12417,7 +12415,7 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
 
    # 2. Check Existing Grants # Grant on App Registration are seen by the appRoleAssigneTo (whereas permission only show permissions not if it's Assigned)
    Write-Verbose "Get current Grants"
-   $AllGrants = (Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments?`$filter=resourceId eq $($ResSP.id)").value
+   $AllGrants = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments?`$filter=resourceId eq $($ResSP.id)" -ErrorAction SilentlyContinue
    # Check if we already have this specific Role on this specific Resource | Cannot add multiple clause to the API request for some reason
    $AlreadyGranted = $AllGrants | Where-Object { $_.appRoleId -eq $RoleID }
 
@@ -12430,18 +12428,22 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
     } | ConvertTo-Json
 
       try {
-       Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
+       Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments" -Method Post -Body $Body | Out-Null
       } catch {
        $GraphErrorText = Get-GraphErrorText -ErrorRecord $_
        if ($GraphErrorText -notmatch "Request_MultipleObjectsWithSameKeyValue|Permission entry already exists|Request_ResourceNotFound") {
         throw
        }
-       Write-Verbose "App role grant returned transient/duplicate status. Will verify after delay."
+        Write-Verbose "App role grant returned transient/duplicate status. Verifying immediately before waiting."
       }
 
-      Start-Sleep -Seconds $ConsistencyDelaySeconds
-      $AllGrantsCheck = (Invoke-RestMethod -Headers $Header -Method Get -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments?`$filter=resourceId eq $($ResSP.id)" -ErrorAction SilentlyContinue).value
+      $AllGrantsCheck = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments?`$filter=resourceId eq $($ResSP.id)" -ErrorAction SilentlyContinue
       $AlreadyGrantedCheck = $AllGrantsCheck | Where-Object { $_.appRoleId -eq $RoleID }
+            if (-not $AlreadyGrantedCheck) {
+        Start-Sleep -Seconds $ConsistencyDelaySeconds
+        $AllGrantsCheck = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$AppSPID/appRoleAssignments?`$filter=resourceId eq $($ResSP.id)" -ErrorAction SilentlyContinue
+        $AlreadyGrantedCheck = $AllGrantsCheck | Where-Object { $_.appRoleId -eq $RoleID }
+            }
       if ($AlreadyGrantedCheck) {
        Write-Host -ForegroundColor Magenta -Object "App Role $PermissionValue from API $API already granted for App $AppRegistration ($PermissionType)"
       } else {
@@ -12455,7 +12457,7 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
    # Delegated grants use a different endpoint that DOES support filtering safely.
    Write-Verbose "Get Current Delegated Grants"
    # Used the Get-AzureGraph to avoid Error as the ErrorAction SilentlyContinue on the Invoke-RestMethod was still failing when not finding existing grants
-   $ExistingGrant = @(get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+   $ExistingGrant = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
    if ($ExistingGrant.Count -gt 1) {
     Write-Warning "Found multiple delegated grant objects. Using the first one."
    }
@@ -12478,17 +12480,20 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
     } | ConvertTo-Json
 
     try {
-     Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" -Headers $Header -Method Post -Body $Body -ContentType $ContentType
+     Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants" -Method Post -Body $Body
     } catch {
      $GraphErrorText = Get-GraphErrorText -ErrorRecord $_
      if ($GraphErrorText -notmatch "Request_MultipleObjectsWithSameKeyValue|Permission entry already exists|Request_ResourceNotFound") {
       throw
      }
-     Write-Verbose "Delegated grant create returned transient/duplicate status. Will verify after delay."
+      Write-Verbose "Delegated grant create returned transient/duplicate status. Verifying immediately before waiting."
     }
 
-    Start-Sleep -Seconds $ConsistencyDelaySeconds
-    $ExistingGrant = @(get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+    $ExistingGrant = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+        if (!$ExistingGrant) {
+      Start-Sleep -Seconds $ConsistencyDelaySeconds
+      $ExistingGrant = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+        }
     if ($ExistingGrant.Count -gt 1) {
      Write-Warning "Found multiple delegated grant objects. Using the first one."
     }
@@ -12508,18 +12513,22 @@ Function Grant-AzureAppRegistrationConsent { # Grants Admin Consent for a SPECIF
     $Body = @{ scope = $NewScopes } | ConvertTo-Json
 
     try {
-     Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($ExistingGrant[0].id)" -Headers $Header -Method Patch -Body $Body -ContentType $ContentType
+     Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants/$($ExistingGrant[0].id)" -Method Patch -Body $Body
     } catch {
      $GraphErrorText = Get-GraphErrorText -ErrorRecord $_
      if ($GraphErrorText -notmatch "Request_MultipleObjectsWithSameKeyValue|Permission entry already exists|Request_ResourceNotFound") {
       throw
      }
-     Write-Verbose "Delegated grant update returned transient/duplicate status. Will verify after delay."
+      Write-Verbose "Delegated grant update returned transient/duplicate status. Verifying immediately before waiting."
     }
 
-    Start-Sleep -Seconds $ConsistencyDelaySeconds
-    $ExistingGrantCheck = @(get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+    $ExistingGrantCheck = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
     $ExistingGrantCheck = @($ExistingGrantCheck | Select-Object -First 1)
+      if (-not $ExistingGrantCheck) {
+       Start-Sleep -Seconds $ConsistencyDelaySeconds
+       $ExistingGrantCheck = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$filter=clientId eq '$AppSPID' and consentType eq 'AllPrincipals' and resourceId eq '$($ResSP.id)'" -ErrorAction SilentlyContinue)
+       $ExistingGrantCheck = @($ExistingGrantCheck | Select-Object -First 1)
+      }
     if (-not $ExistingGrantCheck) {
      Throw "Delegated grant object not visible after update wait."
     }
@@ -14062,8 +14071,7 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
 }
 Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. Uses Rest
  Param (
-  [Parameter(Mandatory=$true,ParameterSetName="principalId")]$principalId, # ID of the App to be changed
-  [parameter(Mandatory=$true,ParameterSetName="principalName")]$principalName, # Display Name of Service Principal
+  [Parameter(Mandatory=$true)][Alias("principalId","principalName")][string]$Application, # GUID, AppID, ObjectID, or Display Name
   [switch]$HideGUID,
   [switch]$HideDate,
   [switch]$Readable,
@@ -14073,13 +14081,21 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   # $header = $authDetails.Header
 
-  # Get Required values to get a full object
-  if (!$principalId) {$CheckedValue = $principalName ; $principalId = (Get-AzureServicePrincipal -Token $authDetails.Token -DisplayName $principalName -ErrorAction Stop).ID}
-  if (!$principalName) {$CheckedValue = $principalId ; $principalName = (Get-AzureServicePrincipal -Token $authDetails.Token -ID $principalId -ErrorAction Stop).displayName}
+  # Resolve the service principal from a single application input.
+  $CheckedValue = $Application
+  $ResolvedServicePrincipal = Get-AzureServicePrincipal -Token $authDetails.Token -Application $Application -ErrorAction Stop
+  if (@($ResolvedServicePrincipal).Count -gt 1) {
+   throw "Multiple service principals found for Application '$Application'. Please pass a unique identifier."
+  }
+
+  $principalId = $ResolvedServicePrincipal.id
+  $principalName = $ResolvedServicePrincipal.displayName
+  if (! $principalId) {
+   throw "No service principal found for Application '$Application'."
+  }
 
   ########## APPLICATION ROLES ##########
   # Get all App Roles [ Application ]
-  # $ResultAppRole = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments").value
   $ResultAppRole = Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/appRoleAssignments" -Token $authDetails.Token
   # $ResultAppRole | ForEach-Object {
   #  $_ | Add-Member -MemberType NoteProperty -Name "principalDisplayName" -Value "$principalName"
@@ -14096,7 +14112,6 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
 
   ########## DELEGATED ROLES ##########
   # Get all App Roles [ Delegated ]
-  # $ResultPermissionGrantTMP = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants").value
   $ResultPermissionGrantTMP = Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$principalId/oauth2PermissionGrants" -Token $authDetails.Token
 
   # Set all the Delegated Permissions as a clean object
