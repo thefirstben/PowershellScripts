@@ -14158,18 +14158,9 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
 }
 Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleID")]$principalId, # ID of the Service Principal to change
-  [parameter(Mandatory=$true,ParameterSetName="SP_NAME")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleName")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleID")]$principalName, # Name of the Service Principal to change
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleID")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleID")]$appRoleId, # ID of the Role to use : Example : 6a46f64d-3c21-4dbd-a9af-1ff8f2f8ab14
-  [parameter(Mandatory=$true,ParameterSetName="SP_NAME_RoleName")]
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID_RoleName")]$appRoleName, # Name of the Role to use : Example : User.Read.All
-  [Parameter(Mandatory=$true)]$resourceDisplayName, # DisplayName of the API to use : example : Microsoft Graph
-  $resourceId, # (Application) ID of the API to use : Example : df021288-bdef-4463-88db-98f22de89214
+  [parameter(Mandatory=$true)][Alias("principalId","principalName")][string]$Application, # GUID, AppID, ObjectID, or Display Name of the Service Principal to change
+  [parameter(Mandatory=$true)][Alias("appRoleId","appRoleName")][string]$AppRole, # Role ID (GUID) or Role Name/Value (example: User.Read.All)
+  [Parameter(Mandatory=$true)][Alias("resourceDisplayName","resourceId")][string]$Resource, # GUID, AppID, ObjectID, or Display Name of the API to use [Like Microsoft Graph or a custom API]
   [ValidateSet("Application","Delegated")]$PermissionType,
   $Token
  )
@@ -14177,47 +14168,62 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
-  # If Principal Name is given, get the Service Principal ID for the App
-  if ($principalName) {
-   Write-Verbose "Principal ID was not provided will search for it"
-   $principalId = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $principalName -Token $authDetails.Token
+  # Resolve the target service principal from a single application input.
+  $ResolvedServicePrincipal = Get-AzureServicePrincipal -Token $authDetails.Token -Application $Application -ErrorAction Stop
+  if (@($ResolvedServicePrincipal).Count -gt 1) {
+   throw "Multiple service principals found for Application '$Application'. Please pass a unique identifier."
   }
 
-  If ($principalId) {
-   Write-Verbose "Using Principal ID $PrincipalID"
+  $principalId = $ResolvedServicePrincipal.id
+  $principalName = $ResolvedServicePrincipal.displayName
+  if ($principalId) {
+   Write-Verbose "Using Principal ID $PrincipalID ($principalName)"
   } else {
-   Throw "PrincipalID not found for $principalName"
+   Throw "PrincipalID not found for Application '$Application'"
   }
 
-  # If the resource ID is not given or the permission is not given specifically retrieve app Info of resource containing the permission
-  if ((! $resourceId) -or ($appRoleName)) {
-   $AppInfo = (Get-AzureServicePrincipal -DisplayName $resourceDisplayName -Token $authDetails.Token)
+  # Resolve the target resource API service principal from a single resource input.
+  $ResolvedResourceServicePrincipal = Get-AzureServicePrincipal -Token $authDetails.Token -Application $Resource -ErrorAction Stop
+  if (@($ResolvedResourceServicePrincipal).Count -gt 1) {
+   throw "Multiple resource service principals found for Resource '$Resource'. Please pass a unique identifier."
   }
 
-  # If resource ID is still empty set it as the Appinfo ID
-  If (! $resourceId) {
-   $resourceId = $AppInfo.Id
+  $resourceId = $ResolvedResourceServicePrincipal.id
+  $resourceDisplayName = $ResolvedResourceServicePrincipal.displayName
+  if (! $resourceId) {
+   Throw "ResourceID not found for Resource '$Resource'"
   }
 
-  # Find full information about permission to Add
-  if ($PermissionType) {
-   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $resourceId -Token $authDetails.Token | Where-Object {($_.Value -eq $appRoleName) -and ($_.PermissionType -eq $PermissionType) }
+  # Resolve role by ID or name/value. This keeps legacy AppRoleID behavior safe and supports delegated flow needing scope text.
+  $AllPermissions = @(Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $resourceId -Token $authDetails.Token)
+  $IsAppRoleGuid = Assert-IsGUID $AppRole
+
+  if ($IsAppRoleGuid) {
+   if ($PermissionType) {
+    $RightsToAdd = $AllPermissions | Where-Object { ($_.RuleID -eq $AppRole) -and ($_.PermissionType -eq $PermissionType) }
+   } else {
+    $RightsToAdd = $AllPermissions | Where-Object { $_.RuleID -eq $AppRole }
+   }
   } else {
-   $RightsToAdd = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $resourceId -Token $authDetails.Token | Where-Object Value -eq $appRoleName
+   if ($PermissionType) {
+    $RightsToAdd = $AllPermissions | Where-Object { ($_.Value -eq $AppRole) -and ($_.PermissionType -eq $PermissionType) }
+   } else {
+    $RightsToAdd = $AllPermissions | Where-Object { $_.Value -eq $AppRole }
+   }
   }
 
-  # Final Check
-  if ((! $RightsToAdd) -and (! $appRoleId)) {
-   Throw "$appRoleName ($PermissionType) was not found in API $resourceId, please check"
-  } elseif ($RightsToAdd.Count -gt 1) {
-   Throw "$appRoleName contains multiple values in API $resourceId, please check or force the permission type"
-  } else {
-   $appRoleId = $RightsToAdd.RuleID
+  if (! $RightsToAdd) {
+   Throw "AppRole '$AppRole' ($PermissionType) was not found in API $resourceDisplayName ($resourceId), please check"
   }
 
-  if (! $PermissionType) {
-   $PermissionType = $RightsToAdd.PermissionType
+  if (@($RightsToAdd).Count -gt 1) {
+   Throw "AppRole '$AppRole' contains multiple values in API $resourceDisplayName ($resourceId), please check or force -PermissionType"
   }
+
+  $SelectedRight = @($RightsToAdd)[0]
+  $appRoleId = $SelectedRight.RuleID
+  $appRoleName = $SelectedRight.Value
+  if (! $PermissionType) { $PermissionType = $SelectedRight.PermissionType }
 
   # appRoleAssignments = Application Permission
   # oauth2PermissionGrants = Delegated Permission
@@ -14275,7 +14281,7 @@ Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal
       $NewScope = ((( $oAuth2PermissionGrantInfo.scope + " " + $appRoleName) -split(" ") | Where-Object { $_ }) | Sort-Object -Unique) -join(" ")
 
       Write-Verbose "Old Scope : $OldScope ($(($OldScope -split(" ")).Count))"
-    Write-Verbose "New Scope : $NewScope ($(($NewScope -split(" ")).Count))"
+      Write-Verbose "New Scope : $NewScope ($(($NewScope -split(" ")).Count))"
 
       if ($OldScope -eq $NewScope) {
        Write-Host -ForegroundColor Cyan "Delegated permission '$appRoleName' is already configured on '$resourceDisplayName' for principal '$principalId'."
