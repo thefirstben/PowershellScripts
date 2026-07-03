@@ -13990,8 +13990,7 @@ Function Set-AzureServicePrincipalTags { # Set Tag on Service Principal, can add
 }
 Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned Users and Groups
  Param (
-  [parameter(Mandatory=$true,ParameterSetName="SP_ID")]$ServicePrincipalID,
-  [parameter(Mandatory=$true,ParameterSetName="SP_Name")]$ServicePrincipalName,
+  [parameter(Mandatory=$true)][Alias("ServicePrincipalID","ServicePrincipalName")][string]$Application,
   [switch]$ShowAppRole,
   [switch]$Readable,
   $Token
@@ -13999,15 +13998,18 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -ErrorAction Stop
 
-  # Get Principal Name if not provided
-  if ($ServicePrincipalName) {
-   if ($authDetails.Method -eq "Token") {
-    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName -Token $authDetails.Token -ErrorAction Stop).ID
-   } else {
-    $ServicePrincipalID = (Get-AzureServicePrincipal -DisplayName $ServicePrincipalName).ID
-   }
-   if (! $ServicePrincipalID) {Throw "App $ServicePrincipalName not found"}
+  # Resolve the service principal from a single application input.
+  if ($authDetails.Method -eq "Token") {
+   $ResolvedServicePrincipal = Get-AzureServicePrincipal -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  } else {
+   $ResolvedServicePrincipal = Get-AzureServicePrincipal -Application $Application -ErrorAction Stop
   }
+  if (@($ResolvedServicePrincipal).Count -gt 1) {
+   throw "Multiple service principals found for Application '$Application'. Please pass a unique identifier."
+  }
+
+  $ServicePrincipalID = $ResolvedServicePrincipal.ID
+  if (! $ServicePrincipalID) { Throw "Service Principal '$Application' not found" }
 
   # Get App Assignements
   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
