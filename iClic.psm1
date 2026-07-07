@@ -18777,6 +18777,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
 
   if ($SimplifiedQuery -or $ShowRawResult) {
    $colOrder = $timeColumns + ($ResultRaw[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
+   $colOrder = $colOrder | Where-Object { $_ -notin @('TimeGenerated','Local_Timezone') }
    return ($ResultRaw | Select-Object -Property $colOrder)
   } else {
    $Result = $ResultRaw | ForEach-Object {
@@ -18805,7 +18806,6 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
 
    $colOrder = $timeColumns + ($Result[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
    return ($Result | Select-Object -Property $colOrder)
-
   }
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -19014,6 +19014,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   }
     $timeColumns = @('TimeGenerated', 'Local_TimeGenerated', 'Local_Timezone')
     $colOrder = $timeColumns + ($Result[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
+    $colOrder = $colOrder | Where-Object { $_ -notin @('TimeGenerated','Local_Timezone') }
     return ($Result | Select-Object -Property $colOrder)
  } catch {
   if ($Query) {Write-Verbose $Query}
