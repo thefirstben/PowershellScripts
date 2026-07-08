@@ -18261,7 +18261,7 @@ Function Disable-AzureConditionalAccessPolicy { # Disable Conditional Access Pol
 
 Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssignementPolicies to expand all policies, takes a while)
  Param (
-  [Switch]$ExpandAssignementPolicies,
+  [Switch]$ExpandAssignmentPolicies,
   $AccessPackage,
   $Token
  )
@@ -18298,6 +18298,53 @@ Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssi
   }
 
   $AccessPackages
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-AzureAccessPackageCatalogs {
+ Param (
+  [Switch]$ExpandAssignedResources,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Define the base resource path
+  $GraphUrl = "https://graph.microsoft.com/v1.0/identityGovernance/entitlementManagement/catalogs"
+
+  $AccessPackageCatalogs = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphUrl
+
+  if ($ExpandAssignedResources) {
+   $ResourcesWithCatalog = @()
+
+   $AccessPackageCatalogs | Sort-Object displayName | ForEach-Object {
+    $CurrentCatalog = $_
+    Progress -Message "Checking Assigned Resources of Catalog : " -Value $CurrentCatalog.displayName -PrintTime
+
+    # Expand assigned resources for each catalog and return resource-first output
+    $ExpandUrl = "https://graph.microsoft.com/beta/identityGovernance/entitlementManagement/accessPackageCatalogs/$($CurrentCatalog.ID)/accessPackageResources?`$top=999"
+    $AssignedResources = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest $ExpandUrl)
+
+    foreach ($Resource in $AssignedResources) {
+     $ResourceData = [ordered]@{}
+     $Resource.PSObject.Properties | ForEach-Object {
+      $ResourceData[$_.Name] = $_.Value
+     }
+
+    $CurrentCatalog.PSObject.Properties | ForEach-Object {
+     $ResourceData["Catalog_$($_.Name)"] = $_.Value
+    }
+
+     $ResourcesWithCatalog += [PSCustomObject]$ResourceData
+    }
+   }
+
+   $ResourcesWithCatalog
+   return
+  }
+
+  $AccessPackageCatalogs
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
