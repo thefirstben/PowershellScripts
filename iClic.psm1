@@ -20120,9 +20120,9 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
   }
  } else {
   $TapRows += [pscustomobject]@{
-     CreatedDateTimeLocal = $CreatedDateTimeLocal
+   CreatedDateTimeLocal = $CreatedDateTimeLocal
    UserName = $UserName
-     UserDisplayName = $UserDisplayName
+   UserDisplayName = $UserDisplayName
    temporaryAccessPass = $temporaryAccessPass
    methodUsabilityReason = $methodUsabilityReason
    isUsableOnce = $isUsableOnce
