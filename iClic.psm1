@@ -15090,22 +15090,23 @@ Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) co
  $GlobalResult = $()
 
  #Variable to follow up the columns without having to rebuild the entire object (Otherwise export-csv only exports columns depending on the first object created)
- $MemberList = $('id','name','SubscriptionName','SubscriptionID','pricingTier','EnabledOn')
+ $MemberList = $('id','name','SubscriptionName','SubscriptionID','pricingTier','EnabledOn','FullJSON')
  $Subscriptions | ForEach-Object {
   $SubscriptionName = $_.Name
   $SubscriptionID = $_.ID
   Progress -PrintTime -Message "Checking subscription " -Value "$($_.subscriptionId) ($($_.Name))"
 
   # Export all information of MDC in current subscription
-  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/subscriptions/$($_.subscriptionId)/providers/Microsoft.Security/pricings?api-version=$APIVersion" `
-   | Select-Object id,Name,
+  $RawApiResponse = get-azuregraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/subscriptions/$($_.subscriptionId)/providers/Microsoft.Security/pricings?api-version=$APIVersion"
+  $Result = $RawApiResponse | Select-Object id,Name,
    @{Name="SubscriptionName";Expression={$SubscriptionName}},
    @{Name="SubscriptionID";Expression={$SubscriptionID}},
    @{Name="pricingTier";Expression={$_.properties.pricingTier}},
    @{Name="subPlan";Expression={$_.properties.subPlan}},
    @{Name="EnabledOn";Expression={$_.properties.enablementTime}},
    @{Name="Extensions";Expression={$_.properties.Extensions}},
-   @{Name="additionalExtensionProperties";Expression={$_.properties.Extensions.additionalExtensionProperties}}
+   @{Name="additionalExtensionProperties";Expression={$_.properties.Extensions.additionalExtensionProperties}},
+   @{Name="FullJSON";Expression={$_ | ConvertTo-Json -Depth 10}}
 
    # Convert Extension and Additional Extension content to additional columns built from the current Extension being used
    $Result | ForEach-Object {
