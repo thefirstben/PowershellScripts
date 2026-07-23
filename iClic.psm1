@@ -13493,7 +13493,9 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
     }
   }
 
-  $Result = $ResultAppRole + $ResultPermissionGrant
+  # Normalize both collections to arrays before concatenation to avoid
+  # "op_Addition" failures when one side is a single PSObject.
+  $Result = @($ResultAppRole) + @($ResultPermissionGrant)
 
   if ($HideGUID -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *ID }
   if ($HideDate -or $Readable) { $Result = $Result | Select-Object -ExcludeProperty *DateTime }
