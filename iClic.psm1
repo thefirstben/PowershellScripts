@@ -6903,26 +6903,28 @@ Function Get-KPIADComputer {
  Param (
   $Path="$iClic_TempPath\KPI\"
  )
- Function IsOSServerOrWorkstation ($TypeOfOS,$OU) {
-  if ((! $TypeOfOS) -or ($TypeOfOS -eq "unknown")) {return "Unknown"
-  } elseif ( ($TypeOfOS.contains("Server")) -or ($TypeOfOS -eq "Samba") ) {return "Server"
-  } else { return "Workstation" }
+ $IsOSServerOrWorkstation = {
+  param($TypeOfOS)
+  if ((! $TypeOfOS) -or ($TypeOfOS -eq "unknown")) { return "Unknown" }
+  elseif (($TypeOfOS.contains("Server")) -or ($TypeOfOS -eq "Samba")) { return "Server" }
+  else { return "Workstation" }
  }
 
  if ( ! (test-path $Path)) { write-Colored -Color "Red" -ColoredText "Unavailable path : $Path" ; return }
 
  $StartDate=$(get-date -uformat "%Y-%m-%d %T")
 
- get-adcomputer -filter * -properties * | Select-Object Name,@{name="FQDN";expression={Progress "Checking Computer: " "$($_.DNSHostName)";$_.DNSHostName}},
+ get-adcomputer -filter * -properties * | Select-Object Name,
+  @{name="FQDN";expression={Progress "Checking Computer: " "$($_.DNSHostName)";$_.DNSHostName}},
   @{name="OU";expression={$_.CanonicalName | ForEach-Object {(($_ -split('/'))| Select-Object -skiplast 1) -join '/'}}},
   @{name="Enabled";expression={ if ($_.Enabled) {"TRUE"} else {"FALSE"} }},
   ObjectClass,OperatingSystem,IPv4Address,
   @{name="whenChanged";expression={Format-Date $_.whenChanged}},
   @{name="whenCreated";expression={Format-Date $_.whenCreated}},
-  @{name="LastLogonDate";expression={Format-Date $_.LastLogonDate}} | Select-Object *,
-  @{name="TypeOS";expression={IsOSServerOrWorkstation $_.OperatingSystem $_.OU}},
-  @{name="BitlockerKeyLastCreation";expression={$Date=(Get-BitLockerKeyInAD -ServerName $_.Name | Select-Object -Last 1).Created;if ($Date){Format-Date $Date}}} `
-  | Export-Csv "$Path\ComputerList-$(get-date -uformat '%Y-%m-%d').csv"  -encoding "unicode" -notypeinformation -Delimiter ";"
+  @{name="LastLogonDate";expression={Format-Date $_.LastLogonDate}},
+  @{name="TypeOS";expression={& $IsOSServerOrWorkstation $_.OperatingSystem}},
+  @{name="BitlockerKeyLastCreation";expression={$Date=(Get-BitLockerKeyInAD -ServerName $_.Name | Select-Object -Last 1).Created;if ($Date){Format-Date $Date}}} |
+  Export-Csv "$Path\ComputerList-$(get-date -uformat '%Y-%m-%d').csv" -encoding "unicode" -notypeinformation -Delimiter ";"
  ProgressClear
  write-host
  $EndDate=$(get-date -uformat "%Y-%m-%d %T")
@@ -10772,180 +10774,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
 }
 
 # User Rights Management
-
-Function Get-AzureRBACRightsAzCLI { # Get all RBAC Rights (Works with Users, Service Principals) - Does not yet work with groups - If no Subscription are defined then it will check all subscriptions
- [CmdletBinding(DefaultParameterSetName='ShowAll')]
- Param (
-  [parameter(Mandatory = $true, ParameterSetName="UserAndSubID")]
-  [parameter(Mandatory = $true, ParameterSetName="UserAndSubName")]
-  [parameter(Mandatory = $true, ParameterSetName="UserPrincipalName")]$UserPrincipalName,
-  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubID")]
-  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubName")]
-  [parameter(Mandatory = $true, ParameterSetName="UserDisplayName")]$UserDisplayName,
-  [parameter(Mandatory = $true, ParameterSetName="UserAndSubID")]
-  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubID")]
-  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubID")]
-  [parameter(Mandatory = $true, ParameterSetName="SubscriptionID")]$SubscriptionID,
-  [parameter(Mandatory = $true, ParameterSetName="UserAndSubName")]
-  [parameter(Mandatory = $true, ParameterSetName="DisplayAndSubName")]
-  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubName")]
-  [parameter(Mandatory = $true, ParameterSetName="SubscriptionName")]$SubscriptionName,
-  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubID")]
-  [parameter(Mandatory = $true, ParameterSetName="GroupAndSubName")]
-  [parameter(Mandatory = $true, ParameterSetName="GroupName")]$GroupName,
-  [Switch]$Advanced, # Will add about 2 seconds per rights
-  [Switch]$IncludeInherited,
-  [Switch]$HideProgress,
-  [Switch]$HideID,
-  [Switch]$ShowCondition
- )
-
- # For the parameters, it's either Subscription Name OR Subscription ID - And - User Name or User DisplayName
-
- # Get Tenant ID
- $TenantID = az account show --query '"{tenantId:tenantId}"' -o tsv
-
- # Get all subscriptions information
- if (! $HideProgress ) { Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime }
- $AllSubscription = Get-AzureSubscriptions
-
- if ($Advanced) { # If it's requested to convert all display names it will add initial time to the request
-  Progress -Message "Current step " -Value "Retrieving all Users (remove switch 'Advanced' to ignore this step)" -PrintTime
-  $AllUsers = Get-AzureADUsers -Advanced
-  Progress -Message "Current step " -Value "Retrieving all Service Principal (remove switch 'Advanced' to ignore this step)" -PrintTime
-  $AllServicePrincipals = Get-AzureServicePrincipal -ValuesToShow "id,appId,displayName,servicePrincipalType"
- }
-
- # If Subscription name is given, find Subscription ID
- if ($SubscriptionName) {
-  $SubscriptionID = ($AllSubscription | Where-Object Name -eq $SubscriptionName).ID
- }
- # If Subscription ID is given, find Subscription Name
- if ($SubscriptionID) {
-  $SubscriptionName = ($AllSubscription | Where-Object id -eq $SubscriptionID).Name
- }
-
- if ( ($UserPrincipalName) -and (! $UserDisplayName ) ) {
-  $UserDisplayName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=displayName&`$filter=userPrincipalName eq '$UserPrincipalName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.displayName
- }
- if ( ($UserDisplayName) -and (! $UserPrincipalName ) ) {
-  $UserPrincipalName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=userPrincipalName&`$filter=displayName eq '$UserDisplayName'" --headers Content-Type=application/json | ConvertFrom-Json).Value.userPrincipalName
- }
- if ($GroupName) {
-  $UserPrincipalName = (az rest --method GET --uri "https://graph.microsoft.com/v1.0/groups?`$count=true&`$select=id&`$filter=displayName eq '$GroupName'" --headers Content-Type=application/json | ConvertFrom-Json).value.id
- }
-
- # Set default arguments
- $Arguments =
-  '--only-show-errors',
-  '--all',
-  '--include-groups',
-  '--query' , '"[].{principalName:principalName, principalId:principalId, principalType:principalType, roleDefinitionName:roleDefinitionName, scope:scope, resourceGroup:resourceGroup, id:id}"',
-  '--output', 'json'
-
- # Add Arguments if value is set
- if ( $UserPrincipalName ) {
-  $Arguments += '--assignee' , $UserPrincipalName
- }
-
- if ( $IncludeInherited ) {
-  $Arguments += '--include-inherited'
- }
-
- if ($ShowCondition) {
-  $Arguments = $Arguments -replace ", id:id",", id:id, condition:condition"
- }
-
- if ( $SubscriptionID ) { # If Subscription ID is found filter on only found subscription, otherwise check all subscriptions
-  $SubscriptionToCheck = $AllSubscription | where-object ID -eq $SubscriptionID
- } else {
-  $SubscriptionToCheck = $AllSubscription
- }
-
- $GlobalStatus = @()
- $SubscriptionToCheck | ForEach-Object {
-
-  $CurrentSubscriptionName = $_.Name
-  $CurrentSubscriptionID = $_.ID
-
-  $ArgumentsOfCurrentSubscription = $Arguments
-  $ArgumentsOfCurrentSubscription += '--subscription' , $CurrentSubscriptionID
-
-  if (! $HideProgress ) {
-   Progress -Message "Checking subscription : " -Value $CurrentSubscriptionName -PrintTime
-  }
-
-  $CurrentSubscription = az role assignment list @ArgumentsOfCurrentSubscription | ConvertFrom-Json | Select-object `
-   @{Name="PrincipalName";Expression={ if (! $_.principalName) { "Identity not found" } else { $_.principalName } }},
-   @{Name="DisplayName";Expression={
-    if ($UserDisplayName) {
-     $UserDisplayName
-    } else {
-     if ($Advanced) {
-      if ($_.principalType -eq "ServicePrincipal") {
-       ($AllServicePrincipals | Where-Object Id -eq $_.principalId).displayName
-      } elseif ($_.principalType -eq "Group") {
-       $_.PrincipalName
-      } else {
-       ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).displayName
-      }
-     } elseif ($_.principalType -eq "Group") {
-      "Group" # Add here to get info on groups (for example to do a recursive search of users)
-     } else {
-      "Use Advanced switch"
-     }
-    }
-   }},
-   @{Name="UserMail";Expression={
-    if ($Advanced) {
-     if ($_.principalType -eq "User") { ($AllUsers | Where-Object userPrincipalName -eq $_.principalName).mail } else { "N/A" }
-    } else {
-     "Use Advanced switch"
-    }
-   }},
-   @{Name="Type";Expression={
-    if ($Advanced -and ($_.principalType -eq "ServicePrincipal")) {
-     $SPType = ($AllServicePrincipals | Where-Object AppID -eq $_.principalName).servicePrincipalType
-     if (! $_.principalName) {return "Unknown"} elseif ($SPType) {Return $SPType} else {return "ServicePrincipal"}
-    } else { # Use "-Advanced" for more info on Service Principals
-     $_.principalType
-    }
-   }}, roleDefinitionName,
-   @{Name="Subscription";Expression={
-    $Scope_Split = $_.scope.split("/")
-    if ($Scope_Split[-2] -eq "managementGroups") { # Replace Subscription With Management Group or tenant if permission are inherited
-     if ($($Scope_Split[-1]) -eq $TenantID) {"Tenant"} else {$Scope_Split[-1]}
-    } else {
-     $CurrentSubscriptionName
-    }
-   }},
-   resourceGroup,
-   @{Name="ResourceName";Expression={
-    $Scope_Split = $_.scope.split("/")[-1]
-    if ($Scope_Split -eq $CurrentSubscriptionID ) {
-     "Subscription"
-    } elseif ($Scope_Split -eq $TenantID) {
-     "Tenant"
-    } elseif ($Scope_Split -eq $_.resourceGroup) {
-     "ResourceGroup"
-    } else {
-     $Scope_Split
-    }
-   }},
-   @{Name="ResourceType";Expression={ $_.scope.split("/")[-2] }},
-   @{Name="principalId";Expression={ $_.principalId }},
-   @{Name="SubscriptionID";Expression={$CurrentSubscriptionID}}, scope,
-   @{Name="AssignmentID";Expression={$_.ID}}, condition # Can be used to remove permissions with az role assignment delete --ids
-  $GlobalStatus += $CurrentSubscription
- }
- #Print result
- if (! $HideProgress ) { ProgressClear }
- # $GlobalStatus | Sort-Object -Unique id
- if ($HideID) { $GlobalStatus = $GlobalStatus | Select-Object -ExcludeProperty "*ID" }
- if (! $Advanced) { $GlobalStatus = $GlobalStatus | Select-Object -ExcludeProperty "UserMail" }
- $GlobalStatus
-}
-Function Get-AzureRBACRights { # In progress to get permissions via Graph only request - Gets all permissions set on a Subscription or Resource Group
+Function Get-AzureRBACRights { # Get permissions via Graph only request
  [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
  Param (
   # == Parameters available in ALL sets ==
@@ -11232,17 +11061,6 @@ Function Get-AzureRBACRights { # In progress to get permissions via Graph only r
  } Catch {
   Write-Error $_
  }
-}
-Function Remove-AzureADUserRBACRightsALL { # Remove all User RBAC Rights on one Subscriptions (Works with Users and Service Principals)
- Param (
-  [Parameter(Mandatory=$true)]$UserPrincipalName
- )
- $CurrentRights = Get-AzureRBACRightsAzCLI -UserPrincipalName $UserPrincipalName
- $CurrentRights | Where-Object Type -eq User | ForEach-Object {
-  Progress -Message "Removing permission " -Value "$($_.roleDefinitionName) from user $($UserPrincipalName) from scope $($_.scope)"
-  Remove-AzureRBACRights -AssignmentID $_.AssignmentID
- }
- $CurrentRights | Where-Object Type -ne User | ForEach-Object { "User $($UserPrincipalName) has permission to Scope $($_.scope) because of the Principal $($_.PrincipalName)" }
 }
 Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandatory - at least name) | Not yet fully tested but works on Subscription
  [CmdletBinding(DefaultParameterSetName='ScopeID')]
@@ -11628,28 +11446,6 @@ Function New-AzureServicePrincipal { # Created a new Service Principal that can 
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
-
-}
-
-
-
-Function Get-AzureAppRegistrationFromAppID { # Get the App Registration information from AppID | Uses Token
- Param (
-  [Parameter(Mandatory)]$AppID,
-  $Value = "displayName", # or UserPrincipalName
-  [Parameter(Mandatory)]$Token
- )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Return "Token is invalid, provide a valid token" }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$Value&`$filter=AppID eq '$AppID'").Value.$Value
- if ($Result) {
-  $Result
- } else {
-  "$AppID ($Value not found)"
- }
 }
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
@@ -11871,37 +11667,6 @@ Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Regist
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
-}
-Function Get-AzureAppRegistrationRBACRights { # Get ALL App Registration RBAC Rights of ONE or Multiple Subscriptions
- Param (
-  [Parameter(Mandatory)]$AppRegistration, # Must be an object containing ID and Name of App Registration
-  [Parameter(Mandatory)]$Subscription # Must be an object containing  ID and Name of subscription
- )
- $Subscription | ForEach-Object {
-  $CurrentSubscriptionID = $_.id
-  $CurrentSubscriptionName = $_.name
-  $AppRegistration | ForEach-Object {
-   Progress -Message "Currently checking App Registration " -Value "`'$($_.appDisplayName)`' on subscription `'$CurrentSubscriptionName`'" -PrintTime
-   Get-AzureRBACRightsAzCLI -SubscriptionID $CurrentSubscriptionID -SubscriptionName $CurrentSubscriptionName -UserPrincipalName $_.appId -UserDisplayName $_.appDisplayName
-  }
- }
-}
-Function Get-AzureAppRegistrationRBAC { # Get Single App Registration RBAC Rights on a single App Registration [AzCLI]
- Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppID")]$AppRegistrationID,
-  [parameter(Mandatory=$true,ParameterSetName="Name")]$AppRegistrationName,
-  [parameter(Mandatory=$true)]$SubscriptionName
- )
- if ($AppRegistrationName) { $AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID }
-
- Get-AzureRBACRightsAzCLI -UserPrincipalName $AppRegistrationID -SubscriptionName $SubscriptionName -IncludeInherited -HideProgress | Select-Object `
-  @{Name="PrincipalName";Expression={
-   if (Assert-IsGUID $_.PrincipalName) {
-    (Get-AzureServicePrincipal -AppID $_.PrincipalName).DisplayName
-   } else {
-    $_.PrincipalName
-   }
-  }},Type,roleDefinitionName,Subscription,resourceGroup,ResourceName,ResourceType
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses AzCli or Token
  Param (
@@ -12875,7 +12640,14 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
   $AppinfoFull = Get-AzureGraph -Token $authDetails.Token -GraphRequest $SecretRequest -ErrorAction Stop
   $FederatedCredentialFull = Get-AzureGraph -Token $authDetails.Token -GraphRequest $FederatedCredRequest -ErrorAction Stop
 
-  $FederatedCredential = $FederatedCredentialFull.Value
+  # Normalize result shape from Get-AzureGraph (array for collection endpoints, object for direct resources).
+  if ($null -eq $FederatedCredentialFull) {
+   $FederatedCredential = @()
+  } elseif ($FederatedCredentialFull -is [System.Array]) {
+   $FederatedCredential = @($FederatedCredentialFull)
+  } else {
+   $FederatedCredential = @($FederatedCredentialFull)
+  }
   $AppInfo = $AppInfoFull | Select-Object AppId,ID,displayName,passwordCredentials,keyCredentials
   # Merge Data
   $AppInfo | Add-Member -Name FederatedCredential -Value $FederatedCredential -MemberType NoteProperty
@@ -12912,10 +12684,11 @@ Function Get-AzureAppRegistrationSecrets { # Get Azure App Registration Secret
   $Secrets += $FederatedSecrets | ForEach-Object {
    [pscustomobject]@{
     SecretType = "Federated credential"
-    KeyId = $_.KeyId
-    DisplayName = $_.DisplayName
+    KeyId = if ($_.KeyId) { $_.KeyId } else { $_.Id }
+    DisplayName = if ($_.DisplayName) { $_.DisplayName } else { $_.Name }
     StartDateTime = $_.StartDateTime
     EndDateTime = $_.EndDateTime
+    Description = $_.Description
     Issuer = $_.Issuer
     Subject = $_.Subject
     Audiences = ($_.Audiences -join ",")
@@ -13080,7 +12853,7 @@ Function Remove-AzureAppRegistrationSecret { # Remove Secret to App (uses Rest A
  if (! $AppRegistrationObjectID) {
   if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName -Token $authDetails.Token).AppID}
   # Parameters
-  $AppRegistrationObjectID = Get-AzureAppRegistrationFromAppID -AppID $AppRegistrationID -Token $authDetails.Token -Value id
+  $AppRegistrationObjectID = (Get-AzureAppRegistration -Application $AppRegistrationID -Token $authDetails.Token).id
  }
 
  if ($KeyType -eq  "Secret") {
