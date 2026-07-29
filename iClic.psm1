@@ -13759,7 +13759,7 @@ Function Set-AzureServicePrincipalCustomSecurityAttribute { # Set Custom Securit
    customSecurityAttributes = @{
     "$AttributeSetName" = @{
      "@odata.type" = "#Microsoft.DirectoryServices.CustomSecurityAttributeValue"
-     "$AttributeName" = "$AttributeValue"
+     "$AttributeName" = $AttributeValue
     }
    }
   }
