@@ -19331,22 +19331,38 @@ Function Send-Mail { # Send Email using Azure Graph without any external modules
  }
 }
 Function New-AppRegistrationEmailContent { # Used to prepare the content of the email in a structured format (PSCustomObject) that can be easily converted to HTML for the email body.
+ [CmdletBinding(DefaultParameterSetName = 'SingleEntry')]
  param (
-  [string]$TenantID,
+  [parameter(Mandatory = $false, ParameterSetName = 'SingleEntry')]
+  [parameter(Mandatory = $false, ParameterSetName = 'ResultSet')]
+  [GUID]$TenantID,
+  [parameter(Mandatory = $true, ParameterSetName = 'SingleEntry')]
   [string]$ApplicationDisplayName,
-  [string]$ApplicationID,
+  [parameter(Mandatory = $true, ParameterSetName = 'SingleEntry')]
+  [GUID]$ApplicationID,
+  [parameter(Mandatory = $true, ParameterSetName = 'SingleEntry')]
   [string]$secret,
+  [parameter(Mandatory = $true, ParameterSetName = 'SingleEntry')]
   [datetime]$Secret_Start_Date,
+  [parameter(Mandatory = $true, ParameterSetName = 'SingleEntry')]
   [datetime]$Secret_End_Date,
+  [parameter(Mandatory = $true, ParameterSetName = 'ResultSet')]
   $Result
- )
+  )
+
+ # 1. If tenant ID is not provided, use local token first, then global token.
+ if (! $TenantID -and $Global:Token.token_converted) { $TenantID = $Global:Token.token_converted.tid }
+
+ if ($PSCmdlet.ParameterSetName -eq 'SingleEntry' -and ! $TenantID) {
+  throw "TenantID is required in SingleEntry mode."
+ }
 
  # Build one row per object in Result (including duplicates), or fallback to single-parameter row.
  $Rows = @()
  if ($Result) {
   foreach ($Item in @($Result)) {
    $Rows += [ordered]@{
-    "Tenant ID" = $Item.TenantID
+    "Tenant ID" = if ($Item.TenantID) { $Item.TenantID } else { $TenantID }
     "Application Name" = if ($Item.ApplicationDisplayName) { $Item.ApplicationDisplayName } else { $Item."Application Name" }
     "Application ID" = if ($Item.ApplicationID) { $Item.ApplicationID } else { $Item."Application ID" }
     "Secret" = $Item.secret
