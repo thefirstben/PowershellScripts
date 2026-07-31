@@ -8582,6 +8582,43 @@ Function Clear-CBSFolder {
  Remove-Item C:\Windows\Logs\CBS\cbs.log
  Start-Service TrustedInstaller
 }
+function Get-CertProvider { # Check protocol used by a certificate (TPM or not) - Works on PS Core
+ [CmdletBinding()]
+ param (
+  [Parameter(Mandatory = $true, Position = 0)]
+  [string]$Thumbprint,
+
+  [ValidateSet('CurrentUser', 'LocalMachine')]
+  [string]$StoreLocation = 'CurrentUser'
+ )
+
+ $cleanThumbprint = $Thumbprint -replace '\s', ''
+ $userFlag = if ($StoreLocation -eq 'CurrentUser') { "-user" } else { "" }
+
+ # Run certutil against the specific store and thumbprint
+ $rawOutput = certutil $userFlag -store My $cleanThumbprint 2>&1 | Out-String
+
+ if ($rawOutput -match 'Provider\s*=\s*(.+)') {
+  $provider = $matches[1].Trim()
+ }
+ else {
+  $provider = "Provider not found or key missing"
+ }
+
+ # Extract Subject Name if available
+ $subject = "Unknown"
+ if ($rawOutput -match 'Subject:\s*(.+)') {
+  $subject = $matches[1].Trim()
+ }
+
+ [PSCustomObject]@{
+  Thumbprint    = $cleanThumbprint
+  Subject       = $subject
+  StoreLocation = $StoreLocation
+  Provider      = $provider
+  IsTPMProtected         = ($provider -eq "Microsoft Platform Crypto Provider")
+ }
+}
 
 # Non standard verbs
 
