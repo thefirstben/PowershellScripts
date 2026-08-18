@@ -10739,6 +10739,7 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   [parameter(Mandatory = $true, ParameterSetName="ID")][ValidateSet("Group","ServicePrincipal","User","ForeignGroup")]$ID_Type,
   [Parameter(Mandatory=$true)]$Role, # Can be Name or ID
   [Parameter(Mandatory=$true)]$Scope,
+  [Parameter(Mandatory=$false)][String]$Description, # Optional description like in Azure Portal
   [Parameter(Mandatory=$false)]$Condition, # New Parameter for ABAC Logic
   [Parameter(Mandatory=$false)]$ConditionVersion = "2.0", # Default version for Conditions
   $Token, # Must be Azure Management Token
@@ -10785,6 +10786,11 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
    Write-Verbose "Adding ABAC Condition to request"
    $properties["condition"] = $Condition
    $properties["conditionVersion"] = $ConditionVersion
+  }
+
+  if ($Description) {
+   Write-Verbose "Adding description to role assignment request"
+   $properties["description"] = $Description
   }
 
   # Create the Body
@@ -18632,6 +18638,7 @@ Function Get-SentinelAuditInfo {
  # 3. Construct KQL Query
  $Query = @"
   let UserDetails = IdentityInfo
+  | where isnotempty(AccountObjectId)
   | summarize arg_max(TimeGenerated, *) by AccountObjectId
   | project InitiatorId = AccountObjectId, UserDisplayName = AccountDisplayName;
 
@@ -18640,17 +18647,30 @@ Function Get-SentinelAuditInfo {
   $PreFilters
 
   // MEMORY OPTIMIZATION: Project ONLY what we need immediately to prevent 'Low Memory' errors
-  | project TimeGenerated, OperationName, Category, LoggedByService, InitiatedBy, TargetResources, CorrelationId
+  | project TimeGenerated, OperationName, Category, LoggedByService, InitiatedBy, TargetResources, CorrelationId, AdditionalDetails
 
   // Parse Initiator ID
   | extend InitiatedByParams = parse_json(InitiatedBy)
+  | extend AdditionalDetailsParams = parse_json(AdditionalDetails)
+  | extend AdditionalDetailsParams = iff(isnull(AdditionalDetailsParams) or array_length(AdditionalDetailsParams) == 0, dynamic([{"key":"","value":""}]), AdditionalDetailsParams)
+  | mv-apply detail = AdditionalDetailsParams on (
+    summarize
+      ActivityAppId = take_anyif(tostring(detail.value), tostring(detail.key) == "AppId"),
+      ActivityAppOwnerOrganizationId = take_anyif(tostring(detail.value), tostring(detail.key) == "AppOwnerOrganizationId"),
+      ActivityIPAddress = take_anyif(tostring(detail.value), tostring(detail.key) in ("IP Address", "IPAddress", "Source IP Address"))
+  )
   | extend
-    InitiatorId = coalesce(tostring(InitiatedByParams.user.id), tostring(InitiatedByParams.app.appId), tostring(InitiatedByParams.app.servicePrincipalId)),
-    InitiatorNameFallback = coalesce(tostring(InitiatedByParams.user.userPrincipalName), tostring(InitiatedByParams.app.displayName))
+    InitiatorType = iff(isnotempty(tostring(InitiatedByParams.user.id)), "User", iff(isnotempty(tostring(InitiatedByParams.app.displayName)), "Application", "Unknown")),
+    InitiatorId = iff(isnotempty(tostring(InitiatedByParams.user.id)), tostring(InitiatedByParams.user.id), coalesce(tostring(InitiatedByParams.app.appId), tostring(InitiatedByParams.app.servicePrincipalId))),
+    InitiatorNameFallback = iff(isnotempty(tostring(InitiatedByParams.user.userPrincipalName)), tostring(InitiatedByParams.user.userPrincipalName), tostring(InitiatedByParams.app.displayName)),
+    SourceIPAddress = coalesce(tostring(InitiatedByParams.user.ipAddress), ActivityIPAddress)
 
-  // Join User Details (Resolve GUID to Name)
+  // Resolve directory users only. Application actors must remain the application actor,
+  // even when their audit record does not contain an appId or servicePrincipalId.
   | join kind=leftouter (UserDetails) on InitiatorId
-  | extend InitiatorName = coalesce(UserDisplayName, InitiatorNameFallback)
+  | project-away InitiatorId1
+  | extend InitiatorName = iff(InitiatorType == "User", coalesce(UserDisplayName, InitiatorNameFallback), InitiatorNameFallback)
+  | project-away InitiatorNameFallback, ActivityIPAddress
 
   // FILTER BY INITIATOR (Done after join to ensure names are resolved)
   $(if ($Initiator) { "| where InitiatorName contains '$Initiator'" })
@@ -18673,27 +18693,28 @@ Function Get-SentinelAuditInfo {
   | extend mProps = TargetResources.modifiedProperties
   | extend mProps = iff(isnull(mProps) or array_length(mProps) == 0, dynamic([null]), mProps)
 
-  // Get Old/New Values
+  // Get Old/New Values. Keep the first changed property so changes such as
+  // AccountEnabled are visible even when they are not ID or display-name changes.
   | mv-apply mProps on (
     summarize
-      Change_ID_Details = take_anyif(mProps, mProps.displayName has "ObjectID" or mProps.displayName has "UniqueId"),
-      Change_Name_Details = take_anyif(mProps, mProps.displayName has "DisplayName" or mProps.displayName has "UserPrincipalName")
+      Change_Details = take_anyif(mProps, isnotempty(tostring(mProps.displayName)) and tostring(mProps.displayName) !has "Included Updated Properties"),
+      Change_All_Details = make_list(mProps)
   )
 
   | extend
-    OldValue_ID   = tostring(Change_ID_Details.oldValue),
-    NewValue_ID   = tostring(Change_ID_Details.newValue),
-    OldValue_Name = tostring(Change_Name_Details.oldValue),
-    NewValue_Name = tostring(Change_Name_Details.newValue)
+    Change_Property = tostring(Change_Details.displayName),
+    OldValue = tostring(Change_Details.oldValue),
+    NewValue = tostring(Change_Details.newValue),
+    ModifiedProperties = tostring(Change_All_Details)
 
-  $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectID, OldValue_ID, NewValue_ID, OldValue_Name, NewValue_Name" })
+  $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorType, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectID, ActivityAppId, ActivityAppOwnerOrganizationId, SourceIPAddress, Change_Property, OldValue, NewValue, ModifiedProperties" })
   | sort by TimeGenerated desc
 "@
 
  # 4. Execute
  $Result = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
  if ($Readable ) {
-  $Result | Select-Object -ExcludeProperty *ID
+  $Result | Select-Object -ExcludeProperty InitiatedBy,TargetResources,AdditionalDetails,InitiatedByParams,AdditionalDetailsParams,mProps,Change_Details,Change_All_Details,ModifiedProperties
  } else {
   $Result
  }
