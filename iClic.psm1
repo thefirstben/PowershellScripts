@@ -17226,6 +17226,18 @@ Function Add-SharepointSiteAppPermission { # Grant an App Registration access to
 
 # API Call Management
 
+Function New-StaticBearerToken { # Wrap a non-expiring API Key (e.g. Atlassian) into the token shape expected by Get-AuthMethod/Get-AzureGraph
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $True)][string]$ApiKey,
+  [string]$TokenType = "Bearer"
+ )
+ [PSCustomObject]@{
+  token_type   = $TokenType
+  access_token = $ApiKey
+  expires_on   = (Get-Date).AddDays(1) # Static keys don't expire, set far in the future so Assert-IsTokenLifetimeValid passes
+ }
+}
 Function Get-AzureGraph { # Send base graph request without any requirements
  [CmdletBinding()]
  Param (
@@ -17350,6 +17362,61 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   }
 
   Write-Error -Message "Error during Azure Graph Request $URL ($ConvertedErrorMessage)"
+ }
+}
+Function Get-AtlassianOrgAPI { # Send a request to the Atlassian Organization Admin API using an Organization API Key. Handles Atlassian's own 'links.next' pagination (different shape than Graph's @odata.nextLink)
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $True)]$ApiKey,
+  [Parameter(Mandatory = $True)]$OrganizationID,
+  [Parameter(Mandatory = $True)]$Request, # e.g. "/users" or "/events"
+  $BaseURL = 'https://api.atlassian.com/admin/v2',
+  [ValidateSet("GET","POST","DELETE","PATCH","PUT")]$Method="GET",
+  $Limit, # Page size, only honored by endpoints that support a 'limit' query param (e.g. events, groups)
+  [Switch]$SinglePage,
+  $Body # Json Format Body
+ )
+
+ try {
+  $Token = New-StaticBearerToken -ApiKey $ApiKey
+  $header = @{ Authorization = "$($Token.token_type) $($Token.access_token)" ; 'Content-type' = 'application/json' }
+  $URL = $BaseURL + "/orgs/$OrganizationID$Request"
+  if ($Limit) { $URL += $(if ($URL.Contains('?')) { "&limit=$Limit" } else { "?limit=$Limit" }) }
+
+  $GlobalResult = @()
+  $CurrentBody = $Body
+  do {
+   if ($CurrentBody) {
+    $CurrentResult = Invoke-RestMethod -Method $Method -Headers $header -Uri $URL -Body $CurrentBody -ContentType "application/json"
+   } else {
+    $CurrentResult = Invoke-RestMethod -Method $Method -Headers $header -Uri $URL
+   }
+
+   # Direct resource (no 'data' collection) is returned as-is
+   if ($null -eq $CurrentResult.data) { return $CurrentResult }
+
+   $GlobalResult += $CurrentResult.data
+   if ($SinglePage) { return $GlobalResult }
+
+   $NextLink = $CurrentResult.links.next
+   if (-not $NextLink) { $NextLink = $null }
+
+   if ($NextLink -match '^https?://') {
+    # GET-style pagination: 'next' is already a full URL
+    $URL = $NextLink
+   } elseif ($NextLink) {
+    # POST search-style pagination: 'next' is a cursor to merge into the request body, URL stays the same
+    $BodyObject = $CurrentBody | ConvertFrom-Json
+    $BodyObject | Add-Member -MemberType NoteProperty -Name 'cursor' -Value $NextLink -Force
+    $CurrentBody = $BodyObject | ConvertTo-Json -Depth 10
+   } else {
+    $URL = $null
+   }
+  } while ($URL)
+
+  return $GlobalResult
+ } catch {
+  Write-Error "Error during Atlassian Org API Request $URL : $_"
  }
 }
 
@@ -18584,6 +18651,7 @@ Function Get-SentinelAuditInfo {
   $Category,
   $OperationName,
   $TargetName,
+  $CorrelationId,
   $AzureMonitorToken,
   $Duration = '1d',
   $WorkspaceID,
@@ -18610,6 +18678,7 @@ Function Get-SentinelAuditInfo {
  if ($OperationName) { $PreFilters += "| where OperationName contains '$OperationName' `n" }
  if ($Category) { $PreFilters += "| where Category contains '$Category' `n" }
  if ($TargetName) { $PreFilters += "| where TargetResources contains '$TargetName' `n" }
+ if ($CorrelationId) { $PreFilters += "| where CorrelationId == '$CorrelationId' `n" }
 
  if ($ExcludeDefaultApps) {
   $PreFilters += @"
