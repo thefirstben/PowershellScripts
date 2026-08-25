@@ -15181,64 +15181,21 @@ Function Add-ADOGroupMember { # Add ADO Group inside and ADO Group
 
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
  Param (
-  $Throttle = 10, # Time in Seconds to wait in case of throttle
   $ExportFileName = "$iClic_TempPath\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $Token,
-  [Switch]$NoFileExport
+  [Switch]$FileExport
  )
 
  try {
-
   # Doc here : https://learn.microsoft.com/en-us/graph/api/resources/userRegistrationDetails?view=graph-rest-1.0&preserve-view=true
-
-  # Init Variables
-  $Count=0
-  $GlobalResult = @()
-  $ContinueRunning = $True
-  $FirstRun=$True
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  $header = $authDetails.Header
-
-  While ($ContinueRunning) {
-   Progress -Message "Getting all MFA Status of Users Loop $Count : " -Value $GlobalResult.Count -PrintTime
-   Try {
-    if ($FirstRun) {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails" -MaximumRetryCount 2
-     $FirstRun=$False
-    } else {
-      $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest -MaximumRetryCount 2
-    }
-    $NextRequest = $CurrentResult.'@odata.nextLink'
-    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
-    $Count++
-    $GlobalResult += $CurrentResult.Value | Select-Object *,
-     @{Name="MFA_Method_softwareOneTimePasscode";Expression={$_.methodsRegistered -contains 'softwareOneTimePasscode'}},
-     @{Name="MFA_Method_temporaryAccessPass";Expression={$_.methodsRegistered -contains 'temporaryAccessPass'}},
-     @{Name="MFA_Method_email";Expression={$_.methodsRegistered -contains 'email'}},
-     @{Name="MFA_Method_officePhone";Expression={$_.methodsRegistered -contains 'officePhone'}},
-     @{Name="MFA_Method_mobilePhone";Expression={$_.methodsRegistered -contains 'mobilePhone'}},
-     @{Name="MFA_Method_alternateMobilePhone";Expression={$_.methodsRegistered -contains 'alternateMobilePhone'}},
-     @{Name="MFA_Method_windowsHelloForBusiness";Expression={$_.methodsRegistered -contains 'windowsHelloForBusiness'}},
-     @{Name="MFA_Method_passKeyDeviceBound";Expression={$_.methodsRegistered -contains 'passKeyDeviceBound'}},
-     @{Name="MFA_Method_passKeyDeviceBoundAuthenticator";Expression={$_.methodsRegistered -contains 'passKeyDeviceBoundAuthenticator'}},
-     @{Name="MFA_Method_securityQuestion";Expression={$_.methodsRegistered -contains 'securityQuestion'}},
-     @{Name="MFA_Method_microsoftAuthenticatorPush";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPush'}},
-     @{Name="MFA_Method_microsoftAuthenticatorPasswordless";Expression={$_.methodsRegistered -contains 'microsoftAuthenticatorPasswordless'}}
-   } catch {
-    $ErrorInfo = $Error[0]
-    if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
-     Start-Sleep -Seconds $Throttle ; write-host " Being throttled waiting $Throttle`s"
-    } else {
-     Write-Error "$($ErrorInfo.Message) ($($ErrorInfo.StatusCode))"
-    }
-   }
-  }
-  if ($NoFileExport) {
-   Return $GlobalResult
-  } else {
-   $GlobalResult | Export-CSV $ExportFileName
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $UserRegistrationMethods = get-azuregraph -GraphRequest "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails`?`$top=999" -Token $authDetails.token -Throttle $Throttle
+  if ($FileExport) {
+   $UserRegistrationMethods | Export-CSV $ExportFileName
    Write-Blank
    Return $ExportFileName
+  } else {
+   Return $UserRegistrationMethods
   }
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -15591,7 +15548,7 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
 
  # We create the list of columns here.
   # We use .GetNewClosure() to ensure the $Name variable is "frozen" for each iteration.
-  $ReadableProperties = @('GroupName','displayName','userPrincipalName','accountEnabled')
+  $ReadableProperties = @('GroupName','displayName','userPrincipalName','accountEnabled','userType')
   $ReadableProperties += 1..15 | ForEach-Object {
    $Index = $_
    $Name = "extensionAttribute$Index"
@@ -17453,7 +17410,8 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
   [Switch]$ShowOnlyEnabled,
   [Switch]$ShowJSON,
   $ContentFilter,
-  $NameFilter
+  $NameFilter,
+  $GroupFilter # Group Name or Group ID - Only show policies referencing this group
  )
  Try {
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
@@ -17461,9 +17419,24 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
  Write-Verbose "Getting all Conditional Access Policies"
  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/identity/conditionalAccess/Policies"
 
+ if ($GroupFilter) {
+  if (Assert-IsGUID -Value $GroupFilter) {
+   $GroupFilterID = $GroupFilter
+  } else {
+   Write-Verbose "Resolving Group Name [$GroupFilter] to ID"
+   $GroupFound = Get-AzureADGroup -Token $authDetails.Token -Group $GroupFilter -HideError
+   if (! $GroupFound) { Throw "No group found with name '$GroupFilter'." }
+   if (($GroupFound | Measure-Object).Count -gt 1) { Throw "More than one group found with name '$GroupFilter'. Please specify by ID." }
+   $GroupFilterID = $GroupFound.id
+  }
+  Write-Verbose "Filter on policies containing Group ID [$GroupFilterID]"
+  $Result = $Result | Where-Object { ($_ | ConvertTo-Json -Depth 10).Contains($GroupFilterID) }
+ }
+
  Write-Verbose "Getting all NamedLocations"
  $NamedLocations = Get-AzureConditionalAccessLocations -Token $authDetails.Token
  $NamedLocationsHash = $NamedLocations | Group-Object -Property ID -AsHashTable
+ if (! $NamedLocationsHash) { $NamedLocationsHash = @{} }
 
  Write-Verbose "Getting all Role Definitions"
  $RoleNames = Get-AzureRoleDefinitions -Token $authDetails.Token
@@ -17486,17 +17459,21 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
  # To allow parsing to get only GUID we need a "Template"
  $dummyGuid = [guid]::Empty
 
+ $UsersListHash = @{}
  [array]$UsersToConvertList = $Result.conditions.users.includeUsers + $Result.conditions.users.excludeUsers + $Result.conditions.users.includeGroups + $Result.conditions.users.excludeGroups | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
  if ($UsersToConvertList) {
   Write-Verbose "Get details of all individual IDs [Users/Groups]"
   $UsersList = Get-AzureADObjectInfo -token $authDetails.Token -ObjectIDList $UsersToConvertList
   $UsersListHash = $UsersList | Group-Object -Property ID -AsHashTable
+  if (! $UsersListHash) { $UsersListHash = @{} }
  }
+ $AppListHash = @{}
  [array]$AppToConvertList = $Result.conditions.applications.includeApplications + $Result.conditions.applications.excludeApplications | Sort-Object -Unique | Where-Object { [guid]::TryParse($_, [ref]$dummyGuid) }
  if ($AppToConvertList) {
   Write-Verbose "Get details of all individual IDs [Apps]"
   $AppList = Get-AzureServicePrincipalNameFromID -Token $authDetails.Token -Batch -AppIDList $AppToConvertList
   $AppListHash = $AppList | Group-Object -Property AppID -AsHashTable
+  if (! $AppListHash) { $AppListHash = @{} }
  }
 
  [array]$ExternalTenantIdToConvertList = $Result | ForEach-Object {
@@ -17572,36 +17549,47 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
    $Controls
   }
 
-  $SignInFrequency = if ($Policy.sessionControls.signInFrequency.isEnabled) {
-   $Policy.sessionControls.signInFrequency.frequencyInterval
-  } else {
-   "False"
+  $SessionControlsList = @()
+  if ($Policy.sessionControls.applicationEnforcedRestrictions.isEnabled) { $SessionControlsList += "applicationEnforcedRestrictions" }
+  if ($Policy.sessionControls.cloudAppSecurity.isEnabled) { $SessionControlsList += "cloudAppSecurity [$($Policy.sessionControls.cloudAppSecurity.cloudAppSecurityType)]" }
+  if ($Policy.sessionControls.signInFrequency.isEnabled) {
+   $SignInFrequencyDetail = if ($Policy.sessionControls.signInFrequency.frequencyInterval -eq "everyTime") {
+    "everyTime"
+   } else {
+    "$($Policy.sessionControls.signInFrequency.value) $($Policy.sessionControls.signInFrequency.type)"
+   }
+   $SessionControlsList += "signInFrequency [$SignInFrequencyDetail]"
   }
+  if ($Policy.sessionControls.persistentBrowser.isEnabled) { $SessionControlsList += "persistentBrowser [$($Policy.sessionControls.persistentBrowser.mode)]" }
+  if ($Policy.sessionControls.secureSignInSession.isEnabled) { $SessionControlsList += "secureSignInSession" }
+  if ($Policy.sessionControls.continuousAccessEvaluation.mode) { $SessionControlsList += "continuousAccessEvaluation [$($Policy.sessionControls.continuousAccessEvaluation.mode)]" }
+  if ($Policy.sessionControls.disableResilienceDefaults -eq $true) { $SessionControlsList += "disableResilienceDefaults" }
+  $SessionControls = $SessionControlsList -join(";")
 
   $IncludedUsers = if (($Policy.conditions.users.includeUsers) -and ($Policy.conditions.users.includeUsers -ne "All")) {
-   ($Policy.conditions.users.includeUsers | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
+   ($Policy.conditions.users.includeUsers | ForEach-Object { if ($UsersListHash.ContainsKey($_)) { $UsersListHash[$_].displayName } else { $_ } }) -join(";")
   } else {
    $Policy.conditions.users.includeUsers
   }
 
   $IncludeGroups = if ($Policy.conditions.users.includeGroups) {
-   ($Policy.conditions.users.includeGroups | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
+   ($Policy.conditions.users.includeGroups | ForEach-Object { if ($UsersListHash.ContainsKey($_)) { $UsersListHash[$_].displayName } else { $_ } }) -join(";")
   } else {
    $Policy.conditions.users.includeGroups
   }
 
-  $IncludeRoles = ($Policy.conditions.users.includeRoles | ForEach-Object { $RoleNamesHash[$_].displayName }) -join(";")
+  $IncludeRoles = ($Policy.conditions.users.includeRoles | ForEach-Object { if ($RoleNamesHash.ContainsKey($_)) { $RoleNamesHash[$_].displayName } else { $_ } }) -join(";")
   $IncludeGuestsOrExternalUsers = & $FormatGuestOrExternalUsers $Policy.conditions.users.includeGuestsOrExternalUsers
-  $ExcludeUsers = ($Policy.conditions.users.excludeUsers | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
-  $ExcludeGroups = ($Policy.conditions.users.excludeGroups | ForEach-Object { $UsersListHash[$_].displayName }) -join(";")
-  $ExcludeRoles = ($Policy.conditions.users.excludeRoles | ForEach-Object { $RoleNamesHash[$_].displayName }) -join(";")
+  $ExcludeUsers = ($Policy.conditions.users.excludeUsers | ForEach-Object { if ($UsersListHash.ContainsKey($_)) { $UsersListHash[$_].displayName } else { $_ } }) -join(";")
+  $ExcludeGroups = ($Policy.conditions.users.excludeGroups | ForEach-Object { if ($UsersListHash.ContainsKey($_)) { $UsersListHash[$_].displayName } else { $_ } }) -join(";")
+  $ExcludeRoles = ($Policy.conditions.users.excludeRoles | ForEach-Object { if ($RoleNamesHash.ContainsKey($_)) { $RoleNamesHash[$_].displayName } else { $_ } }) -join(";")
   $ExcludeGuestsOrExternalUsers = & $FormatGuestOrExternalUsers $Policy.conditions.users.excludeGuestsOrExternalUsers
 
   $IncludeApplications = ($Policy.conditions.applications.includeApplications | ForEach-Object {
-   if (Assert-IsGUID -Value $_) { $AppListHash[$_].DisplayName } else { $_ }
+   if ((Assert-IsGUID -Value $_) -and $AppListHash.ContainsKey($_)) { $AppListHash[$_].DisplayName } else { $_ }
   }) -join(";")
   $ExcludeApplications = ($Policy.conditions.applications.excludeApplications | ForEach-Object {
-   if (Assert-IsGUID -Value $_) { $AppListHash[$_].DisplayName } else { $_ }
+   if ((Assert-IsGUID -Value $_) -and $AppListHash.ContainsKey($_)) { $AppListHash[$_].DisplayName } else { $_ }
   }) -join(";")
 
   $ApplicationFilterInclude = ($Policy.conditions.applications.applicationFilter | Where-Object mode -eq include).Rule
@@ -17623,13 +17611,13 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
   $DeviceFilterExluded = if ($Policy.conditions.devices.deviceFilter) { ($Policy.conditions.devices.deviceFilter | Where-Object {$_.mode -eq "exclude"}).Rule }
 
   $IncludeLocations = if (($Policy.conditions.locations.includeLocations) -and ($Policy.conditions.locations.includeLocations -ne "All")) {
-   ($Policy.conditions.locations.includeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName }) -join(";")
+   ($Policy.conditions.locations.includeLocations | ForEach-Object { if ($NamedLocationsHash.ContainsKey($_)) { $NamedLocationsHash[$_].displayName } else { $_ } }) -join(";")
   } else {
    $Policy.conditions.locations.includeLocations
   }
 
   $ExcludeLocations = if (($Policy.conditions.locations.excludeLocations) -and ($Policy.conditions.locations.excludeLocations -ne "All")) {
-   ($Policy.conditions.locations.excludeLocations | ForEach-Object { $NamedLocationsHash[$_].displayName }) -join(";")
+   ($Policy.conditions.locations.excludeLocations | ForEach-Object { if ($NamedLocationsHash.ContainsKey($_)) { $NamedLocationsHash[$_].displayName } else { $_ } }) -join(";")
   } else {
    $Policy.conditions.locations.excludeLocations
   }
@@ -17641,7 +17629,7 @@ Function Get-AzureConditionalAccessPolicies { # Get all conditional Access Polic
    modifiedDateTime = $Policy.modifiedDateTime
    state = $Policy.state
    Access_Control = $AccessControl
-   "Sign-in frequency" = $SignInFrequency
+   Session_Control = $SessionControls
    IncludedUsers = $IncludedUsers
    includeGroups = $IncludeGroups
    includeRoles = $IncludeRoles
