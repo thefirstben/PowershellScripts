@@ -11068,6 +11068,33 @@ Function New-AzureServicePrincipal { # Created a new Service Principal that can 
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function Add-AzureServicePrincipal { # Add Service Principal to Tenant using an existing App Registration (AppID) - Used to create First Party Service Principals
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true)]
+  [string]$AppID,
+  $Token
+ )
+ try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ Write-Verbose "Checking for existing App with ApplicationID $AppID"
+ $existingApp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/ServicePrincipals?`$filter=appId eq '$AppID'"
+ if ($existingApp.Count -gt 0) {
+  $AppID = $existingApp.appId
+  Throw "App Registration with ApplicationID '$AppID' already exists with ID: $AppID"
+ }
+
+ Write-Verbose "Creating App"
+ $Body = (@{
+  "appId" = "$AppID"
+ }) | ConvertTo-JSON
+
+ $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals" -Method POST -Body $Body
+ Write-Host -ForegroundColor Green -Object "Created Service Principal for AppID $AppID with ObjectID $($Result.id)"
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
 Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
  Param (
@@ -18437,7 +18464,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
 
   # Get Simplified Answer, important when looking for much data to avoid getting blocked by API
   if ($SimplifiedQuery) {
-   $QueryStart += '| project TimeGenerated,AppDisplayName,AppId,ResourceDisplayName,ResourceIdentity,UserDisplayName,UserId,UserPrincipalName,
+    $QueryStart += '| project TimeGenerated,AppDisplayName = coalesce(AppDisplayName, ServicePrincipalName),AppId,ResourceDisplayName,ResourceIdentity,UserDisplayName,UserId,UserPrincipalName,
    IPAddress,AuthenticationRequirement,Category,ResultSignature,ConditionalAccessStatus, ClientAppUsed, AuthenticationProtocol,
    ResultDescription,DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
    DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,
@@ -18770,8 +18797,19 @@ Function Get-SentinelAuditInfo {
 
  # 4. Execute
  $Result = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+ if ($Result) {
+  $localTz = if ($env:WEBSITE_TIME_ZONE) { [System.TimeZoneInfo]::FindSystemTimeZoneById($env:WEBSITE_TIME_ZONE) } else { [System.TimeZoneInfo]::Local }
+  $Result = @($Result | ForEach-Object {
+   if ($_.TimeGenerated) {
+    $_ | Add-Member -MemberType NoteProperty -Name 'Local_TimeGenerated' -Value ([System.TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind($_.TimeGenerated, [System.DateTimeKind]::Utc), $localTz)) -Force
+    $_ | Add-Member -MemberType NoteProperty -Name 'Local_Timezone' -Value $localTz.Id -Force
+   }
+   $_
+  })
+ }
  if ($Readable ) {
-  $Result | Select-Object -ExcludeProperty InitiatedBy,TargetResources,AdditionalDetails,InitiatedByParams,AdditionalDetailsParams,mProps,Change_Details,Change_All_Details,ModifiedProperties
+  # $Result | Select-Object -ExcludeProperty InitiatedBy,TargetResources,AdditionalDetails,InitiatedByParams,AdditionalDetailsParams,mProps,Change_Details,Change_All_Details,ModifiedProperties
+  $Result | Select-Object Local_TimeGenerated,OperationName,Category,LoggedByService,InitiatorType,SourceIPAddress,InitiatorName,ModifiedObjectDisplayName,ModifiedObjectType,Change_Property,OldValue,NewValue
  } else {
   $Result
  }
