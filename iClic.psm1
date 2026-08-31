@@ -15207,6 +15207,7 @@ Function Add-ADOGroupMember { # Add ADO Group inside and ADO Group
 # MFA
 
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
+  [CmdletBinding()]
  Param (
   $ExportFileName = "$iClic_TempPath\Global_AzureAD_MFA_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $Token,
@@ -16152,7 +16153,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
   $ExportFileName = "$iClic_TempPath\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $Throttle = 2,
   $Token,
-  [Switch]$NoFileExport,
+  [Switch]$FileExport,
   [Switch]$HideProgress
  )
  # Get list of all AAD users (takes some minutes with 50k+ users)
@@ -16224,7 +16225,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
     Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
    }
   }
-  if ($NoFileExport) {
+  if (-not $FileExport) {
    return $GlobalResult
   } else {
    $GlobalResult | Export-CSV $ExportFileName
@@ -17202,6 +17203,51 @@ Function Add-SharepointSiteAppPermission { # Grant an App Registration access to
   $encodedSiteID = [System.Uri]::EscapeDataString($SiteID)
   $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$encodedSiteID/permissions" -Method POST -Body $body -ErrorAction Stop
   Write-Host -ForegroundColor Green "Permission granted successfully. Permission ID: $($result.id)"
+  return $result
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-SharepointSiteAppPermission { # List App Registration(s) permissions granted on a specific SharePoint site (Sites.Selected model) [Uses Rest API]
+ [CmdletBinding(DefaultParameterSetName = "BySiteID")]
+ Param (
+  [Parameter(Mandatory = $true, ParameterSetName = "BySiteID")][string]$SiteID,     # SharePoint Site ID (hostname,guid,guid format from Graph API)
+  [Parameter(Mandatory = $true, ParameterSetName = "ByURL")][string]$SiteURL,       # Full SharePoint URL e.g. https://DOMAIN.sharepoint.com/sites/SITENAME
+  [string]$AppID,                                                                   # Optional: filter results to a specific App (Application) ID
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Resolve Site ID from URL if provided
+  if ($PSCmdlet.ParameterSetName -eq "ByURL") {
+   Write-Host -ForegroundColor DarkMagenta "Resolving Site ID from URL: $SiteURL"
+   $site = Get-SharepointSiteID -SiteURL $SiteURL -Token $authDetails.Token -ErrorAction Stop
+   $SiteID = $site.id
+  }
+
+  Write-Host -ForegroundColor DarkMagenta "Retrieving permissions on Site '$SiteID'"
+  $encodedSiteID = [System.Uri]::EscapeDataString($SiteID)
+  $permissions = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/sites/$encodedSiteID/permissions" -ErrorAction Stop
+
+  # Flatten each permission's identity (application/user) into readable columns instead of nested objects
+  $result = foreach ($permission in $permissions) {
+   $identity = $permission.grantedToIdentitiesV2 | Select-Object -First 1
+   if (! $identity) { $identity = $permission.grantedToIdentities | Select-Object -First 1 }
+
+   [PSCustomObject]@{
+    PermissionID = $permission.id
+    Roles        = $permission.roles -join ","
+    AppID        = $identity.application.id
+    AppName      = $identity.application.displayName
+    GrantedTo    = if ($identity.application) { "Application" } elseif ($identity.user) { "User" } else { "Unknown" }
+   }
+  }
+
+  if ($AppID) {
+   $result = $result | Where-Object { $_.AppID -eq $AppID }
+  }
+
   return $result
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
