@@ -12421,6 +12421,83 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function Add-AzureAppRegistrationCertificate { # Add Certificate to App (Token)
+ [CmdletBinding()]
+ Param (
+  [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # Accepts App Registration Name or AppID (GUID)
+  [parameter(Mandatory=$true)]$Certificate, # Accepts a X509Certificate2 object, a path to a .cer/.crt/.pfx file (public key only), or a Base64 DER-encoded string
+  $CertificateDescription,
+  [switch]$ShowObjectID,
+  [switch]$Force,
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $AppInfo = Get-AzureAppRegistration -Application $Application -ValuesToShow "id,appId,displayName,keyCredentials" -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
+
+  $ExistingCertificates = @($AppInfo.keyCredentials | Where-Object { $_ })
+  if ($ExistingCertificates.Count -gt 1) {
+   write-host -ForegroundColor "Red" -Object "There is already $($ExistingCertificates.Count) Certificate(s) for this App $($AppInfo.displayName) ($($AppInfo.AppID)), remove existing certificates or use -Force to add another one"
+   if (! $Force) { return }
+  }
+
+  # Normalize input Certificate (object, file path, or Base64 string) to a X509Certificate2 object
+  if ($Certificate -is [System.Security.Cryptography.X509Certificates.X509Certificate2]) {
+   $CertObject = $Certificate
+  } elseif ($Certificate -is [string] -and (Test-Path $Certificate)) {
+   $CertObject = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (Resolve-Path $Certificate).Path
+  } elseif ($Certificate -is [string]) {
+   $CertBytes = [System.Convert]::FromBase64String(($Certificate -replace "-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s",""))
+   $CertObject = New-Object -TypeName System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (,$CertBytes)
+  } else {
+   Throw "Unsupported Certificate parameter type, provide a X509Certificate2 object, a file path, or a Base64 DER-encoded string"
+  }
+
+  if (! $CertificateDescription) { $CertificateDescription = $CertObject.Subject }
+
+  # Parameters
+  $AppObjectId = $AppInfo.ID
+  $AppName = $AppInfo.displayName
+
+  $GraphURL = "https://graph.microsoft.com/v1.0/applications/$AppObjectId"
+
+  $NewKeyCredential = @{
+   type = "AsymmetricX509Cert"
+   usage = "Verify"
+   key = [System.Convert]::ToBase64String($CertObject.GetRawCertData())
+   displayName = $CertificateDescription
+  }
+
+  # Existing certificates must be resent as-is (without their private 'key') so Graph keeps them instead of removing them.
+  $params = @{
+   keyCredentials = @($ExistingCertificates + $NewKeyCredential)
+  }
+  $ParamJson = $params | ConvertTo-Json -Depth 10
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL -Method PATCH -Body $ParamJson -ErrorAction Stop | Out-Null
+
+  if ($Global:TenantID) { $AppInfo | Add-Member -Name TenantID -Value $Global:TenantID -MemberType NoteProperty -Force }
+
+  # Trust the PATCH and build the result from the request/certificate itself rather than re-fetching, which is too fast and returns incomplete/unreplicated data.
+  $Result = [pscustomobject]@{
+   TenantID               = $Global:TenantID
+   ApplicationDisplayName = $AppName
+   ApplicationID          = $AppInfo.AppID
+   ApplicationObjectID    = $AppObjectId
+   Certificate_DisplayName = $CertificateDescription
+   Certificate_Thumbprint = $CertObject.Thumbprint
+   Certificate_Start_Date = $CertObject.NotBefore
+   Certificate_End_Date   = $CertObject.NotAfter
+  }
+  if ( ! $ShowObjectID) { $Result = $Result | Select-Object -ExcludeProperty ApplicationObjectID }
+
+  # Print Result
+  $Result
+
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
 Function Add-AzureAppRegistrationRedirectURI { # Add Redirect URI to App Registration without removing existing values
  [CmdletBinding()]
  Param (
