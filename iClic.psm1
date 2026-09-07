@@ -10743,7 +10743,12 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   [Parameter(Mandatory=$false)]$Condition, # New Parameter for ABAC Logic
   [Parameter(Mandatory=$false)]$ConditionVersion = "2.0", # Default version for Conditions
   $Token, # Must be Azure Management Token
-  $APIVersion = "2022-04-01"
+  $APIVersion = "2022-04-01",
+  [switch]$Eligible, # Create a PIM Eligible assignment instead of an Active one
+  [Parameter(Mandatory=$false)]$EligibleDuration = "P365D", # ISO8601 duration (ex : P365D / PT8H) - Default policy usually caps eligibility at 1 year
+  [switch]$EligiblePermanent, # Requires the PIM policy at that scope to allow permanent eligible assignments
+  [Parameter(Mandatory=$false)]$EligibleStartDateTime, # Optional start date, defaults to now
+  $PIMAPIVersion = "2020-10-01"
   )
 
  Try {
@@ -10793,12 +10798,37 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
    $properties["description"] = $Description
   }
 
-  # Create the Body
-  $body = @{ properties = $properties } | ConvertTo-Json -Depth 5
+  if ($Eligible) {
+   # PIM Eligible assignments use roleEligibilityScheduleRequests instead of roleAssignments
+   $properties["requestType"] = "AdminAssign"
+   $properties.Remove("principalType")
+   if ($Description) { $properties["justification"] = $Description ; $properties.Remove("description") }
+
+   if ($EligibleStartDateTime) { $StartDate = (Get-Date $EligibleStartDateTime).ToUniversalTime() } else { $StartDate = (Get-Date).ToUniversalTime() }
+
+   if ($EligiblePermanent) {
+    $expiration = @{ type = "NoExpiration" }
+   } else {
+    $expiration = @{ type = "AfterDuration" ; duration = $EligibleDuration }
+   }
+
+   $properties["scheduleInfo"] = @{
+    startDateTime = $StartDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    expiration = $expiration
+   }
+
+   $body = @{ properties = $properties } | ConvertTo-Json -Depth 5
+
+   Write-Host -ForegroundColor Cyan -Object "Assigning ELIGIBLE role $Role for $Id [$ID_Type] on Scope $Scope"
+   $putUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleEligibilityScheduleRequests/$($assignmentName)?api-version=$PIMAPIVersion"
+  } else {
+   $body = @{ properties = $properties } | ConvertTo-Json -Depth 5
+
+   Write-Host -ForegroundColor Cyan -Object "Assigning role $Role for $Id [$ID_Type] on Scope $Scope"
+   $putUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleAssignments/$($assignmentName)?api-version=$APIVersion"
+  }
 
   # Run Graph Method
-  Write-Host -ForegroundColor Cyan -Object "Assigning role $Role for $Id [$ID_Type] on Scope $Scope"
-  $putUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleAssignments/$($assignmentName)?api-version=$APIVersion"
   $response = Get-AzureGraph -Token $authDetails.Token -GraphRequest $putUrl -ErrorAction Stop -Method PUT -Body $body
   Write-Host -ForegroundColor Green "Success: Role assigned."
   if ($Verbose) { return $response }
@@ -10813,28 +10843,47 @@ Function Remove-AzureRBACRights { # Remove rights to a resource using UserName o
   [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Role, # Role name or ID
   [parameter(Mandatory = $true, ParameterSetName="UserRoleScope")]$Scope,
   [parameter(Mandatory = $true, ParameterSetName="ID")]$AssignmentID, # Full assignment ID or just the GUID
+  [Switch]$Eligible, # Target a PIM Eligible assignment instead of an Active one
   [Switch]$ShowProgress,
   $Token, # Must be Azure Management Token
-  $APIVersion = "2022-04-01"
+  $APIVersion = "2022-04-01",
+  $PIMAPIVersion = "2020-10-01"
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  # Eligible assignments are read-only projections, they can only be removed by sending an AdminRemove request
+  $RemoveEligibility = {
+   Param($EligibleScope,$PrincipalId,$RoleDefinitionId)
+   $RequestBody = @{ properties = @{
+     principalId = $PrincipalId
+     roleDefinitionId = $RoleDefinitionId
+     requestType = "AdminRemove"
+   }} | ConvertTo-Json -Depth 5
+   $RequestUrl = "https://management.azure.com$($EligibleScope)/providers/Microsoft.Authorization/roleEligibilityScheduleRequests/$([Guid]::NewGuid().Guid)?api-version=$PIMAPIVersion"
+   Get-AzureGraph -Token $authDetails.Token -GraphRequest $RequestUrl -Method PUT -Body $RequestBody -ErrorAction Stop | Out-Null
+   Write-Host -ForegroundColor Green "Successfully removed eligible assignment for principal $PrincipalId on scope $EligibleScope"
+  }
 
   if ($AssignmentID) {
    # Direct deletion using Assignment ID
    if ($ShowProgress) { Progress -Message "Removing permission" -Value $AssignmentID }
 
-   # If AssignmentID is a full path, use it directly; otherwise construct the URL
-   if ($AssignmentID -match "^/") {
-    $DeleteUrl = "https://management.azure.com$($AssignmentID)?api-version=$APIVersion"
-   } else {
+   if ($AssignmentID -notmatch "^/") {
     # AssignmentID is just a GUID, need scope to construct full path
     Throw "When using AssignmentID as GUID only, please provide the full assignment ID path (e.g., /subscriptions/.../providers/Microsoft.Authorization/roleAssignments/{guid})"
    }
 
-   Write-Verbose "Deleting role assignment: $AssignmentID"
-   Get-AzureGraph -Token $authDetails.Token -GraphRequest $DeleteUrl -Method DELETE -ErrorAction Stop
-   Write-Host -ForegroundColor Green "Successfully removed role assignment: $AssignmentID"
+   if ($AssignmentID -match "/roleEligibilitySchedule") {
+    Write-Verbose "Eligible assignment detected, retrieving details before sending removal request"
+    $EligibleItem = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com$($AssignmentID)?api-version=$PIMAPIVersion" -ErrorAction Stop
+    & $RemoveEligibility $EligibleItem.properties.scope $EligibleItem.properties.principalId $EligibleItem.properties.roleDefinitionId
+   } else {
+    $DeleteUrl = "https://management.azure.com$($AssignmentID)?api-version=$APIVersion"
+    Write-Verbose "Deleting role assignment: $AssignmentID"
+    Get-AzureGraph -Token $authDetails.Token -GraphRequest $DeleteUrl -Method DELETE -ErrorAction Stop
+    Write-Host -ForegroundColor Green "Successfully removed role assignment: $AssignmentID"
+   }
 
   } else {
    # Find the assignment based on Id, Role, and Scope, then delete it
@@ -10857,7 +10906,11 @@ Function Remove-AzureRBACRights { # Remove rights to a resource using UserName o
 
    # Find the assignment
    $Filter = "principalId eq '$Id'"
-   $ListUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleAssignments?`$filter=$Filter&api-version=$APIVersion"
+   if ($Eligible) {
+    $ListUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?`$filter=$Filter&api-version=$PIMAPIVersion"
+   } else {
+    $ListUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleAssignments?`$filter=$Filter&api-version=$APIVersion"
+   }
    $assignments = Get-AzureGraph -Token $authDetails.Token -GraphRequest $ListUrl -ErrorAction Stop
 
    # Filter by role definition
@@ -10873,10 +10926,15 @@ Function Remove-AzureRBACRights { # Remove rights to a resource using UserName o
 
    # Delete each matching assignment
    $matchingAssignment | ForEach-Object {
-    $DeleteUrl = "https://management.azure.com$($_.id)?api-version=$APIVersion"
-    Write-Verbose "Deleting role assignment: $($_.id)"
-    Get-AzureGraph -Token $authDetails.Token -GraphRequest $DeleteUrl -Method DELETE -ErrorAction Stop
-    Write-Host -ForegroundColor Green "Successfully removed role assignment: $($_.properties.roleDefinitionId) for principal $Id"
+    if ($Eligible) {
+     Write-Verbose "Removing eligible assignment: $($_.id)"
+     & $RemoveEligibility $_.properties.scope $_.properties.principalId $_.properties.roleDefinitionId
+    } else {
+     $DeleteUrl = "https://management.azure.com$($_.id)?api-version=$APIVersion"
+     Write-Verbose "Deleting role assignment: $($_.id)"
+     Get-AzureGraph -Token $authDetails.Token -GraphRequest $DeleteUrl -Method DELETE -ErrorAction Stop
+     Write-Host -ForegroundColor Green "Successfully removed role assignment: $($_.properties.roleDefinitionId) for principal $Id"
+    }
    }
   }
 
@@ -13212,9 +13270,9 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
  $header = $authDetails.Header
 
  # --- BATCH PROCESSING LOGIC ---
- if ($Batch) {
+ if ($Batch -and (@($(if ($PSCmdlet.ParameterSetName -eq "BatchAppID") { $AppIDList } else { $IDList })).Count -gt 1)) {
   # Determine which list to process based on the parameter set
-  $itemList = if ($PSCmdlet.ParameterSetName -eq "BatchAppID") { $AppIDList } else { $IDList }
+  $itemList = @(if ($PSCmdlet.ParameterSetName -eq "BatchAppID") { $AppIDList } else { $IDList })
 
   # Initialize a hashtable to store results, defaulting to the original value for not-found items
   $resultsHash = @{}
@@ -13229,8 +13287,13 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
    $chunk = $itemList[$i..($i + $batchSize - 1)]
 
    # Build the array of individual requests for the batch body
+   # Use a unique index-based id (Graph requires unique ids per batch, item values may contain duplicates)
    $requests = @()
-   foreach ($item in $chunk) {
+   $idMap = @{}
+   for ($j = 0; $j -lt $chunk.Count; $j++) {
+    $item = $chunk[$j]
+    $batchId = "$j"
+    $idMap[$batchId] = $item
     # Always select displayName for batch mode to ensure the output object is consistent.
     $requestUrl = if ($PSCmdlet.ParameterSetName -eq "BatchAppID") {
      "/servicePrincipals(appId='$item')?`$select=displayName"
@@ -13238,7 +13301,7 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
      "/servicePrincipals/$item`?`$select=displayName"
     }
     $requests += @{
-     id = $item # Use the actual ID for easy correlation in the response
+     id = $batchId
      method = "GET"
      url = $requestUrl
     }
@@ -13254,8 +13317,8 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
    # Process the responses from the batch
    foreach ($response in $batchResult.responses) {
     if ($response.status -eq 200) {
-     # Update the hash table with the successful result
-     $resultsHash[$response.id] = $response.body.displayName
+     # Update the hash table with the successful result, mapping back from the batch id to the original item
+     $resultsHash[$idMap[$response.id]] = $response.body.displayName
     }
    }
   }
@@ -13272,30 +13335,40 @@ Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Nam
   }
  }
 
- # --- SINGLE ITEM PROCESSING LOGIC ---
+ # --- SINGLE ITEM PROCESSING LOGIC --- (also used when Batch is set but the list only has one item)
  else {
-  # Determine which input value was provided
-  if ($PSCmdlet.ParameterSetName -eq "AppID") { $RequestedValue = $AppID } else { $RequestedValue = $ID }
+  # Determine which input value was provided, pulling from the Batch list(s) when applicable
+  $IsBatchAppID = $PSCmdlet.ParameterSetName -eq "BatchAppID"
+  $IsBatchID = $PSCmdlet.ParameterSetName -eq "BatchID"
+  if ($IsBatchAppID) { $CurrentAppID = $AppIDList[0] } else { $CurrentAppID = $AppID }
+  if ($IsBatchID) { $CurrentID = $IDList[0] } else { $CurrentID = $ID }
+  if ($PSCmdlet.ParameterSetName -eq "AppID" -or $IsBatchAppID) { $RequestedValue = $CurrentAppID } else { $RequestedValue = $CurrentID }
   try {
    # Build the appropriate URL for a single lookup
-   if ($ID) {
-    $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals/$ID`?`$select=$Value"
+   if ($CurrentID) {
+    $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals/$CurrentID`?`$select=$Value"
    } else {
-    $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals(appId='$AppID')`?`$select=$Value"
+    $RequestURL = "https://graph.microsoft.com/v1.0/ServicePrincipals(appId='$CurrentAppID')`?`$select=$Value"
    }
 
    $Result = (Invoke-RestMethod -Method GET -headers $header -Uri $RequestURL)
 
-   # If a result is found, return the specified property value, otherwise return the original input
-   if (! $Result ) {
-    Return $RequestedValue
-   } else {
-    Return $Result.$Value
-   }
+   if (! $Result ) { $ReturnValue = $RequestedValue } else { $ReturnValue = $Result.$Value }
   } catch {
    # If the API call fails (e.g., 404 Not Found), return the original input
    Write-Verbose "Application $RequestedValue not found"
-   return $RequestedValue
+   $ReturnValue = $RequestedValue
+  }
+
+  # Keep the same two-column output shape as the Batch path when Batch was requested
+  if ($Batch) {
+   $idColumnName = if ($IsBatchAppID) { 'AppID' } else { 'ID' }
+   return [PSCustomObject]@{
+    $idColumnName = $RequestedValue
+    DisplayName   = $ReturnValue
+   }
+  } else {
+   return $ReturnValue
   }
  }
 
