@@ -18318,6 +18318,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
  Param (
   [Parameter(Mandatory = $true)]$User,
   [switch]$ConditionalAccessShowOnlySuccess,
+    [switch]$ConditionalAccessShowOnlyFailure,
   [switch]$ShowOnlySuccess,
   [switch]$ShowOnlyFailures,
   [switch]$ShowOnlyInteractive,
@@ -18418,6 +18419,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($AppDisplayNameFilter) { $QueryStart += '| where AppDisplayName == "'+$AppDisplayNameFilter+'"' }
   if ($ResourceDisplayNameFilter) { $QueryStart += '| where ResourceDisplayName == "'+$ResourceDisplayNameFilter+'"' }
   if ($ConditionalAccessShowOnlySuccess) { $QueryStart += '| where ConditionalAccessStatus == "success"' }
+  if ($ConditionalAccessShowOnlyFailure) { $QueryStart += '| where ConditionalAccessStatus == "failure"' }
   if ($ConditionalAccessIgnoreNotApplied) { $QueryStart += '| where ConditionalAccessStatus != "notApplied"' }
   if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature == "SUCCESS"' }
   if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
