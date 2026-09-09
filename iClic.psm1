@@ -12716,21 +12716,27 @@ Function Remove-AzureAppregistrationSecretAllButOne { # Removes all but last sec
  }
 }
 Function Get-AzureAppRegistrationAPIExposed { # List Service Principal Exposed API (Equivalent of portal 'Expose an API' values)
-Param (
- [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationID,
- [parameter(Mandatory=$false,ParameterSetName="AppInfo")]$AppRegistrationName,
- [switch]$HideGUID
-)
- if (!$AppRegistrationID) {$AppRegistrationID = (Get-AzureAppRegistration -DisplayName $AppRegistrationName).AppID}
- if (!$AppRegistrationName) {$AppRegistrationName = (Get-AzureAppRegistration -AppID $AppRegistrationID).DisplayName}
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory=$true)][Alias("ID")][string]$Application,
+  [switch]$HideGUID,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
- $Result = (az ad app show --id $AppRegistrationID --query '{Exposed:api.oauth2PermissionScopes}'  | ConvertFrom-Json).Exposed
+  $AppInfo = Get-AzureAppRegistration -Application $Application -ValuesToShow "id,appId,displayName,api" -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
 
- $Result | Add-Member -MemberType NoteProperty -Name AppName -Value $AppRegistrationName
- $Result | Add-Member -MemberType NoteProperty -Name AppID -Value $AppRegistrationID
+  $Result = @($AppInfo.api.oauth2PermissionScopes) | Select-Object `
+   @{Name="AppName";Expression={$AppInfo.DisplayName}},
+   @{Name="AppID";Expression={$AppInfo.AppID}},
+   *
 
- if ($HideGUID) { $Result = $Result | Select-Object -ExcludeProperty *ID }
- $Result
+  if ($HideGUID) { $Result | Select-Object -ExcludeProperty *ID } else { $Result }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Get-AzureAppRegistrationAppRoles { # List App Roles defined on an App Registration - Uses Get-AzureAppRegistration
  Param (
