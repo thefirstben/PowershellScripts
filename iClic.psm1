@@ -19661,7 +19661,8 @@ Function New-AppRegistrationEmailContent { # Used to prepare the content of the 
   [parameter(Mandatory = $true, ParameterSetName = 'SingleEntry')]
   [datetime]$Secret_End_Date,
   [parameter(Mandatory = $true, ParameterSetName = 'ResultSet')]
-  $Result
+  $Result,
+  [switch]$Certificate
   )
 
  # 1. If tenant ID is not provided, use local token first, then global token.
@@ -19705,9 +19706,17 @@ $Header = @"
 </style>
 "@
 
+if ($Certificate) {
+ $SecretLabel = "Certificate"
+ $CertificateComment = "Secret provided is the PFX password for the file that was sent via alternative method"
+} else {
+ $SecretLabel = "Secret"
+ $CertificateComment = ""
+}
+
 # Build table HTML with one row per object
 $TableHtml = "<table>"
-$TableHtml += "<tr><th>Tenant ID</th><th>Application Name</th><th>Application ID</th><th>Secret</th><th>Secret Start Date</th><th>Secret End Date</th></tr>"
+$TableHtml += "<tr><th>Tenant ID</th><th>Application Name</th><th>Application ID</th><th>$SecretLabel</th><th>Secret Start Date</th><th>Secret End Date</th></tr>"
 foreach ($Row in $Rows) {
  $TableHtml += ("<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>" -f
   [System.Web.HttpUtility]::HtmlEncode($Row['Tenant ID']),
@@ -19725,7 +19734,8 @@ $FullBody = @"
  <head>$Header</head>
  <body>
   <p>Hello,</p>
-  <p>The following application secret has been generated/rotated:</p>
+  <p>The following application $SecretLabel has been generated/rotated:</p>
+  <p><B><span style='color:red;'>$CertificateComment</span></B></p>
   $TableHtml
   <p><i>Note: This message is encrypted (Encrypt-Only).</i></p>
  </body>
