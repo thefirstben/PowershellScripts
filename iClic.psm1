@@ -4760,8 +4760,10 @@ Function Get-WU {
     $ReturnResult=New-Object PSObject -Property @{ServerName=$ServerName;Title="";MsrcSeverity="";RebootRequired="";MinDlSize="";MaxDlSize="";SupportUrl="";Description="No Update Required"}
    }
  } Catch {
-  Write-Colored -filepath $ScriptLog -PrintDate -NonColoredText "| $ServerName | $Action Finished    | " -ColoredText "ERROR : $($Error[0])"
-  $ReturnResult=New-Object PSObject -Property @{ServerName=$ServerName;Title="";MsrcSeverity="";RebootRequired="";MinDlSize="";MaxDlSize="";SupportUrl="";Description="ERROR : $($Error[0])"}
+    $ErrorMessage = $_.Exception.Message
+    if ([string]::IsNullOrWhiteSpace($ErrorMessage)) {$ErrorMessage = $_.ToString()}
+    Write-Colored -filepath $ScriptLog -PrintDate -NonColoredText "| $ServerName | $Action Finished    | " -ColoredText "ERROR : $ErrorMessage"
+    $ReturnResult=New-Object PSObject -Property @{ServerName=$ServerName;Title="";MsrcSeverity="";RebootRequired="";MinDlSize="";MaxDlSize="";SupportUrl="";Description="ERROR : $ErrorMessage"}
  }
  # return $ReturnResult
 }
@@ -4779,7 +4781,9 @@ Function Get-WU {
    }
    Invoke-command -ComputerName $ServerName -ScriptBlock ${function:LocalUpdate}
   } catch {
-   New-Object PSObject -Property @{ServerName=$ServerName;Title="";MsrcSeverity="";RebootRequired="";MinDlSize="";MaxDlSize="";SupportUrl="";Description="ERROR : $($Error[0])"}
+  $ErrorMessage = $_.Exception.Message
+  if ([string]::IsNullOrWhiteSpace($ErrorMessage)) {$ErrorMessage = $_.ToString()}
+  New-Object PSObject -Property @{ServerName=$ServerName;Title="";MsrcSeverity="";RebootRequired="";MinDlSize="";MaxDlSize="";SupportUrl="";Description="ERROR : $ErrorMessage"}
   }
  } else {
   if ($IgnoreWsus) {
