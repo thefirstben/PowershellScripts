@@ -10414,14 +10414,16 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
   [parameter(Mandatory = $false, ParameterSetName = 'ManagementGroupScope')][Switch]$Recurse,
 
   # Set 2: Subscription Scope
-  [parameter(Mandatory = $true, ParameterSetName = 'SubscriptionScope')][GUID]$SubscriptionID,
+  [parameter(Mandatory = $true, ParameterSetName = 'SubscriptionScope')][string]$Subscription, # Name or ID, resolved via Get-AzureSubscriptions
 
   # Set 3: Resource Group Scope
-  [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')][GUID]$SubscriptionIDForRG, # Renamed to avoid ambiguity with the SubscriptionScope parameter
-  [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')][string]$ResourceGroup,
+  [parameter(Mandatory = $true, ParameterSetName = 'ResourceGroupScope')][string]$ResourceGroup, # Resolved via Get-AzureResourceGroup -Exact
 
-  # Set 4: Full Resource ID Scope (New and Independent)
-  [parameter(Mandatory = $true, ParameterSetName = 'FullResourceScope')][string]$ResourceScope, # Takes the full resource ID, e.g., /subscriptions/{guid}/...
+  # Set 4: Resource Scope (By Name)
+  [parameter(Mandatory = $true, ParameterSetName = 'ResourceScope')][string]$Resource, # Resolved via Get-AzureResource -Exact
+
+  # Set 5: Full Resource ID Scope (New and Independent)
+  [parameter(Mandatory = $true, ParameterSetName = 'FullResourceScope')][string]$FullScope, # Takes the full resource ID, e.g., /subscriptions/{guid}/...
 
   # API Version which may be changed at some point by Microsoft
   [string]$APIVersion = "2022-04-01",
@@ -10488,13 +10490,22 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
    }
   }
   'SubscriptionScope' {
-   $AllScopes += "/subscriptions/$SubscriptionID"
+   $SubscriptionsFound = @(Get-AzureSubscriptions -Subscription $Subscription -Exact -Token $AzureToken)
+   if (-not $SubscriptionsFound) { Throw "Subscription $Subscription not found" }
+   $SubscriptionsFound | ForEach-Object { $AllScopes += "/subscriptions/$($_.subscriptionId)" }
   }
   'ResourceGroupScope' {
-   $AllScopes += "/subscriptions/$SubscriptionIDForRG/resourceGroups/$ResourceGroup"
+   $RGObject = @(Get-AzureResourceGroup -Name $ResourceGroup -Exact -Token $AzureToken)
+   if (-not $RGObject) { Throw "Resource Group $ResourceGroup not found" }
+   $RGObject | ForEach-Object { $AllScopes += $_.id }
+  }
+  'ResourceScope' {
+   $ResourceObject = @(Get-AzureResource -Name $Resource -Exact -Token $AzureToken)
+   if (-not $ResourceObject) { Throw "Resource $Resource not found" }
+   $ResourceObject | ForEach-Object { $AllScopes += $_.id }
   }
   'FullResourceScope' {
-   $AllScopes += $ResourceScope
+   $AllScopes += $FullScope
   }
  }
 
