@@ -5752,7 +5752,8 @@ Function Get-WindowsShare {
  return $FullResult
 }
 
-# CopyManagement
+######################################################## CopyManagement ###########################################################
+
 Function CopyWithBITS {
  Param (
   [Parameter(Mandatory=$true)]$Source,
@@ -5796,7 +5797,8 @@ Function CopyWithBITS {
  Start-BitsTransfer $FullPath\*.* $Destination
 }
 
-# SCCM
+######################################################## SCCM ###########################################################
+
 Function Get-SCCMSiteCode {
  Param (
   $SCCMCODE,
@@ -5821,7 +5823,8 @@ Function Get-SCCMInfo {
  Write-Colored -Color $Color -NonColoredText (Align -Variable "SCCM Client Version" -Size $alignsize -Ending " : ") $SCCMVersion
 }
 
-# License Management
+######################################################## License Management ###########################################################
+
 Function Set-WindowsLicense {
  Param (
   $computer = $env:computername,
@@ -5840,7 +5843,8 @@ Function Set-WindowsLicense {
  if (((Get-ActivationStatus).Status -ne "Licensed")) {write-host -foregroundcolor Red "$computer is not activated" ; return}
 }
 
-# Kaspersky
+######################################################## Kaspersky ###########################################################
+
 Function Get-KasperskyStatus {
  Param (
   $KasperskyPath="${env:ProgramFiles(x86)}\Kaspersky Lab\NetworkAgent\"
@@ -5925,7 +5929,8 @@ Function Connect-Kaspersky { #Connect to the API
  }
 }
 
-# Protocol & Cipher
+######################################################## Protocol & Cipher ###########################################################
+
 Function Get-Protocols {
  $ProtocolList = [enum]::GetNames([Net.SecurityProtocolType])
  $ProtocolList | ForEach-Object {
@@ -6067,7 +6072,8 @@ Function Update-ProtocolsAndCipher {
  }
 }
 
-# Remote
+######################################################## Remote ###########################################################
+
 Function RunRemoteWMI {
  Param (
   $server=$($env:COMPUTERNAME),
@@ -6198,7 +6204,8 @@ Function Send-RemoteCommand {
  }
 }
 
-# VMware
+######################################################## VMware ###########################################################
+
 Function Get-VMLic {
  Param (
   [Parameter(Mandatory=$true)]$vCenterServer # vCenter FQDN
@@ -6281,7 +6288,8 @@ Function Connect-vCenter {
  if ($Verbose) {Return $vCenterConnexion}
 }
 
-# Captures
+######################################################## Captures ###########################################################
+
 Function Get-BufferContentToTxt {
  #Must clear window before function and must send the output to a file (>file.txt)
  if ($host.Name -ne "ConsoleHost"){ write-host -ForegroundColor Red "This script runs only in the console host. You cannot run this script in $($host.Name)." ; exit -1}
@@ -6385,7 +6393,8 @@ Function Get-ConsoleBuffer {
  #endregion
 }
 
-# Tweak Windows
+######################################################## Tweak Windows ###########################################################
+
 Function Remove-Windows10NonEnterpriseApps {
  $ApplistOnline = Get-AppXProvisionedPackage -online
  $Applist = Get-AppxPackage -AllUsers
@@ -6674,7 +6683,8 @@ Function Remove-PublicDesktopIcons {
  Remove-Item $Env:PUBLIC\Desktop\*
 }
 
-# PowerManagement
+######################################################## PowerManagement ###########################################################
+
 Function Set-Powersettings {
  Param (
   $SettingsGUID="8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
@@ -6706,7 +6716,8 @@ Function Enable-PowerSettingsUnhideAll {
  }
 }
 
-# Sound
+######################################################## Sound ###########################################################
+
 Function Set-Speaker {
  Param (
   $Volume,
@@ -6722,7 +6733,8 @@ Function Set-Speaker {
  }
 }
 
-# Office Tools
+######################################################## Office Tools ###########################################################
+
 Function Save-ExcelToCSV {
  Param (
   $FileName
@@ -6784,7 +6796,8 @@ Function Save-CSVToExcel {
  $workbook.Close()
 }
 
-#Keycloak
+####################################################### Keycloak #######################################################
+
 Function Get-KeycloakToken {
  Param (
   [Parameter(Mandatory=$true)]$ClientID,
@@ -6902,7 +6915,8 @@ Function Get-KeyCloakRolesFromID { # Get All Assigned Role from Users or Service
   $GlobalClientRights
 }
 
-# Powershell history management (Found on github : https://github.com/PowerShell/PSReadLine/issues/1778)
+######################################################## Powershell history management (Found on github : https://github.com/PowerShell/PSReadLine/issues/1778) #######################################################
+
 Function Remove-PSReadlineHistory {
  param (
   [Parameter(Mandatory = $true)]
@@ -6935,7 +6949,7 @@ Function Remove-History {
  Remove-PSHistory -Pattern $Pattern
 }
 
-# Install APP (Generic Functions)
+####################################################### Install APP (Generic Functions) #######################################################
 
 Function Add-ToPath {
  Param (
@@ -7072,7 +7086,7 @@ Function Get-GITHUB_App_LatestVersion { # Find latest version on Github if using
  return [pscustomobject]@{BaseVersion=$BaseVersion;Version=$Version;TagURL=$TagUrl;BaseDownloadUrl=$BaseDownloadUrl;DownloadUrl=$DownloadUrl}
 }
 
-# Install APP (UserMode)
+####################################################### Install APP (UserMode) #######################################################
 
 Function Install-VsCode { # Download and install latest VSCode [User version] (Non Admin) [EXE]
  $FileName = Get-FileFromURL "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-user"
@@ -7401,7 +7415,7 @@ Function Install-OpenSSL { # Download and install lastest OpenSSL (from firedaem
  Add-ToPath "$InstallDestination\x64\bin"
 }
 
-# Install APP (Admin)
+####################################################### Install APP (Admin) #######################################################
 
 Function Install-RSAT { # Install Full RSAT (Remote Server Administration Tools) [Windows Component] - Can remote install
  Param (
@@ -7565,7 +7579,7 @@ Function Install-SSMS { # Download and install latest SQL Server Management Stud
  Remove-Item $SetupFileName
 }
 
-# Git
+####################################################### Git #######################################################
 
 Function Get-GitLabGroups {
  Param (
@@ -7622,7 +7636,7 @@ Function Get-GitConfig {
  git config --system --list
 }
 
-# Misc Functions
+####################################################### Misc Functions #######################################################
 
 Function Add-ValuesToArray { # Example to add values to a Powershell Array
  Param (
@@ -8623,8 +8637,209 @@ function Get-CertProvider { # Check protocol used by a certificate (TPM or not) 
   IsTPMProtected         = ($provider -eq "Microsoft Platform Crypto Provider")
  }
 }
+Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
+ Param (
+  [Parameter(Mandatory)]$Access_Policy_Name,
+  [Parameter(Mandatory)]$Access_Policy_Key,
+  [Parameter(Mandatory)]$URI,
+  $DurationInSeconds=300
+ )
+ [Reflection.Assembly]::LoadWithPartialName("System.Web")| out-null
+ $Expires=([DateTimeOffset]::Now.ToUnixTimeSeconds())+$DurationInSeconds
+ $SignatureString=[System.Web.HttpUtility]::UrlEncode($URI)+ "`n" + [string]$Expires
+ $HMAC = New-Object System.Security.Cryptography.HMACSHA256
+ $HMAC.key = [Text.Encoding]::ASCII.GetBytes($Access_Policy_Key)
+ $Signature = $HMAC.ComputeHash([Text.Encoding]::ASCII.GetBytes($SignatureString))
+ $Signature = [Convert]::ToBase64String($Signature)
+ $SASToken = "SharedAccessSignature sr=" + [System.Web.HttpUtility]::UrlEncode($URI) + "&sig=" + [System.Web.HttpUtility]::UrlEncode($Signature) + "&se=" + $Expires + "&skn=" + $Access_Policy_Name
+ $SASToken
+}
+Function Get-AzureObjectSingleValueFromID { # Get Single Value from Object ID, must faster
+ Param (
+  [Parameter(Mandatory)]$ID,
+  [ValidateSet("Users","","Groups","Applications","servicePrincipals")]$Type,
+  $Value = "displayName", # or UserPrincipalName
+  $Token
+ )
+ if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
+ $header = @{
+  'Authorization' = "$($Token.token_type) $($Token.access_token)"
+  'Content-type'  = "application/json"
+ }
+ (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/$Type/$ID`?`$select=$Value").$Value
+}
+Function Get-AzureADObjectInfo { # Get Object GUID Info
+ [CmdletBinding()]
+ Param (
+  # Parameter for the 'SingleID' set
+  [Parameter(Mandatory=$true, ParameterSetName='SingleID')]
+  [GUID]$ObjectID,
 
-# Non standard verbs
+  # Parameter for the 'MultipleIDs' set, accepts an array of GUIDs
+  [Parameter(Mandatory=$true, ParameterSetName='MultipleIDs')]
+  [GUID[]]$ObjectIDList,
+
+  # Common
+  [Switch]$PrintError,
+  [Switch]$ShowAll,
+  $Token
+ )
+
+ try {
+
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+
+ if ($authDetails.Method -eq "Token") {
+   # This block will hold the final objects to be processed, regardless of the method used
+   $objectsToProcess = $null
+  # --- Logic for SINGLE ID lookup ---
+  if ($PSCmdlet.ParameterSetName -eq 'SingleID') {
+   Write-Verbose "Getting single object: $ObjectID"
+   # Your original Graph call
+   $objectsToProcess = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directoryObjects/$ObjectID" -ErrorAction Stop
+  }
+
+  # --- Logic for MULTIPLE ID lookup ---
+  if ($PSCmdlet.ParameterSetName -eq 'MultipleIDs') {
+   Write-Verbose "Getting multiple objects via POST request."
+
+   $body = @{
+    ids = $ObjectIDList
+    # Use "directoryObject" to get any type (user, group, app, etc.)
+    type = "directoryObject"
+   } | ConvertTo-Json
+
+   # Use Invoke-RestMethod for the POST call
+   $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directoryObjects/getByIds" -Method POST -Body $Body -ErrorAction Stop
+   $objectsToProcess = $result
+  }
+
+  # --- Unified Output Processing ---
+  if ($objectsToProcess) {
+   if ($ShowAll) {
+    $objectsToProcess
+   } else {
+    # This formatting is now applied to both single and multiple results
+    $objectsToProcess | Select-Object `
+     @{name="ID";expression={$_.id}},
+     @{name="Type";expression={$_.'@odata.type' -replace "#microsoft.graph.",""}},
+     @{name="DisplayName";expression={$_.displayName}},
+     mail,
+     userPrincipalName,
+     description
+   }
+  }
+ } else {
+  if ($PSCmdlet.ParameterSetName -eq 'MultipleIDs') { throw "Bulk ID lookups are not supported with the Az CLI fallback method. Please ensure you have a valid Graph Token to process lists, or query a single ObjectID." }
+  $ResultJson = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json 2>&1
+  $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
+  $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+  if ($ErrorMessage) {
+   if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for ObjectID $ObjectID [$ErrorMessage]" }
+   [pscustomobject]@{ID=$ObjectID;Type="Unknown";DisplayName="ID Not Found in Azure";mail="Unknown";userPrincipalName="Unknown"}
+  } else {
+   $Result = $ResultJson | ConvertFrom-Json
+   if ($ShowAll) {
+    $Result
+   } else {
+    $Result | Select-Object `
+     @{name="ID";expression={$_.id}},
+     @{name="Type";expression={$_.'@odata.type'}},
+     @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
+   }
+  }
+ }
+ } catch {
+  # Error handling can be added here
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
+ [CmdletBinding()]
+ Param (
+  $Token
+ )
+ Try {
+ $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+ if ($authDetails.Method -eq "Token") {
+  $header = $authDetails.Header
+  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/subscribedSkus").value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber
+ } else {
+  ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
+ }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+Function Get-TOR_IP_List { # Will not work with Zscaler
+ $response = Invoke-WebRequest -Uri "https://check.torproject.org/torbulkexitlist" -UseBasicParsing
+ $response.RawContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }
+}
+Function Add-ToStorageAccount { # Used to send file to a storage account (not finished - Works with Managed Identity for now in a Function App)
+ Param (
+  $storageAccountName = "stglprodgwcentraid",
+  $containerName      = "mfa-status",
+  $blobName           = "Global_AzureAD_UserAndMFA_Status-$(Get-Date -Format 'yyyyMMdd').csv",
+  $PsObject # Will be the file sent to the Storage Account
+ )
+ # GET THE MANAGED IDENTITY TOKEN
+ $identityEndpoint = $env:IDENTITY_ENDPOINT
+ $identityHeader   = $env:IDENTITY_HEADER
+ $resourceURI      = "https://storage.azure.com/"
+
+  # Convert to CSV the Powershell Object
+ $PsObjectArray = $PsObject | ConvertTo-CSV -NoTypeInformation
+ # Convert to proper CSV content
+ $CSVContent = ($PsObjectArray -join "`r`n") + "`r`n"
+ # Convert to ByteArray to avoid issues with encoding
+ $byteArray = [System.Text.Encoding]::UTF8.GetBytes($CSVContent)
+
+ # GET STORAGE ACCOUNT ACCESS TOKEN
+ $tokenResponse = Invoke-RestMethod -Method Get -Headers @{ "X-IDENTITY-HEADER" = $identityHeader } -Uri "$identityEndpoint`?resource=$resourceURI&api-version=2019-08-01"
+ $accessToken = $tokenResponse.access_token
+ Write-Host "Successfully acquired an access token for Storage Account $storageAccountName"
+
+ # 3. PREPARE AND EXECUTE THE UPLOAD REQUEST
+ $blobUri = "https://$storageAccountName.blob.core.windows.net/$containerName/$blobName"
+ $headers = @{
+    "Authorization"  = "Bearer $accessToken"
+    "x-ms-version"   = "2023-11-03"
+    "x-ms-blob-type" = "BlockBlob"
+    "Content-Type"   = "text/csv"
+}
+
+ # Perform the upload using the Put Blob operation.
+ Invoke-RestMethod -Method Put -Uri $blobUri -Headers $headers -Body $byteArray
+ Write-Host "File '$blobName' uploaded successfully to container '$containerName'."
+}
+Function Get-Profile { # Reload profile/module files into global scope without restarting the session
+ $ProfileList = @(
+  $PROFILE.AllUsersAllHosts,
+  $PROFILE.AllUsersCurrentHost,
+  $PROFILE.CurrentUserAllHosts,
+  $PROFILE.CurrentUserCurrentHost
+ )
+
+ if (Test-Path $env:iClic_Addon_Path -ErrorAction SilentlyContinue) {
+  $ProfileList += $env:iClic_Addon_Path
+ }
+ if (Test-Path $env:iClic_Perso_Path -ErrorAction SilentlyContinue) {
+  $ProfileList += $env:iClic_Perso_Path
+ }
+
+ $ProfileList = $ProfileList | Where-Object { $_ } | Select-Object -Unique
+
+ foreach ($Path in $ProfileList) {
+  if (-not (Test-Path $Path -ErrorAction SilentlyContinue)) {
+   continue
+  }
+
+  Write-Host "Reloading profile from $Path"
+  Import-Module $Path -Force -Global -ErrorAction Stop
+ }
+}
+
+####################################################### Non standard verbs #######################################################
 
 Function ScreenOff { # Turns of screen (no additional software required)
  (Add-Type '[DllImport("user32.dll")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1,0x0112,0xF170,2)
@@ -8690,7 +8905,7 @@ Function LaunchAsUser { # Launch Script as another user
  Start-Process -NoNewWindow powershell.exe -Credential $credential $script
 }
 
-# Misc Functions (Require Additionnal Tools)
+####################################################### Misc Functions (Require Additionnal Tools) #######################################################
 
 Function Reset-GraphicCard { # Disables/Enables device [Requires Nirsoft DevManView] - On windows 11 can use : Ctrl+Win+Shift+B
  Param (
@@ -8818,7 +9033,7 @@ Function Add-PasswordToPFX { # Add a password to a PFX File [Requires OpenSSL]
  [pscustomobject]@{Location=$OutputFile;Password=$Password}
 }
 
-# Video / Audio Encoding
+####################################################### Video / Audio Encoding #######################################################
 
 Function Encode { # Encodes Video using FFMPEG [Requires FFMPEG]
  Param (
@@ -8881,7 +9096,7 @@ Function Save-AudioTrack { # Uses FFmpeg
  ffmpeg -analyzeduration $AnalyzeMaxDuration -probesize $AnalyzeMaxDuration -i $FileName -map 0:a:$SelectedTrack "$($FileName)_AudioTrack_$($SelectedTrack).$OutputFormat"
 }
 
-#Security (Check Admin Mods)
+########################################################Security (Check Admin Mods)#######################################################
 
 Function Get-LocalGroupMod { # Get Information on the modification of local groups
  try {
@@ -8954,7 +9169,6 @@ Function Get-LocalAdmin { # Prints local Admins
   }
  }
 }
-
 Function Get-LocalSecurityPolicy { # Show local security policies and which users have which local policies applied
  Param (
   $RightName
@@ -9006,7 +9220,7 @@ Function MassCheckSecurityPolicy { # Mass Check Local Security Policy on servers
  Return $Result
 }
 
-#Certificates
+####################################################### Certificates #######################################################
 
 Function Get-LocalCertificate { # Print all local certificates
  Param (
@@ -9030,7 +9244,7 @@ Function Get-EncryptionCertificate { # Retrive certificat that can be used for d
  return $Certificate
 }
 
-# VPN (OnPrem)
+####################################################### VPN (OnPrem) #######################################################
 
 Function Get-VPNUserFromIP {
  Param (
@@ -9062,7 +9276,7 @@ Function Get-VPNInfoFromUser {
  Get-EventLogNPSDetailed -ServerName $VPNServerName -StartTime $(Get-Date).addDays(-$NumberOfDay)  | Where-Object UPN -eq $UPN
 }
 
-#Azure Connection
+####################################################### Azure Connection #######################################################
 
 Function Connect-AzureCli {
  Param (
@@ -9091,7 +9305,7 @@ Function Open-MgGraphConnection {
  }
 }
 
-# Get Azure Resource Data using Azure Resource Graph API with KQL Queries
+####################################################### Get Azure Resource Data using Azure Resource Graph API with KQL Queries #######################################################
 
 Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups
   [CmdletBinding()]
@@ -9684,7 +9898,7 @@ Get-AzureGraph -Token $authDetails.Token -Method "PUT" -Body $JsonBody -GraphReq
  }
 }
 
-# Get Azure Resource Data user Azure CLI (Legacy)
+####################################################### Get Azure Resource Data user Azure CLI (Legacy) #######################################################
 
 Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
 [CmdletBinding(DefaultParameterSetName='ShowAll')]
@@ -9749,14 +9963,14 @@ Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot
  }
 }
 
-# AzCli Env Management
+####################################################### AzCli Env Management #######################################################
 
 Function Get-AzureCliEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
 
-# Get Azure Resource Information
+####################################################### Get Azure Resource Information #######################################################
 
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptionsAZCLI | foreach-object {
@@ -10273,7 +10487,7 @@ Function Get-AzureApplicationGateway { # Check all Azure Application Gateway
  }
 }
 
-# Convert Methods
+######################################################## Convert Methods #######################################################
 
 Function Convert-Tag { # Convert Tags to a usable value
  Param (
@@ -10409,7 +10623,8 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret
 }
 
-# User Rights Management
+####################################################### User Rights Management #######################################################
+
 Function Get-AzureRBACRights { # Get permissions via Graph only request
  [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
  Param (
@@ -10983,37 +11198,8 @@ Function Remove-AzureRBACRights { # Remove rights to a resource using UserName o
  }
 }
 
-# App Registration / Service Principal creation
+####################################################### App Registration, Service Principal creation #######################################################
 
-Function Remove-AppRegistrationOAuth2Permissions { # Remove Oauth2 Permissions from App Registration
- Param (
-  [Parameter(Mandatory=$true)]$AppID,
-  $TempFile = "$($env:TEMP)\Oauth2Permission.json"
- )
-  #Generate a Json file containing the current permission, to be able to disable it (can't remove before disabling)
-
-  #Step 1 : Get current permission in PS Object
-  $CurrentOAuthPerm = (az ad app show --id $AppID --only-show-errors -o json | ConvertFrom-Json).oauth2Permissions
-
-  if ($CurrentOAuthPerm) {
-   #Step 2 : Disable Permission in PS Object
-   $CurrentOAuthPerm[0].isEnabled = "False"
-   #Step 3 : Convert back to Json and send to file
-   ConvertTo-Json -InputObject @($CurrentOAuthPerm) | Out-File -FilePath $TempFile
-
-   #Set the permission to the defined disabled permissions
-   az ad app update --only-show-errors --id $AppID --set oauth2Permissions=$TempFile
-
-   #Remove permissions
-   az ad app update --only-show-errors --id $appId --set oauth2Permissions='[]'
-
-   #Cleanup
-   Remove-Item $TempFile
-   Write-Host -ForegroundColor Magenta "OAuth2Permissions remove from App Registration $AppID"
-  } else {
-   Write-Host -ForegroundColor Green "No OAuth2Permissions found on App Registration $AppID"
-  }
-}
 Function New-AzureAppRegistration { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
  [CmdletBinding()]
  Param (
@@ -13166,7 +13352,7 @@ Function Remove-AzureAppRegistration { # Remove Azure App Registration | Service
  }
 }
 
-# Service Principal (Enterprise Applications) [Only]
+####################################################### Service Principal (Enterprise Applications) [Only] #######################################################
 
 Function Get-AzureServicePrincipal { # Get Service Principal, either specific or via filter
  [CmdletBinding(DefaultParameterSetName = 'Filter')]
@@ -14530,7 +14716,7 @@ Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal
  }
 }
 
-# User Role Assignement (Not RBAC)
+####################################################### User Role Assignement (Not RBAC) #######################################################
 
 Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
@@ -14779,7 +14965,7 @@ Function Add-AzureRole {
  }
 }
 
-# Devices
+####################################################### Devices #######################################################
 
 Function Get-AzureDeviceObjectIDFromName {
  param(
@@ -14845,7 +15031,7 @@ Function Get-AzureDevices {
  }
 }
 
-# Administrative Unit Management
+####################################################### Administrative Unit Management #######################################################
 
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
  [CmdletBinding()]
@@ -14864,7 +15050,8 @@ Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with ass
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-# Schema Extensions
+
+####################################################### Schema Extensions #######################################################
 
 Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  #How to filter by Type :
@@ -14881,7 +15068,7 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  }
 }
 
-# Defender for Cloud (MDC)
+####################################################### Defender for Cloud (MDC) #######################################################
 
 Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AzCli rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
  [CmdletBinding()]
@@ -15005,7 +15192,7 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  az rest --method PUT --uri "$BaseURL/AI?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
 }
 
-# DevOps
+####################################################### DevOps #######################################################
 
 Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops | Uses API Only
  <#
@@ -15591,7 +15778,7 @@ Function Add-ADOGroupMember { # Add ADO Group inside and ADO Group
  }
 }
 
-# MFA
+####################################################### MFA #######################################################
 
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
   [CmdletBinding()]
@@ -15885,7 +16072,7 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
  }
 }
 
-# AAD Group Management
+####################################################### AAD Group Management #######################################################
 
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
  Param (
@@ -16531,7 +16718,7 @@ Function New-AzureADGroup { # Create New Group using Graph
  }
 }
 
-# AAD User Management
+####################################################### AAD User Management #######################################################
 
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
@@ -16997,7 +17184,7 @@ Function Convert-AzureADUserType { # Convert User Type from Guest to Member or M
  }
 }
 
-# Token Management
+####################################################### Token Management #######################################################
 
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
@@ -17521,7 +17708,7 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
  }
 }
 
-# Sharepoint Scripts
+####################################################### Sharepoint Scripts #######################################################
 
 Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname&path [Uses Rest API]
  [CmdletBinding()]
@@ -17641,7 +17828,7 @@ Function Get-SharepointSiteAppPermission { # List App Registration(s) permission
  }
 }
 
-# API Call Management
+####################################################### API Call Management #######################################################
 
 Function New-StaticBearerToken { # Wrap a non-expiring API Key (e.g. Atlassian) into the token shape expected by Get-AuthMethod/Get-AzureGraph
  [CmdletBinding()]
@@ -17837,7 +18024,7 @@ Function Get-AtlassianOrgAPI { # Send a request to the Atlassian Organization Ad
  }
 }
 
-# Conditional Access
+####################################################### Conditional Access #######################################################
 
 Function Get-AzureConditionalAccessLocations { # Get all conditional Access Policies Locations
  [CmdletBinding()]
@@ -18169,7 +18356,7 @@ Function Disable-AzureConditionalAccessPolicy { # Disable Conditional Access Pol
  }
 }
 
-# Access Packages
+####################################################### Access Packages #######################################################
 
 Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssignementPolicies to expand all policies, takes a while)
  Param (
@@ -18474,7 +18661,7 @@ Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assi
  }
 }
 
-# Log Analytics
+####################################################### Log Analytics #######################################################
 
 Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
  Param (
@@ -18553,7 +18740,7 @@ Function Get-AzureLogAnalyticsRequest { # Run cmd towards Log Analytics Workspac
  }
 }
 
-# Sentinel Specific Functions
+####################################################### Sentinel Specific Functions #######################################################
 
 Function Get-SentinelUserInfo { # Get user logs from Sentinel
  Param (
@@ -19767,7 +19954,7 @@ Function Get-AzureServicePrincipalSignInLogs {
  }
 }
 
-# Mail Management
+####################################################### Mail Management #######################################################
 
 Function Send-EncryptedEmail { # Will send an encrypted email using Outlook COM object (Encrypt-Only). Requires Outlook to be installed and configured on the machine running the script.
  param (
@@ -20145,7 +20332,7 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
  return $FullBody
 }
 
-# Azure Device management
+####################################################### Azure Device management #######################################################
 
 Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
  Param (
@@ -20218,210 +20405,8 @@ Function Get-AzureDeviceIntuneAssignementGroups {
  }
 }
 
-# Misc
+####################################################### Aliases #######################################################
 
-Function New-AzureServiceBusSASToken { # Generate SAS Token using Powershell using Access Policy Name & Key
- Param (
-  [Parameter(Mandatory)]$Access_Policy_Name,
-  [Parameter(Mandatory)]$Access_Policy_Key,
-  [Parameter(Mandatory)]$URI,
-  $DurationInSeconds=300
- )
- [Reflection.Assembly]::LoadWithPartialName("System.Web")| out-null
- $Expires=([DateTimeOffset]::Now.ToUnixTimeSeconds())+$DurationInSeconds
- $SignatureString=[System.Web.HttpUtility]::UrlEncode($URI)+ "`n" + [string]$Expires
- $HMAC = New-Object System.Security.Cryptography.HMACSHA256
- $HMAC.key = [Text.Encoding]::ASCII.GetBytes($Access_Policy_Key)
- $Signature = $HMAC.ComputeHash([Text.Encoding]::ASCII.GetBytes($SignatureString))
- $Signature = [Convert]::ToBase64String($Signature)
- $SASToken = "SharedAccessSignature sr=" + [System.Web.HttpUtility]::UrlEncode($URI) + "&sig=" + [System.Web.HttpUtility]::UrlEncode($Signature) + "&se=" + $Expires + "&skn=" + $Access_Policy_Name
- $SASToken
-}
-Function Get-AzureObjectSingleValueFromID { # Get Single Value from Object ID, must faster
- Param (
-  [Parameter(Mandatory)]$ID,
-  [ValidateSet("Users","","Groups","Applications","servicePrincipals")]$Type,
-  $Value = "displayName", # or UserPrincipalName
-  $Token
- )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $header = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/$Type/$ID`?`$select=$Value").$Value
-}
-Function Get-AzureADObjectInfo { # Get Object GUID Info
- [CmdletBinding()]
- Param (
-  # Parameter for the 'SingleID' set
-  [Parameter(Mandatory=$true, ParameterSetName='SingleID')]
-  [GUID]$ObjectID,
-
-  # Parameter for the 'MultipleIDs' set, accepts an array of GUIDs
-  [Parameter(Mandatory=$true, ParameterSetName='MultipleIDs')]
-  [GUID[]]$ObjectIDList,
-
-  # Common
-  [Switch]$PrintError,
-  [Switch]$ShowAll,
-  $Token
- )
-
- try {
-
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-
- if ($authDetails.Method -eq "Token") {
-   # This block will hold the final objects to be processed, regardless of the method used
-   $objectsToProcess = $null
-  # --- Logic for SINGLE ID lookup ---
-  if ($PSCmdlet.ParameterSetName -eq 'SingleID') {
-   Write-Verbose "Getting single object: $ObjectID"
-   # Your original Graph call
-   $objectsToProcess = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directoryObjects/$ObjectID" -ErrorAction Stop
-  }
-
-  # --- Logic for MULTIPLE ID lookup ---
-  if ($PSCmdlet.ParameterSetName -eq 'MultipleIDs') {
-   Write-Verbose "Getting multiple objects via POST request."
-
-   $body = @{
-    ids = $ObjectIDList
-    # Use "directoryObject" to get any type (user, group, app, etc.)
-    type = "directoryObject"
-   } | ConvertTo-Json
-
-   # Use Invoke-RestMethod for the POST call
-   $result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/directoryObjects/getByIds" -Method POST -Body $Body -ErrorAction Stop
-   $objectsToProcess = $result
-  }
-
-  # --- Unified Output Processing ---
-  if ($objectsToProcess) {
-   if ($ShowAll) {
-    $objectsToProcess
-   } else {
-    # This formatting is now applied to both single and multiple results
-    $objectsToProcess | Select-Object `
-     @{name="ID";expression={$_.id}},
-     @{name="Type";expression={$_.'@odata.type' -replace "#microsoft.graph.",""}},
-     @{name="DisplayName";expression={$_.displayName}},
-     mail,
-     userPrincipalName,
-     description
-   }
-  }
- } else {
-  if ($PSCmdlet.ParameterSetName -eq 'MultipleIDs') { throw "Bulk ID lookups are not supported with the Az CLI fallback method. Please ensure you have a valid Graph Token to process lists, or query a single ObjectID." }
-  $ResultJson = az rest --method GET --uri "https://graph.microsoft.com/beta/directoryObjects/$ObjectID" --headers Content-Type=application/json 2>&1
-  $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-  $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-  if ($ErrorMessage) {
-   if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for ObjectID $ObjectID [$ErrorMessage]" }
-   [pscustomobject]@{ID=$ObjectID;Type="Unknown";DisplayName="ID Not Found in Azure";mail="Unknown";userPrincipalName="Unknown"}
-  } else {
-   $Result = $ResultJson | ConvertFrom-Json
-   if ($ShowAll) {
-    $Result
-   } else {
-    $Result | Select-Object `
-     @{name="ID";expression={$_.id}},
-     @{name="Type";expression={$_.'@odata.type'}},
-     @{name="DisplayName";expression={$_.displayName}},mail,userPrincipalName
-   }
-  }
- }
- } catch {
-  # Error handling can be added here
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-Function Get-AzureSKUs { # Usefull to get all license related IDs and descriptions in the current tenant
- [CmdletBinding()]
- Param (
-  $Token
- )
- Try {
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
- if ($authDetails.Method -eq "Token") {
-  $header = $authDetails.Header
-  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/subscribedSkus").value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber
- } else {
-  ((az rest --method GET --uri "https://graph.microsoft.com/v1.0/subscribedSkus" -o json | ConvertFrom-Json).value | Select-Object appliesTo,capabilityStatus,skuId,skuPartNumber)
- }
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-Function Get-TOR_IP_List { # Will not work with Zscaler
- $response = Invoke-WebRequest -Uri "https://check.torproject.org/torbulkexitlist" -UseBasicParsing
- $response.RawContent -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' }
-}
-Function Add-ToStorageAccount { # Used to send file to a storage account (not finished - Works with Managed Identity for now in a Function App)
- Param (
-  $storageAccountName = "stglprodgwcentraid",
-  $containerName      = "mfa-status",
-  $blobName           = "Global_AzureAD_UserAndMFA_Status-$(Get-Date -Format 'yyyyMMdd').csv",
-  $PsObject # Will be the file sent to the Storage Account
- )
- # GET THE MANAGED IDENTITY TOKEN
- $identityEndpoint = $env:IDENTITY_ENDPOINT
- $identityHeader   = $env:IDENTITY_HEADER
- $resourceURI      = "https://storage.azure.com/"
-
-  # Convert to CSV the Powershell Object
- $PsObjectArray = $PsObject | ConvertTo-CSV -NoTypeInformation
- # Convert to proper CSV content
- $CSVContent = ($PsObjectArray -join "`r`n") + "`r`n"
- # Convert to ByteArray to avoid issues with encoding
- $byteArray = [System.Text.Encoding]::UTF8.GetBytes($CSVContent)
-
- # GET STORAGE ACCOUNT ACCESS TOKEN
- $tokenResponse = Invoke-RestMethod -Method Get -Headers @{ "X-IDENTITY-HEADER" = $identityHeader } -Uri "$identityEndpoint`?resource=$resourceURI&api-version=2019-08-01"
- $accessToken = $tokenResponse.access_token
- Write-Host "Successfully acquired an access token for Storage Account $storageAccountName"
-
- # 3. PREPARE AND EXECUTE THE UPLOAD REQUEST
- $blobUri = "https://$storageAccountName.blob.core.windows.net/$containerName/$blobName"
- $headers = @{
-    "Authorization"  = "Bearer $accessToken"
-    "x-ms-version"   = "2023-11-03"
-    "x-ms-blob-type" = "BlockBlob"
-    "Content-Type"   = "text/csv"
-}
-
- # Perform the upload using the Put Blob operation.
- Invoke-RestMethod -Method Put -Uri $blobUri -Headers $headers -Body $byteArray
- Write-Host "File '$blobName' uploaded successfully to container '$containerName'."
-}
-
-Function Get-Profile { # Reload profile/module files into global scope without restarting the session
- $ProfileList = @(
-  $PROFILE.AllUsersAllHosts,
-  $PROFILE.AllUsersCurrentHost,
-  $PROFILE.CurrentUserAllHosts,
-  $PROFILE.CurrentUserCurrentHost
- )
-
- if (Test-Path $env:iClic_Addon_Path -ErrorAction SilentlyContinue) {
-  $ProfileList += $env:iClic_Addon_Path
- }
- if (Test-Path $env:iClic_Perso_Path -ErrorAction SilentlyContinue) {
-  $ProfileList += $env:iClic_Perso_Path
- }
-
- $ProfileList = $ProfileList | Where-Object { $_ } | Select-Object -Unique
-
- foreach ($Path in $ProfileList) {
-  if (-not (Test-Path $Path -ErrorAction SilentlyContinue)) {
-   continue
-  }
-
-  Write-Host "Reloading profile from $Path"
-  Import-Module $Path -Force -Global -ErrorAction Stop
- }
-}
 
 #Alias
 Set-Alias -Name ls -Value "Get-ChildItemBen" -Option AllScope
