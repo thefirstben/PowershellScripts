@@ -10305,10 +10305,9 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
  )
 
  try {
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-
  # If no conversion table is passed, it will be generated for the single Object - Will add 2 seconds to the treament of the request - Not recommended for big treatment
- if ( ! $IDConversionTable ) {
+ if ( ! $PSBoundParameters.ContainsKey('IDConversionTable') ) {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
   $IDConversionTable = @()
   if ($authDetails.Method -eq "Token") {
    $AppRegistrationObjectWithGUIDPermissions.PolicyID | Select-Object -Unique | ForEach-Object { $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ -Token $authDetails.Token }
@@ -10327,6 +10326,22 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
 
   $Policy = $IDConversionTable | where-object {($_.PolicyID -eq $CurrentPolicy) -and ($_.RuleID -eq $CurrentRule) -and ($_.PermissionType -eq $CurrentType)}
 
+  if (!$Policy) {
+   [pscustomobject]@{
+    AppRegistrationName=$_.AppRegistrationName
+    AppRegistrationID=$_.AppRegistrationID
+    PolicyName="Unresolved API"
+    PolicyID=$CurrentPolicy
+    Value=$CurrentRule
+    ValueID=$CurrentRule
+    PermissionType=$CurrentType
+    Description="Permission definition could not be resolved. The API/resource may no longer exist in this tenant."
+    PermissionSource=$_.PermissionSource
+    ConsentType=$_.ConsentType
+   }
+   return
+  }
+
   [pscustomobject]@{
    AppRegistrationName=$_.AppRegistrationName
    AppRegistrationID=$_.AppRegistrationID
@@ -10336,6 +10351,8 @@ Function Convert-AzureAppRegistrationPermissionsGUIDToReadable { #Converts all G
    ValueID=$Policy.RuleID
    PermissionType=$Policy.PermissionType
    Description=$Policy.Description
+  PermissionSource=$_.PermissionSource
+  ConsentType=$_.ConsentType
   }
  }
  } Catch {
@@ -11390,10 +11407,12 @@ Function Remove-AzureAppRegistrationOwners { # remove all owner to an App Regist
  }
 }
 Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of App Registration with GUID Only (faster) | Uses AzCli or Token
+ [CmdletBinding()]
  Param (
-  $Application,
+  [Alias("AppRegistration","AppRegistrationID","AppRegistrationName","AppRegistrationObjectID")]$Application,
   [switch]$Readable,
   [switch]$HideGUID,
+  [switch]$ConfiguredOnly,
   $Token
  )
  try {
@@ -11409,97 +11428,294 @@ Function Get-AzureAppRegistrationPermissions { # Retrieves all permissions of Ap
    $AppRegistrationID = $CurrentResult.appId
    $PermissionListJson = $CurrentResult.requiredResourceAccess
 
-  $Result = $PermissionListJson | Select-Object @{name="Rules";expression={
-    $Rules_List=@()
+  $Result = @()
+  $PermissionListJson | ForEach-Object {
     $PolicyID = $_.resourceAppId
     # $PolicyExpiration = $_.expiryTime
     $_.resourceAccess | ForEach-Object {
-     $Rules_List+=[pscustomobject]@{
+     $Result += [pscustomobject]@{
       AppRegistrationName=$AppRegistrationName;
       AppRegistrationID=$AppRegistrationID;
       PolicyID=$PolicyID;
       RuleID=$_.ID;
-      RuleType=$_.Type}
+      RuleType=$_.Type;
+      PermissionSource="Configured";
+      ConsentType=$null}
     }
-    $Rules_List
+  }
+
+  if (!$ConfiguredOnly) {
+   $ServicePrincipal = Get-AzureServicePrincipal -Application $AppRegistrationID -Token $authDetails.Token -ErrorAction SilentlyContinue
+   if ($ServicePrincipal) {
+    $ResourceServicePrincipalCache = @{}
+
+    $AppRoleAssignments = @(Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$($ServicePrincipal.id)/appRoleAssignments" -Token $authDetails.Token -ErrorAction SilentlyContinue)
+    $AppRoleAssignments | ForEach-Object {
+     if (!$ResourceServicePrincipalCache.ContainsKey($_.resourceId)) {
+      $ResourceServicePrincipalCache[$_.resourceId] = Get-AzureServicePrincipal -ID $_.resourceId -Token $authDetails.Token -ErrorAction SilentlyContinue
+     }
+     $ResourceServicePrincipal = $ResourceServicePrincipalCache[$_.resourceId]
+     if (!$ResourceServicePrincipal) { return }
+    $ResourceAppID = $ResourceServicePrincipal.appId
+    $AppRoleID = $_.appRoleId
+    $ExistingPermission = $Result | Where-Object { ($_.PolicyID -eq $ResourceAppID) -and ($_.RuleID -eq $AppRoleID) -and ($_.RuleType -eq "Role") } | Select-Object -First 1
+     if ($ExistingPermission) {
+     $ExistingPermission.PermissionSource = ((@($ExistingPermission.PermissionSource -split ",") + "Consented") | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique) -join ","
+      $ExistingPermission.ConsentType = (@("Admin Consent","User Consent") | Where-Object { $_ -in (@($ExistingPermission.ConsentType -split ",") + "Admin Consent") }) -join ","
+     } else {
+      $Result += [pscustomobject]@{
+       AppRegistrationName=$AppRegistrationName;
+       AppRegistrationID=$AppRegistrationID;
+       PolicyID=$ResourceAppID;
+       RuleID=$AppRoleID;
+       RuleType="Role";
+       PermissionSource="Consented";
+       ConsentType="Admin Consent"}
+     }
+    }
+
+    $Oauth2PermissionGrants = @(Get-AzureGraph -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$($ServicePrincipal.id)/oauth2PermissionGrants" -Token $authDetails.Token -ErrorAction SilentlyContinue)
+    $Oauth2PermissionGrants | ForEach-Object {
+     $CurrentGrant = $_
+     if (!$ResourceServicePrincipalCache.ContainsKey($CurrentGrant.resourceId)) {
+      $ResourceServicePrincipalCache[$CurrentGrant.resourceId] = Get-AzureServicePrincipal -ID $CurrentGrant.resourceId -Token $authDetails.Token -ErrorAction SilentlyContinue
+     }
+     $ResourceServicePrincipal = $ResourceServicePrincipalCache[$CurrentGrant.resourceId]
+     if (!$ResourceServicePrincipal) { return }
+
+     $CurrentGrant.scope -split " " | ForEach-Object {
+      $Scope = $_
+      if (!$Scope) { return }
+      $ScopeInfo = $ResourceServicePrincipal.oauth2PermissionScopes | Where-Object value -eq $Scope | Select-Object -First 1
+      if (!$ScopeInfo) { return }
+      $ConsentType = if ($CurrentGrant.consentType -eq "AllPrincipals") { "Admin Consent" } else { "User Consent" }
+      $ResourceAppID = $ResourceServicePrincipal.appId
+      $ScopeID = $ScopeInfo.id
+      $ExistingPermission = $Result | Where-Object { ($_.PolicyID -eq $ResourceAppID) -and ($_.RuleID -eq $ScopeID) -and ($_.RuleType -eq "Scope") } | Select-Object -First 1
+      if ($ExistingPermission) {
+        $ExistingPermission.PermissionSource = ((@($ExistingPermission.PermissionSource -split ",") + "Consented") | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique) -join ","
+       $ExistingPermission.ConsentType = (@("Admin Consent","User Consent") | Where-Object { $_ -in (@($ExistingPermission.ConsentType -split ",") + $ConsentType) }) -join ","
+      } else {
+       $Result += [pscustomobject]@{
+        AppRegistrationName=$AppRegistrationName;
+        AppRegistrationID=$AppRegistrationID;
+        PolicyID=$ResourceAppID;
+        RuleID=$ScopeID;
+        RuleType="Scope";
+        PermissionSource="Consented";
+        ConsentType=$ConsentType}
+      }
+     }
+    }
    }
   }
-  If ($Readable -and $Result.Rules) {
-   $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result.rules -Token $authDetails.Token
+
+  If ($Readable -and $Result) {
+   $ReadablePermissionList = Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $Result -Token $authDetails.Token
    if ($HideGUID) {
     $ReadablePermissionList | Select-Object -ExcludeProperty *ID
    } else {
     $ReadablePermissionList
    }
   } else {
-   $Result.Rules
+   $Result
   }
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureAppRegistrationPermissionsGlobal { # Check Permission for All App Registration of a Tenant | Uses Get-AzureAppRegistrationPermissions
+ [CmdletBinding()]
  Param (
-  $ExportFile = "$iClic_TempPath\AppRegistrationPermissionsGUIDOnly_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $FinalFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
-  $LogFile = "$iClic_TempPath\AppRegistrationPermissions_$([DateTime]::Now.ToString("yyyyMMdd")).log",
-  [Switch]$Verbose,
   $Token
  )
 
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   #Extract all App Registration Permission with only GUID (Faster)
-  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 1 | " -ColoredText "Retrieving App Registrations"
-  $AppRegistrationList = Get-AzureAppRegistrations -Token $authDetails.Token
+  Write-Colored -PrintDate -NonColoredText "| Step 1 | " -ColoredText "Retrieving App Registrations"
+  $AppRegistrationList = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/applications?`$select=displayName,appId,requiredResourceAccess&`$top=999")
 
-  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 2 | " -ColoredText "Found $($AppRegistrationList.Count) App Registrations"
+  Write-Colored -PrintDate -NonColoredText "| Step 2 | " -ColoredText "Found $($AppRegistrationList.Count) App Registrations"
 
-  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 3 | " -ColoredText "Retrieving App Registration Permission with GUID Only (Will take about 2 seconds per app Registration) : File used : $ExportFile"
-  $AppRegistrationListCount = 0
+  Write-Colored -PrintDate -NonColoredText "| Step 3 | " -ColoredText "Building configured and consented permission list with bulk Graph calls"
+  $AppRegistrationHash = @{}
+  $AppRegistrationList | ForEach-Object { $AppRegistrationHash[$_.appId] = $_ }
+
+  $PermissionRows = [System.Collections.Generic.List[object]]::new()
+  $PermissionIndex = @{}
+  $AddPermissionRow = {
+   Param(
+    $AppRegistrationName,
+    $AppRegistrationID,
+    $PolicyID,
+    $RuleID,
+    $RuleType,
+    $PermissionSource,
+    $ConsentType
+   )
+   if (!$AppRegistrationID -or !$PolicyID -or !$RuleID -or !$RuleType) { return }
+
+   $PermissionKey = "$AppRegistrationID|$PolicyID|$RuleID|$RuleType"
+   if ($PermissionIndex.ContainsKey($PermissionKey)) {
+    $ExistingPermission = $PermissionIndex[$PermissionKey]
+    $ExistingPermission.PermissionSource = ((@($ExistingPermission.PermissionSource -split ",") + $PermissionSource) | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique) -join ","
+      if ($ConsentType) { $ExistingPermission.ConsentType = (@("Admin Consent","User Consent") | Where-Object { $_ -in (@($ExistingPermission.ConsentType -split ",") + $ConsentType) }) -join "," }
+   } else {
+    $PermissionObject = [pscustomobject]@{
+     AppRegistrationName=$AppRegistrationName;
+     AppRegistrationID=$AppRegistrationID;
+     PolicyID=$PolicyID;
+     RuleID=$RuleID;
+     RuleType=$RuleType;
+     PermissionSource=$PermissionSource;
+     ConsentType=$ConsentType
+    }
+    $PermissionRows.Add($PermissionObject) | Out-Null
+    $PermissionIndex[$PermissionKey] = $PermissionObject
+   }
+  }
+
   $AppRegistrationList | Sort-Object DisplayName | ForEach-Object {
-   $AppRegistrationListCount++
-   Progress -Message "Checking App Registration $AppRegistrationListCount/$($AppRegistrationList.count) : " -Value $_.DisplayName -PrintTime
-   Try {
-     $Permission = Get-AzureAppRegistrationPermissions -AppRegistrationID $_.AppID -Token $authDetails.Token
-    #Added this otherwise Export-CSV sends an error if the app registration has no rights
-    if ($Permission) {
-     $Permission | Export-CSV $ExportFile -Append
-    } else {
-     if ($Verbose) {
-      Write-Colored -Color "Green" -FilePath $LogFile -ColoredText "No permission found for $($_.DisplayName)"
-     }
+   $CurrentAppRegistration = $_
+   $CurrentAppRegistration.requiredResourceAccess | ForEach-Object {
+    $PolicyID = $_.resourceAppId
+    $_.resourceAccess | ForEach-Object {
+     & $AddPermissionRow $CurrentAppRegistration.displayName $CurrentAppRegistration.appId $PolicyID $_.id $_.type "Configured" $null
+    }
+   }
+  }
+
+  Write-Colored -PrintDate -NonColoredText "| Step 3.1 | " -ColoredText "Retrieving Service Principals once for App Registration and API lookup"
+  $ServicePrincipalList = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,appId,displayName,appRoles,oauth2PermissionScopes&`$top=999")
+  $ServicePrincipalIDHash = @{}
+  $ServicePrincipalAppIDHash = @{}
+  $ServicePrincipalList | ForEach-Object {
+   $ServicePrincipalIDHash[$_.id] = $_
+   if ($_.appId) { $ServicePrincipalAppIDHash[$_.appId] = $_ }
+  }
+  $ClientServicePrincipals = @($AppRegistrationList | ForEach-Object { $ServicePrincipalAppIDHash[$_.appId] } | Where-Object { $_ })
+
+  Write-Colored -PrintDate -NonColoredText "| Step 3.2 | " -ColoredText "Retrieving delegated consent grants in one request"
+  $Oauth2PermissionGrants = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/oauth2PermissionGrants?`$top=999" -ErrorAction SilentlyContinue)
+  $Oauth2PermissionGrants | ForEach-Object {
+   $CurrentGrant = $_
+   $ClientServicePrincipal = $ServicePrincipalIDHash[$CurrentGrant.clientId]
+   if (!$ClientServicePrincipal -or !$AppRegistrationHash.ContainsKey($ClientServicePrincipal.appId)) { return }
+
+   $ResourceServicePrincipal = $ServicePrincipalIDHash[$CurrentGrant.resourceId]
+   if (!$ResourceServicePrincipal) { return }
+   $ConsentType = if ($CurrentGrant.consentType -eq "AllPrincipals") { "Admin Consent" } else { "User Consent" }
+
+   $CurrentGrant.scope -split " " | ForEach-Object {
+    $Scope = $_
+    if (!$Scope) { return }
+    $ScopeInfo = $ResourceServicePrincipal.oauth2PermissionScopes | Where-Object value -eq $Scope | Select-Object -First 1
+    if (!$ScopeInfo) { return }
+    & $AddPermissionRow $ClientServicePrincipal.displayName $ClientServicePrincipal.appId $ResourceServicePrincipal.appId $ScopeInfo.id "Scope" "Consented" $ConsentType
+   }
+  }
+
+  Write-Colored -PrintDate -NonColoredText "| Step 3.3 | " -ColoredText "Retrieving application consent grants using Graph batch calls"
+  $BatchSize = 20
+  for ($i = 0; $i -lt $ClientServicePrincipals.Count; $i += $BatchSize) {
+   $ChunkEnd = [Math]::Min($i + $BatchSize - 1, $ClientServicePrincipals.Count - 1)
+   $Chunk = @($ClientServicePrincipals[$i..$ChunkEnd])
+   Progress -Message "Checking App Role Assignments Batch : " -Value "$($ChunkEnd + 1)/$($ClientServicePrincipals.Count)" -PrintTime
+
+   $RequestMap = @{}
+   $Requests = for ($j = 0; $j -lt $Chunk.Count; $j++) {
+    $RequestMap["$j"] = $Chunk[$j]
+    @{
+     id = "$j"
+     method = "GET"
+     url = "/servicePrincipals/$($Chunk[$j].id)/appRoleAssignments?`$select=appRoleId,resourceId&`$top=999"
+    }
+   }
+
+   $BatchBody = @{ requests = @($Requests) } | ConvertTo-Json -Depth 5
+   $BatchResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/`$batch" -Method POST -Body $BatchBody -ErrorAction Stop
+   $BatchResult.responses | ForEach-Object {
+    if ($_.status -ne 200) {
+     Write-Warning "Error checking App Role Assignments for $($RequestMap[$_.id].displayName) : HTTP $($_.status)"
+     return
     }
 
-   } catch {
-    Write-Colored -Color "Red" -FilePath $LogFile -ColoredText "Error checking permission of $($_.DisplayName) ($($_.AppID)) : $($Error[0])"
+    $ClientServicePrincipal = $RequestMap[$_.id]
+    @($_.body.value) | ForEach-Object {
+     $ResourceServicePrincipal = $ServicePrincipalIDHash[$_.resourceId]
+     if (!$ResourceServicePrincipal) { return }
+     & $AddPermissionRow $ClientServicePrincipal.displayName $ClientServicePrincipal.appId $ResourceServicePrincipal.appId $_.appRoleId "Role" "Consented" "Admin Consent"
+    }
    }
   }
   ProgressClear ; Write-Blank
 
-  #Convert File to PS Object
-  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 4 | " -ColoredText "Convert File to PS Object"
-  $AzureAppRegistrationPermissionGUID = import-csv $ExportFile
+  if ($PermissionRows.Count -eq 0) {
+   Write-Colored -Color "Green" -ColoredText "No permission found"
+   return
+  }
+
+  #Convert permission list to PS Object
+  Write-Colored -PrintDate -NonColoredText "| Step 4 | " -ColoredText "Convert permission list to PS Object"
+  $AzureAppRegistrationPermissionGUID = @($PermissionRows)
 
   # [Stats]
   $UniqueAppRegistrationWithPermissions = ($AzureAppRegistrationPermissionGUID | Select-Object AppRegistrationID -Unique).Count
-  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 5 | " -ColoredText "Found $UniqueAppRegistrationWithPermissions unique App Registration with permissions (Total permissions $($AzureAppRegistrationPermissionGUID.count))"
+  Write-Colored -PrintDate -NonColoredText "| Step 5 | " -ColoredText "Found $UniqueAppRegistrationWithPermissions unique App Registration with permissions (Total permissions $($AzureAppRegistrationPermissionGUID.count))"
 
-  # Generate conversion Table (Takes a minute or 2)
-  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 6 | " -ColoredText "Generate conversion Table - Will take a couple minutes"
+  # Generate conversion Table from the service principal cache, with fallback lookups only for missing APIs
+  Write-Colored -PrintDate -NonColoredText "| Step 6 | " -ColoredText "Generate conversion Table from cached Service Principal API definitions"
   $IDConversionTable = @()
-  $AzureAppRegistrationPermissionGUID | Select-Object -Unique PolicyID | ForEach-Object {
-   Progress -Message "Checking Policy : " -Value $($_.PolicyID) -PrintTime
-   if ($Token) {
-    $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID -Token $Token
-   } else {
-    $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_.PolicyID
+  $UniquePolicyIDs = @($AzureAppRegistrationPermissionGUID | Select-Object -ExpandProperty PolicyID -Unique | Where-Object { $_ })
+  $ServicePrincipalList | Where-Object { $_.appId -in $UniquePolicyIDs } | ForEach-Object {
+   $PolicyName = $_.displayName
+   $PolicyID = $_.appId
+
+   $_.oauth2PermissionScopes | ForEach-Object {
+    $IDConversionTable += [pscustomobject]@{
+     PolicyName = $PolicyName
+     PolicyID = $PolicyID
+     RuleID = $_.id
+     PermissionType = "Delegated"
+     Type = $_.type
+     Value = $_.value
+     Description = $_.adminConsentDisplayName
+    }
+   }
+
+   $_.appRoles | ForEach-Object {
+    if ($_.DisplayName -eq $_.Value) {$Description = $_.Description} else {$Description = $_.DisplayName}
+    $IDConversionTable += [pscustomobject]@{
+     PolicyName = $PolicyName
+     PolicyID = $PolicyID
+     RuleID = $_.id
+     PermissionType = "Application"
+     Type = $_.allowedMemberTypes
+     Value = $_.value
+     Description = $Description
+    }
+   }
+  }
+
+  $MissingPolicyIDs = @($UniquePolicyIDs | Where-Object { $_ -notin @($IDConversionTable.PolicyID | Select-Object -Unique) })
+  $MissingPolicyIDs | ForEach-Object {
+   Progress -Message "Checking Missing Policy : " -Value $_ -PrintTime
+   try {
+    if ($Token) {
+     $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ -Token $Token -ErrorAction Stop
+    } else {
+     $IDConversionTable += Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $_ -ErrorAction Stop
+    }
+   } catch {
+    Write-Warning "Unable to resolve permission API '$($_)'. Keeping GUID values in final export."
    }
   }
   ProgressClear ; Write-Blank
 
   # Convert GUID To READABLE (Takes a couple seconds)
-  Write-Colored -FilePath $LogFile -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
+  Write-Colored -PrintDate -NonColoredText "| Step 7 | " -ColoredText "Convert GUID to Readable and export to file $FinalFile - Will take a couple seconds"
   Convert-AzureAppRegistrationPermissionsGUIDToReadable -AppRegistrationObjectWithGUIDPermissions $AzureAppRegistrationPermissionGUID -IDConversionTable $IDConversionTable | Export-CSV -Path $FinalFile
  } catch {
   Write-Error $_
@@ -18150,14 +18366,13 @@ Function Add-AzureAccessPackageAssignment { # Provision users to Access Package,
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Remove-AzureAccessPackageAssignment { # Remove users from Access Package, can bypass Approval | Not working yet
+Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assignments. TargetId/Policy are optional filters; omit both to wipe an entire Access Package (up to ~2000 assignments) using batched Graph requests
+ [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
  Param (
-  [Parameter(Mandatory=$true)]$TargetId,
   [Parameter(Mandatory=$true)]$AccessPackage, # Can be Name or GUID
-  [Parameter(Mandatory=$true)]$Policy,        # Can be Name or GUID
-  [String]$Justification,
-  [Switch]$BypassApproval,
-  [Switch]$ShowMatch,
+  $Policy,                                    # Can be Name or GUID. Omit to match all policies in the package
+  $TargetId,                                  # Single ID or array. Omit to match all targets in the package
+  [Switch]$Force,                             # Skip the confirmation prompt
   $Token
  )
  Try {
@@ -18181,71 +18396,76 @@ Function Remove-AzureAccessPackageAssignment { # Remove users from Access Packag
    $apPolicies = $apResult.assignmentPolicies # Store for step 2 if needed
   }
 
-  # --- Step 2: Resolve Policy ---
-  if (Assert-IsGUID -Value $Policy) {
-   $ResolvedPolicyId = $Policy
-  } else {
-   # If we didn't search for the package in Step 1 (because ID was provided), we need to find the policy now
-   if ($null -eq $apPolicies) {
-    $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages/$ResolvedPackageId`?`$expand=assignmentPolicies"
-    $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
-    $apPolicies = $apResult.assignmentPolicies
+  # --- Step 2: Resolve Policy (optional) ---
+  if ($Policy) {
+   if (Assert-IsGUID -Value $Policy) {
+    $ResolvedPolicyId = $Policy
+   } else {
+    # If we didn't search for the package in Step 1 (because ID was provided), we need to find the policy now
+    if ($null -eq $apPolicies) {
+     $apUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/accessPackages/$ResolvedPackageId`?`$expand=assignmentPolicies"
+     $apResult = get-azuregraph -Token $authDetails.Token -GraphRequest $apUrl -ErrorAction Stop
+     $apPolicies = $apResult.assignmentPolicies
+    }
+
+    $targetPolicy = $apPolicies | Where-Object { $_.displayName -eq $Policy }
+    if ($targetPolicy.count -gt 1) { throw "More than one Policy found with name '$Policy' in this package" }
+    if (-not $targetPolicy) { throw "Policy '$Policy' not found in this package." }
+
+    $ResolvedPolicyId = $targetPolicy.id
    }
-
-   $targetPolicy = $apPolicies | Where-Object { $_.displayName -eq $Policy }
-   if ($targetPolicy.count -gt 1) { throw "More than one Policy found with name '$Policy' in this package" }
-   if (-not $targetPolicy) { throw "Policy '$Policy' not found in this package." }
-
-   $ResolvedPolicyId = $targetPolicy.id
   }
 
-  # --- Step 3: Find matching active assignments ---
-  $assignmentUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignments?`$expand=target,accessPackage,assignmentPolicy"
-  $allAssignments = @(get-azuregraph -Token $authDetails.Token -GraphRequest $assignmentUrl -SinglePage -ErrorAction Stop)
-  $matchingAssignments = @(
-   $allAssignments | Where-Object {
-    $_.target.objectId -eq $TargetId -and
-    $_.accessPackage.id -eq $ResolvedPackageId -and
-    $_.assignmentPolicy.id -eq $ResolvedPolicyId
-   }
-  )
+  # --- Step 3: Find matching active assignments (server-side filter on package/policy, keeps paging under control for large packages) ---
+  # Filters on the assignment resource must go through the expanded navigation properties (accessPackage/id, assignmentPolicy/id), not flat Ids
+  $filterParts = @("accessPackage/id eq '$ResolvedPackageId'")
+  if ($ResolvedPolicyId) { $filterParts += "assignmentPolicy/id eq '$ResolvedPolicyId'" }
+  $filter = [System.Uri]::EscapeDataString($filterParts -join " and ")
+  $assignmentUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignments?`$filter=$filter&`$expand=target,accessPackage,assignmentPolicy"
+  $allAssignments = @(get-azuregraph -Token $authDetails.Token -GraphRequest $assignmentUrl -ErrorAction Stop)
 
-  if ($ShowMatch -and $matchingAssignments) {
-   Write-Host -ForegroundColor Cyan "Found $($matchingAssignments.Count) matching assignment(s):"
-   $matchingAssignments | Select-Object id,
-    @{Name='TargetId';Expression={$_.target.objectId}},
-    @{Name='AccessPackageId';Expression={$_.accessPackage.id}},
-    @{Name='AssignmentPolicyId';Expression={$_.assignmentPolicy.id}},
-    state,
-    status | Format-Table -AutoSize
+  # TargetId can be either the target's directory objectId or the assignment's own id (e.g. copied from the GUI)
+  $matchingAssignments = if ($TargetId) {
+   @($allAssignments | Where-Object { $_.target.objectId -in @($TargetId) -or $_.id -in @($TargetId) })
+  } else {
+   $allAssignments
   }
 
   if (-not $matchingAssignments) {
-   Write-Warning "No matching assignment found for TargetId '$TargetId' in AccessPackage '$AccessPackage' with Policy '$Policy'."
+   Write-Warning "No matching assignment found in AccessPackage '$AccessPackage'$(if ($Policy) { " with Policy '$Policy'" })$(if ($TargetId) { " for the given TargetId(s)" })."
    return $false
   }
 
-  # --- Step 4: Create remove request(s) ---
-  # adminRemove is the reliable mode for automation/app permissions.
-  $requestType = "adminRemove"
-  $requestUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignmentRequests"
-  $removeResults = @()
+  $confirmMessage = "Remove $($matchingAssignments.Count) assignment(s) from Access Package '$AccessPackage'"
+  if (-not $Force -and -not $PSCmdlet.ShouldProcess($confirmMessage, $confirmMessage, "Confirm mass removal")) {
+   return
+  }
 
-  foreach ($assignment in $matchingAssignments) {
-   $bodyObject = @{
-    requestType = $requestType
-    assignment = @{
-     id = $assignment.id
+  # --- Step 4: Create remove requests in batches of 20 via Graph $batch to handle large volumes efficiently ---
+  $batchUrl = "https://graph.microsoft.com/v1.0/`$batch"
+  $requestUri = "/$ResourcePath/assignmentRequests"
+  $removeResults = @()
+  $batchSize = 20
+  $assignmentGroups = for ($i = 0; $i -lt $matchingAssignments.Count; $i += $batchSize) {
+   ,@($matchingAssignments[$i..([Math]::Min($i + $batchSize - 1, $matchingAssignments.Count - 1))])
+  }
+
+  foreach ($group in $assignmentGroups) {
+   $requests = for ($i = 0; $i -lt $group.Count; $i++) {
+    @{
+     id     = "$i"
+     method = "POST"
+     url    = $requestUri
+     headers = @{ "Content-Type" = "application/json" }
+     body   = @{
+      requestType = "adminRemove"
+      assignment  = @{ id = $group[$i].id }
+     }
     }
    }
 
-   if ($PSBoundParameters.ContainsKey('Justification') -and -not [string]::IsNullOrWhiteSpace($Justification)) {
-    $bodyObject.justification = $Justification
-   }
-
-   $body = $bodyObject | ConvertTo-Json -Depth 10
-
-   $removeResults += get-azuregraph -Token $authDetails.Token -GraphRequest $requestUrl -Method POST -Body $body -ErrorAction Stop
+   $batchBody = @{ requests = @($requests) } | ConvertTo-Json -Depth 10
+   $removeResults += get-azuregraph -Token $authDetails.Token -GraphRequest $batchUrl -Method POST -Body $batchBody -ErrorAction Stop
   }
 
   $removeResults
