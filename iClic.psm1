@@ -18552,6 +18552,8 @@ Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assi
   $Policy,                                    # Can be Name or GUID. Omit to match all policies in the package
   $TargetId,                                  # Single ID or array. Omit to match all targets in the package
   [Switch]$Force,                             # Skip the confirmation prompt
+  [ValidateRange(0, 20)]
+  [Int]$MaxThrottleRetries = 10,
   $Token
  )
  Try {
@@ -18654,40 +18656,68 @@ Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assi
   }
 
   foreach ($group in $assignmentGroups) {
-   $requestMap = @{}
-   $requests = for ($i = 0; $i -lt $group.Count; $i++) {
-    $requestMap["$i"] = $group[$i]
-    @{
-     id     = "$i"
-     method = "POST"
-     url    = $requestUri
-     headers = @{ "Content-Type" = "application/json" }
-     body   = @{
-      requestType = "adminRemove"
-      assignment  = @{ id = $group[$i].id }
+   $pendingAssignments = @($group)
+   $throttleAttempt = 0
+
+   while ($pendingAssignments.Count -gt 0) {
+    $requestMap = @{}
+    $requests = for ($i = 0; $i -lt $pendingAssignments.Count; $i++) {
+     $requestMap["$i"] = $pendingAssignments[$i]
+     @{
+      id     = "$i"
+      method = "POST"
+      url    = $requestUri
+      headers = @{ "Content-Type" = "application/json" }
+      body   = @{
+       requestType = "adminRemove"
+       assignment  = @{ id = $pendingAssignments[$i].id }
+      }
      }
     }
-   }
 
-   $batchBody = @{ requests = @($requests) } | ConvertTo-Json -Depth 10
-  $batchResult = get-azuregraph -Token $authDetails.Token -GraphRequest $batchUrl -Method POST -Body $batchBody -ErrorAction Stop
-  foreach ($response in $batchResult.responses) {
-   $assignment = $requestMap[$response.id]
-   $errorMessage = if ($response.status -notin 200..299) {
-    if ($response.body.error.message) { $response.body.error.message } else { "Graph returned HTTP $($response.status)" }
-   }
+    $batchBody = @{ requests = @($requests) } | ConvertTo-Json -Depth 10
+    $batchResult = get-azuregraph -Token $authDetails.Token -GraphRequest $batchUrl -Method POST -Body $batchBody -ErrorAction Stop
+    $throttledAssignments = @()
+    $retryAfterValues = @()
 
-   $removeResults += [PSCustomObject]@{
-    AssignmentId  = $assignment.id
-    TargetObjectId = $assignment.target.objectId
-    AssignmentState = $assignment.state
-    HTTPStatus     = $response.status
-    RequestId      = $response.body.id
-    RequestState   = if ($response.body.requestState) { $response.body.requestState } else { $response.body.state }
-    RequestStatus  = if ($response.body.requestStatus) { $response.body.requestStatus } else { $response.body.status }
-    Error           = $errorMessage
+    foreach ($response in $batchResult.responses) {
+     $assignment = $requestMap[$response.id]
+     if ($response.status -eq 429 -and $throttleAttempt -lt $MaxThrottleRetries) {
+      $throttledAssignments += $assignment
+      if ($response.headers.'Retry-After') {
+       $retryAfterValues += [Int]$response.headers.'Retry-After'
+      }
+      continue
+     }
+
+     $errorMessage = if ($response.status -notin 200..299) {
+      if ($response.body.error.message) { $response.body.error.message } else { "Graph returned HTTP $($response.status)" }
+     }
+
+     $removeResults += [PSCustomObject]@{
+      AssignmentId  = $assignment.id
+      TargetObjectId = $assignment.target.objectId
+      AssignmentState = $assignment.state
+      HTTPStatus     = $response.status
+      RequestId      = $response.body.id
+      RequestState   = if ($response.body.requestState) { $response.body.requestState } else { $response.body.state }
+      RequestStatus  = if ($response.body.requestStatus) { $response.body.requestStatus } else { $response.body.status }
+      Error           = $errorMessage
+     }
+    }
+
+    $pendingAssignments = @($throttledAssignments)
+    if ($pendingAssignments.Count -gt 0) {
+     $throttleAttempt++
+     $retryAfter = if ($retryAfterValues.Count -gt 0) {
+      ($retryAfterValues | Measure-Object -Maximum).Maximum
+     } else {
+      [Math]::Min([Math]::Pow(2, $throttleAttempt), 60)
+     }
+     Write-Warning "Graph throttled $($pendingAssignments.Count) removal request(s). Retrying in $retryAfter second(s), attempt $throttleAttempt of $MaxThrottleRetries."
+     Start-Sleep -Seconds $retryAfter
+    }
    }
-  }
   }
 
   $failedResults = @($removeResults | Where-Object { $_.HTTPStatus -notin 200..299 })
