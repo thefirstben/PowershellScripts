@@ -1,4 +1,5 @@
-# Notes
+#region SECTION : Notes
+
 #   Type of indentation : K&R 1TBS
 # Add de Beep to functions / commands
 #   [console]::Beep()
@@ -61,137 +62,19 @@
 # Catch with Graph : $_.ErrorDetails.Message
 # Query in Azure without any specific module, check example : Get-AzureManagementGroups
 
-# Required Modules
+#endregion SECTION : Notes
+#region SECTION : Required External Modules
+
 # ActiveDirectory for : Set-AdUser, Get-AdUser etc.
 # For Azure : Azure CLI or Microsoft.Graph
 # For Exchange Management : ExchangeOnlineManagement
 # For SQL Management : SqlServer
 # To store secure data in Credential Manager : TUN.CredentialManager or in PS Store : Microsoft.PowerShell.SecretManagement AND Microsoft.PowerShell.SecretStore
+# Module to NOT use : MSAL.PS - Avoid using this module as this generates conflicts with other MS Modules (example : ExchangeOnlineManagement)
 
-# Not used for authentication : MSAL.PS - Avoid using this module as this generates conflicts with other MS Modules (example : ExchangeOnlineManagement)
+#endregion SECTION : Required Modules
+#region SECTION : Display Functions
 
-# ToDo : add measure-command function to time functions whenever possible
-
-# Set future console in QuickEdit mode
-if ( ($host.Name -match 'consolehost') ) {
- Try {
-  set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1 -ErrorAction Ignore
- } catch {
-  Write-Verbose "Issue setting QuickEdit ${$Error[0]}"
- }
-}
-
-if ($IsWindows) {
- if ($env:LOCALAPPDATA) {
-  $iClic_TempPath = Join-Path $env:USERPROFILE 'iClic'
- } else {
-  $iClic_TempPath = Join-Path $env:TEMP 'iClic'
- }
-} else {
- $iClic_TempPath = Join-Path ([System.IO.Path]::GetTempPath()) 'iClic'
-}
-
-if (! (Test-Path $iClic_TempPath)) {
- New-item -ItemType Directory $iClic_TempPath -Force | Out-Null
- # Set-Location -Path "$iClic_TempPath"
-} else {
- # Set-Location -Path "$iClic_TempPath"
-}
-
-# Set default colors used in functions
-$defaultblue="Cyan"
-# Set Azure Prompt as False by default as this slows down display
-[Switch]$global:AzurePrompt=$False
-
-if ($IsLinux -or $IsMacOS) {
- $username=[System.Environment]::UserName
-} else {
- $username=([System.Security.Principal.WindowsIdentity]::GetCurrent().name).ToUpper()
-}
-# TO CLEAN
-Function PSElevate { # Open an elevated Powershell window (not possible to elevate without opening a new window). If already elevated will open another window
- Param (
-  $User
- )
- $NewVer = $(Assert-MinPSVersion 6 -Silent)
-
- if ($NewVer) {
-  $ShellName='pwsh.exe'
- } else {
-  $ShellName='powershell.exe'
- }
-
- $ErrorActionPreference='Stop'
-
- try {
-
- if ($user) {
-  while (! $Password) {$Password=read-host -AsSecureString "Enter Password of account `"$User`" "}
-  $Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $User,$Password
-  Start-Process $ShellName -Credential $Credential -UseNewEnvironment -WindowStyle Hidden -ArgumentList "-NoProfile -Command Start-Process $ShellName -Verb runAs"
- } else {
-  Start-Process $ShellName -Verb runAs
- }
-
- } catch {
-  write-Colored -Color "Red" "Error while Elevate : " $error[0]
- }
-}
-Function Get-UptimePerso { # Show machine uptime, works with any OS and works remotely
- Param (
-  $ServerName=$env:ComputerName,
-  [switch]$Obj
- )
- try {
-  if ($ServerName -ne $env:ComputerName) {
-
-   $WSmanTest=Test-Wsman $ServerName -ErrorAction Stop
-   $WSmanTest=[Int]($WSmanTest.ProductVersion -split "Stack: ")[-1]
-
-   if ($WSmanTest -gt 2) {
-    # Win 2008 R2+
-    $os = Get-CimInstance win32_operatingsystem -computername $ServerName -ErrorAction Stop -OperationTimeoutSec 1
-    $UnformatedDate=($os.lastbootuptime)
-   } else {
-     # Win 2003+
-    $os = Get-WmiObject  win32_operatingsystem -ComputerName $ServerName -ErrorAction Stop
-    $UnformatedDate=($os.ConvertToDateTime($os.lastbootuptime))
-   }
-  } else {
-    $os = Get-CimInstance win32_operatingsystem -ErrorAction Stop -OperationTimeoutSec 1
-    $UnformatedDate=($os.lastbootuptime)
-  }
-
-  $uptime = (Get-Date) - $UnformatedDate
-  $LastRebootDate=get-date $UnformatedDate -uformat '%Y-%m-%d %T'
-  if ($Obj) {
-   $returnmessage=$($LastRebootDate;"$($Uptime.Days) days $($Uptime.Hours) hours $($Uptime.Minutes) minutes $($Uptime.Seconds) seconds")
-  } else {
-   $returnmessage="$LastRebootDate - $($Uptime.Days) days $($Uptime.Hours) hours $($Uptime.Minutes) minutes $($Uptime.Seconds) seconds"
-  }
- } catch {
-  if ($Obj) {
-   $returnmessage=$($($Error[0].Exception.Message.Trim());"N/A")
-  } else {
-   $returnmessage=$Error[0].Exception.Message.Trim()
-  }
- }
- return $returnmessage
-}
-Function KillAllPsSessions { # Remove all opened PS sessions
- $Sessions=get-pssession
- try {
-  $Sessions | Remove-PSSession -ErrorAction Stop
- } catch {
-  write-Colored -Color "Red" -ColoredText $Error[0]
- }
- write-colored "Magenta" -ColoredText "$($Sessions.Count) session(s) deleted"
- #Remove Temporary Modules
- Title
- Remove-Module -Name "tmp_*"
-}
-
-# Display Functions
 Function Title { # Used to manage the title of the Powershell Window
  Param (
   $PostMsg
@@ -387,8 +270,9 @@ Function Align { # Align function depending on the window size
  if ($variable.length -lt $size) {$variable=$variable+(" "*($size-$variable.length))+$ending}
  return $variable
 }
+#endregion SECTION : Display Functions
+#region SECTION : Write Functions
 
-# Write functions
 Function Write-Centered { # Function to print text centered on the powershell screen
  Param (
   [string]$message,
@@ -442,8 +326,9 @@ Function Write-Colored { # Advanced Write-Host function which can be used to pri
   write-output "$Date$NonColoredText $ColoredText" | out-file -append $filepath
  }
 }
+#endregion SECTION : Write Functions
+#region SECTION : Format conversion Function
 
-# Format conversion Function
 Function Format-FileSize {
  Param (
   $size
@@ -615,7 +500,9 @@ Function Format-Date {
   Write-Verbose "Catched error $($_)"
  }
 }
-# Convert Function
+#endregion SECTION : Format conversion Function
+#region SECTION : Convert Function
+
 Function Convert-DateSpecific {
  Param (
   $Date,
@@ -814,7 +701,9 @@ Function ConvertFrom-EncodedCommand { # Allows to decode data from PowerShell 'E
   }
  }
 }
-# Linux equivalent
+#endregion SECTION : Convert Function
+#region SECTION : Linux equivalent
+
 Function Watch { # 'watch' equivalent
  Param (
   $commandline,
@@ -1048,8 +937,9 @@ Function Get-LastReboots { # 'last reboot' equivalent
  # '@
  #   Get-WinEvent -FilterXml $xml -MaxEvents $MaxEvents -ComputerName $Server | Select-Object @{Name="Reboots";Expression={Format-Date $_.TimeCreated}}
 }
+#endregion SECTION : Linux equivalent
+#region SECTION : SID Convert
 
-# SID Convert
 Function Get-SIDFromUser {
  Param (
   [string]$user
@@ -1089,8 +979,9 @@ Function Get-UPNFromADUser {
    $colResults[0].Properties.userprincipalname
  } catch {write-Colored -Color "Red" -ColoredText $Error[0]}
 }
+#endregion SECTION : SID Convert
+#region SECTION : Wait for User Interractions
 
-# Wait for User Interractions
 Function WaitForKeyPressAdvanced {
  Param (
   $Message = "Press any key to continue . . . "
@@ -1144,8 +1035,9 @@ Function WaitForKeyPress {
  #Below function should work correctly
  [void][System.Console]::ReadKey($FALSE)
 }
+#endregion SECTION : Wait for User Interractions
+#region SECTION : Check
 
-# Check
 Function Assert-IsNumeric {
  Param (
   $Value
@@ -1309,8 +1201,9 @@ Function Assert-IsGUID {
  # Returns True if successfully parsed, otherwise returns False.
  if ( [System.Guid]::TryParse($Value,[System.Management.Automation.PSReference]$ObjectGuid) ) { return $true } else {return $false}
 }
+#endregion SECTION : Check
+#region SECTION : Tests
 
-# Tests
 Function Test-Port { # TO DO : ADD UDP TEST : system.Net.Sockets.UDPClient
  Param (
   [Parameter(Mandatory)]$Server,
@@ -1624,8 +1517,9 @@ Function Test-RemotePowershell {
   if ($printmessage) {write-colored "Cyan" -ColoredText "$servername`t$true"} else {return $true}
  } catch { if ($printmessage) {write-colored -Color "red" -ColoredText "$servername`t$false`t$($error[0])"} else { return $false } }
 }
+#endregion SECTION : Tests
+#region SECTION : Get User Info
 
-# GetInfo
 Function Get-UserInfo {
  Param (
   $user=$env:USERNAME,
@@ -2178,7 +2072,9 @@ Function Get-NetFrameworkVersion {
  }
 }
 
-# IIS
+#endregion SECTION : Get User Info
+#region SECTION : IIS
+
 Function Update-IISPoolIdentity {
  Param (
   $IISDomainAccountCurrent,
@@ -2243,8 +2139,9 @@ Function Get-IISSite {
  }
  $BindingList
 }
+#endregion SECTION : IIS
+#region SECTION : EventLog
 
-# EventLog
 Function Get-EventLogInfo {
  Param (
   $LogType,
@@ -2456,8 +2353,9 @@ Function Get-EventLogLockedAccounts { # Check all latest lockout accounts (needs
  )
  Get-EventLog -LogName security -ComputerName $PDCEmulatorServer -InstanceId 4740
 }
+#endregion SECTION : EventLog
+#region SECTION : Network
 
-# Network
 Function Get-EthernetConf {
  Param (
   [Switch]$NoFilter,
@@ -3117,8 +3015,9 @@ Function Open-Port {
   Write-host "Listener Closed Safely"
  }
 }
+#endregion SECTION : Network
+#region SECTION : Registry check
 
-# Registry check
 Function Get-RegAllUserProfiles {
  Param (
   $ServerToTest=$env:computername
@@ -3215,8 +3114,9 @@ Function Set-RegKey {
  )
  Set-ItemProperty -path $RegKey -Name $Name -value $Value -Type $Type
 }
+#endregion SECTION : Registry check
+#region SECTION : Services, Tasks, GPO
 
-# Services, Tasks, GPO
 Function Get-ServicesSpecific {
  Param (
   [Switch]$Filter,
@@ -3493,8 +3393,9 @@ Function Get-GPOALL {
  $AllDisabled=$ComputerResult+$UserResult | Where-Object Denied -eq True
  return $($AllEnabled+$AllDisabled)
 }
+#endregion SECTION : Services, Tasks, GPO
+#region SECTION : SQL
 
-# SQL
 Function Get-SQLInfo {
  Param (
   $TITLE,
@@ -3565,8 +3466,9 @@ Function Get-SQLOpenedConnections {
   write-Host -ForegroundColor "Red" $error[0]
  }
 }
+#endregion SECTION : SQL
+#region SECTION : File Info
 
-# File Info
 Function Get-FileInfoFull {
  Param (
   [Parameter(Mandatory=$true)]$path
@@ -3582,8 +3484,9 @@ Function Get-FileInfo {
  if ( ! (test-path $path)) { Write-Colored -Color "red" -NonColoredText  "" "Unavailable path : $path" ; return }
  (Get-ItemProperty -Path $path).versioninfo
 }
+#endregion SECTION : File Info
+#region SECTION : SWAP Management
 
-# SWAP Management
 Function Get-SWAP {
  if ( ! (Assert-MinPSVersion 3 -CurrentFunction $($MyInvocation.MyCommand)) ) {return}
  #Works only with one swapfile defined
@@ -3658,8 +3561,9 @@ Function Set-SWAP {
  #Print Configuration
  Get-SWAP
 }
+#endregion SECTION : SWAP Management
+#region SECTION : AD Management
 
-# AD Management
 Function Get-ADOUFromServer {
  Param (
   $ServerName=$env:COMPUTERNAME
@@ -4140,8 +4044,9 @@ Function Get-ADUserFromName {
  Write-Verbose "Filtering on $DisplayName"
  Get-ADUser -Filter {Name -eq $DisplayName}
 }
+#endregion SECTION : AD Management
+#region SECTION : SCCM Management
 
-# SCCM Management
 Function Set-BusinessCategory {
  Param (
   [Parameter(Mandatory=$true)]$BC #BusinessCategory
@@ -4160,8 +4065,9 @@ Function Get-BusinessCategory {
  if (! $ServerBusinessCategory) {$ServerBusinessCategory="N/A"}
  return $ServerBusinessCategory
 }
+#endregion SECTION : SCCM Management
+#region SECTION : MS GUID Conversion scripts
 
-# MS GUID Conversion scripts
 Function Get-SchemaGUIDDefinition {
  #Set global to use in other scripts
  # $global:schemaIDGUID = @{}
@@ -4181,8 +4087,9 @@ Function Get-ValueFromGUID {
  if ($GuidResult.Value) { $returnvalue=$GuidResult.Value } else {$returnvalue="GUID Not Found"}
  return $returnvalue
 }
+#endregion SECTION : MS GUID Conversion scripts
+#region SECTION : MS-DS-ConsistencyGUID Management
 
-# MS-DS-ConsistencyGUID Management
 Function Get-ADUserGUID {
  Param (
   $user=$env:ComputerName
@@ -4224,8 +4131,9 @@ Function Set-ADGroupObjectIDAsMSDSConsistencyGUID { # Set the Object ID as the m
  $GroupGUID = (Get-ADGroup -Identity $Group).ObjectGUID
  Set-ADGroup -Identity $Group -Replace @{'mS-DS-ConsistencyGuid'=$GroupGUID}
 }
+#endregion SECTION : MS-DS-ConsistencyGUID Management
+#region SECTION : Bitlocker
 
-# Bitlocker
 Function Get-BitlockerRemote {
  Param (
   $ServerName=$env:COMPUTERNAME
@@ -4263,9 +4171,8 @@ Function Get-BitlockerKeyFromID {
             msFVE-RecoveryPassword,Created `
    | Where-Object {$_.ID -like "*$ID*"}
 }
-
-# Exchange/O365 - Old Not Updated
-#Exchange Connexion
+#endregion SECTION : Bitlocker
+#region SECTION : Exchange/O365 - Old Not Updated
 Function Connect-Exchange () {
  [Parameter(Mandatory=$true)]$ExchangeServerName,
  $SessionName = "Exchange-Local"
@@ -4286,7 +4193,6 @@ Function Disconnect-Exchange () {
  if ($ModuleSource) { Remove-Module -ErrorAction Ignore -Name $($ModuleSource.Source) }
  Title
 }
-# Get Info/Filter
 Function Get-ExchangeVersion {
  if ( ! (Assert-IsCommandAvailable EXSetup) ) {return}
  $ExchangeFileVersion=Get-Command EXSetup | Where-Object {$_.FileVersionInfo}
@@ -4398,7 +4304,6 @@ Function Get-ExchangeUserDetails { # Uses Exchange Module - Does 1000 elements a
   return $ExportFileName
  }
 }
-# Checks
 Function Assert-O365DistributionList {
  Param (
   $DLMail,
@@ -4474,7 +4379,6 @@ Function Assert-O365Account {
 
  return $accountinfo
 }
-# Misc Functions
 Function New-PSTBackup {
  Param (
   $userlist=@(""),
@@ -4546,8 +4450,9 @@ Function Get-DistributionGroupMemberRecursive {
 		}
 	}
 }
+#endregion SECTION : Exchange/O365 - Old Not Updated
+#region SECTION : Windows Update
 
-# Windows Update
 Function Get-WindowsUpdateConfig {
  Param (
   [Switch]$DisableWUServer,
@@ -4833,8 +4738,9 @@ function Get-WuHistory { # Get latest updates
  #Remove null records and only return the fields we want
  $history | Where-Object {![String]::IsNullOrWhiteSpace($_.title)} | Select-Object Result, Date, Title,Description, SupportUrl, Product, UpdateId, RevisionNumber
 }
+#endregion SECTION : Windows Update
+#region SECTION : WSUS
 
-# WSUS
 Function Install-WSUS { # Install WSUS Service on a Server
  Param (
   $DataFolder="E:\WSUS"
@@ -5081,8 +4987,9 @@ Function Get-WSUSUpdatesWaitingForApproval { # List all updates waiting for appr
  } | Select-Object Server,Title,Classification,ComputersWithErrors,ComputersNeedingThisUpdate,RestartBehavior,`
  @{Name="Products";Expression={$_.Products -join ','}},UpdateId
 }
+#endregion SECTION : WSUS
+#region SECTION : DNSManagement
 
-# DNSManagement
 Function Test-DNS { # Check DNS resolution and reverse for a server or IP
 Param (
  $Server=$($env:computername)
@@ -5198,8 +5105,9 @@ Function Remove-DNSEntry {
  )
  Remove-DnsServerResourceRecord -ZoneName $CurrentZone -RRType "A" -ComputerName $DNSServer -Name $ServerName
 }
+#endregion SECTION : DNSManagement
+#region SECTION : DHCP Management
 
-# DHCP Management
 Function CheckDHCPReservations { #Check DHCP Reservation of a group of machine in a Scope
 
  Param (
@@ -5232,8 +5140,9 @@ Function CheckDHCPReservations { #Check DHCP Reservation of a group of machine i
   @{Name="Status";Expression={($ReservationList | Where-Object MAC -eq $_.MAC).AddressState}}
 
 }
+#endregion SECTION : DHCP Management
+#region SECTION : Disks
 
-# Disks
 Function Get-PartitionInfo {
  Param (
   $ServerName,
@@ -5612,7 +5521,9 @@ Function Set-Rights {
   }
  }
 }
-# Share
+#endregion SECTION : Disks
+#region SECTION : Share
+
 Function Get-WindowsShareRights {
  Param (
   $ShareName
@@ -5751,8 +5662,8 @@ Function Get-WindowsShare {
  }
  return $FullResult
 }
-
-######################################################## CopyManagement ###########################################################
+#endregion SECTION : Share
+#region SECTION : CopyManagement
 
 Function CopyWithBITS {
  Param (
@@ -5796,8 +5707,8 @@ Function CopyWithBITS {
  ProgressClear
  Start-BitsTransfer $FullPath\*.* $Destination
 }
-
-######################################################## SCCM ###########################################################
+#endregion SECTION : CopyManagement
+#region SECTION : SCCM
 
 Function Get-SCCMSiteCode {
  Param (
@@ -5822,8 +5733,8 @@ Function Get-SCCMInfo {
  }
  Write-Colored -Color $Color -NonColoredText (Align -Variable "SCCM Client Version" -Size $alignsize -Ending " : ") $SCCMVersion
 }
-
-######################################################## License Management ###########################################################
+#endregion SECTION : SCCM
+#region SECTION : License Management
 
 Function Set-WindowsLicense {
  Param (
@@ -5842,8 +5753,8 @@ Function Set-WindowsLicense {
  }
  if (((Get-ActivationStatus).Status -ne "Licensed")) {write-host -foregroundcolor Red "$computer is not activated" ; return}
 }
-
-######################################################## Kaspersky ###########################################################
+#endregion SECTION : License Management
+#region SECTION : Kaspersky
 
 Function Get-KasperskyStatus {
  Param (
@@ -5928,8 +5839,8 @@ Function Connect-Kaspersky { #Connect to the API
   Write-Host -ForegroundColor Red $Error[0]
  }
 }
-
-######################################################## Protocol & Cipher ###########################################################
+#endregion SECTION : Kaspersky
+#region SECTION : Protocol & Cipher
 
 Function Get-Protocols {
  $ProtocolList = [enum]::GetNames([Net.SecurityProtocolType])
@@ -6071,8 +5982,8 @@ Function Update-ProtocolsAndCipher {
   }
  }
 }
-
-######################################################## Remote ###########################################################
+#endregion SECTION : Protocol & Cipher
+#region SECTION : Remote
 
 Function RunRemoteWMI {
  Param (
@@ -6203,8 +6114,8 @@ Function Send-RemoteCommand {
   write-host -ForegroundColor 'Red' "Error on computer $ComputerName : $($Error[0])"
  }
 }
-
-######################################################## VMware ###########################################################
+#endregion SECTION : Remote
+#region SECTION : VMware
 
 Function Get-VMLic {
  Param (
@@ -6287,8 +6198,8 @@ Function Connect-vCenter {
  }
  if ($Verbose) {Return $vCenterConnexion}
 }
-
-######################################################## Captures ###########################################################
+#endregion SECTION : VMware
+#region SECTION : Captures
 
 Function Get-BufferContentToTxt {
  #Must clear window before function and must send the output to a file (>file.txt)
@@ -6392,8 +6303,8 @@ Function Get-ConsoleBuffer {
  if (Test-Path -Path $Path) { if ($Preview) { <#Invoke-Item $Path#>; Invoke-Item $(($Path -split("\\") |Select-Object -skiplast 1) -join '\') } ; Write-StarLine ; write-centered $Path; Write-StarLine} else { Write-Warning "Unable to save to -Path $Path"; }
  #endregion
 }
-
-######################################################## Tweak Windows ###########################################################
+#endregion SECTION : Captures
+#region SECTION : Tweak Windows
 
 Function Remove-Windows10NonEnterpriseApps {
  $ApplistOnline = Get-AppXProvisionedPackage -online
@@ -6682,8 +6593,8 @@ Function Set-DCOMUsers {
 Function Remove-PublicDesktopIcons {
  Remove-Item $Env:PUBLIC\Desktop\*
 }
-
-######################################################## PowerManagement ###########################################################
+#endregion SECTION : Tweak Windows
+#region SECTION : PowerManagement
 
 Function Set-Powersettings {
  Param (
@@ -6715,8 +6626,8 @@ Function Enable-PowerSettingsUnhideAll {
   ForEach ($item in $PowerSettings) { $path = $item -replace "HKEY_LOCAL_MACHINE","HKLM:"; Set-ItemProperty -Path $path -Name 'Attributes' -Value 2 -Force }
  }
 }
-
-######################################################## Sound ###########################################################
+#endregion SECTION : PowerManagement
+#region SECTION : Sound
 
 Function Set-Speaker {
  Param (
@@ -6732,8 +6643,8 @@ Function Set-Speaker {
   $wshShell = new-object -com wscript.shell;$wshShell.SendKeys([char]173)
  }
 }
-
-######################################################## Office Tools ###########################################################
+#endregion SECTION : Sound
+#region SECTION : Office Tools
 
 Function Save-ExcelToCSV {
  Param (
@@ -6795,8 +6706,8 @@ Function Save-CSVToExcel {
  $workbook.SaveAs($NewFilePath,51)
  $workbook.Close()
 }
-
-####################################################### Keycloak #######################################################
+#endregion SECTION : Office Tools
+#region SECTION : Keycloak
 
 Function Get-KeycloakToken {
  Param (
@@ -6914,9 +6825,9 @@ Function Get-KeyCloakRolesFromID { # Get All Assigned Role from Users or Service
   }
   $GlobalClientRights
 }
-
-######################################################## Powershell history management (Found on github : https://github.com/PowerShell/PSReadLine/issues/1778) #######################################################
-
+#endregion SECTION : Keycloak
+#region SECTION : Powershell history management 
+#Found on github : https://github.com/PowerShell/PSReadLine/issues/1778
 Function Remove-PSReadlineHistory {
  param (
   [Parameter(Mandatory = $true)]
@@ -6948,8 +6859,8 @@ Function Remove-History {
  Remove-PSReadlineHistory -Pattern $Pattern
  Remove-PSHistory -Pattern $Pattern
 }
-
-####################################################### Install APP (Generic Functions) #######################################################
+#endregion SECTION : Powershell history management
+#region SECTION : Install APP (Generic Functions)
 
 Function Add-ToPath {
  Param (
@@ -7085,8 +6996,8 @@ Function Get-GITHUB_App_LatestVersion { # Find latest version on Github if using
 
  return [pscustomobject]@{BaseVersion=$BaseVersion;Version=$Version;TagURL=$TagUrl;BaseDownloadUrl=$BaseDownloadUrl;DownloadUrl=$DownloadUrl}
 }
-
-####################################################### Install APP (UserMode) #######################################################
+#endregion SECTION : Install APP (Generic Functions)
+#region SECTION : Install APP (UserMode)
 
 Function Install-VsCode { # Download and install latest VSCode [User version] (Non Admin) [EXE]
  $FileName = Get-FileFromURL "https://code.visualstudio.com/sha/download?build=stable&os=win32-x64-user"
@@ -7414,8 +7325,8 @@ Function Install-OpenSSL { # Download and install lastest OpenSSL (from firedaem
  Remove-Item "$InstallDestination\$ProductName-*\" -Recurse
  Add-ToPath "$InstallDestination\x64\bin"
 }
-
-####################################################### Install APP (Admin) #######################################################
+#endregion SECTION : Install APP (UserMode)
+#region SECTION : Install APP (Admin)
 
 Function Install-RSAT { # Install Full RSAT (Remote Server Administration Tools) [Windows Component] - Can remote install
  Param (
@@ -7578,9 +7489,8 @@ Function Install-SSMS { # Download and install latest SQL Server Management Stud
  Start-Process -FilePath $SetupFileName -ArgumentList $Arguments -Wait
  Remove-Item $SetupFileName
 }
-
-####################################################### Git #######################################################
-
+#endregion SECTION : Install APP (Admin)
+#region SECTION : Git
 Function Get-GitLabGroups {
  Param (
   $Access_Token = $env:GitLabKey,
@@ -7635,8 +7545,8 @@ Function Get-GitConfig {
  write-host -ForegroundColor Blue "System"
  git config --system --list
 }
-
-####################################################### Misc Functions #######################################################
+#endregion SECTION : Git
+#region SECTION : Misc Functions
 
 Function Add-ValuesToArray { # Example to add values to a Powershell Array
  Param (
@@ -8838,8 +8748,50 @@ Function Get-Profile { # Reload profile/module files into global scope without r
   Import-Module $Path -Force -Global -ErrorAction Stop
  }
 }
+Function Get-UptimePerso { # Show machine uptime, works with any OS and works remotely
+ Param (
+  $ServerName=$env:ComputerName,
+  [switch]$Obj
+ )
+ try {
+  if ($ServerName -ne $env:ComputerName) {
 
-####################################################### Non standard verbs #######################################################
+   $WSmanTest=Test-Wsman $ServerName -ErrorAction Stop
+   $WSmanTest=[Int]($WSmanTest.ProductVersion -split "Stack: ")[-1]
+
+   if ($WSmanTest -gt 2) {
+    # Win 2008 R2+
+    $os = Get-CimInstance win32_operatingsystem -computername $ServerName -ErrorAction Stop -OperationTimeoutSec 1
+    $UnformatedDate=($os.lastbootuptime)
+   } else {
+     # Win 2003+
+    $os = Get-WmiObject  win32_operatingsystem -ComputerName $ServerName -ErrorAction Stop
+    $UnformatedDate=($os.ConvertToDateTime($os.lastbootuptime))
+   }
+  } else {
+    $os = Get-CimInstance win32_operatingsystem -ErrorAction Stop -OperationTimeoutSec 1
+    $UnformatedDate=($os.lastbootuptime)
+  }
+
+  $uptime = (Get-Date) - $UnformatedDate
+  $LastRebootDate=get-date $UnformatedDate -uformat '%Y-%m-%d %T'
+  if ($Obj) {
+   $returnmessage=$($LastRebootDate;"$($Uptime.Days) days $($Uptime.Hours) hours $($Uptime.Minutes) minutes $($Uptime.Seconds) seconds")
+  } else {
+   $returnmessage="$LastRebootDate - $($Uptime.Days) days $($Uptime.Hours) hours $($Uptime.Minutes) minutes $($Uptime.Seconds) seconds"
+  }
+ } catch {
+  if ($Obj) {
+   $returnmessage=$($($Error[0].Exception.Message.Trim());"N/A")
+  } else {
+   $returnmessage=$Error[0].Exception.Message.Trim()
+  }
+ }
+ return $returnmessage
+}
+#endregion SECTION : Misc Functions
+#endregion SECTION : Misc Functions
+#region SECTION : Non standard verbs
 
 Function ScreenOff { # Turns of screen (no additional software required)
  (Add-Type '[DllImport("user32.dll")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1,0x0112,0xF170,2)
@@ -8904,8 +8856,48 @@ Function LaunchAsUser { # Launch Script as another user
  $credential = New-Object System.Management.Automation.PSCredential($user, $secpasswd)
  Start-Process -NoNewWindow powershell.exe -Credential $credential $script
 }
+Function PSElevate { # Open an elevated Powershell window (not possible to elevate without opening a new window). If already elevated will open another window
+ Param (
+  $User
+ )
+ $NewVer = $(Assert-MinPSVersion 6 -Silent)
 
-####################################################### Misc Functions (Require Additionnal Tools) #######################################################
+ if ($NewVer) {
+  $ShellName='pwsh.exe'
+ } else {
+  $ShellName='powershell.exe'
+ }
+
+ $ErrorActionPreference='Stop'
+
+ try {
+
+ if ($user) {
+  while (! $Password) {$Password=read-host -AsSecureString "Enter Password of account `"$User`" "}
+  $Credential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $User,$Password
+  Start-Process $ShellName -Credential $Credential -UseNewEnvironment -WindowStyle Hidden -ArgumentList "-NoProfile -Command Start-Process $ShellName -Verb runAs"
+ } else {
+  Start-Process $ShellName -Verb runAs
+ }
+
+ } catch {
+  write-Colored -Color "Red" "Error while Elevate : " $error[0]
+ }
+}
+Function KillAllPsSessions { # Remove all opened PS sessions
+ $Sessions=get-pssession
+ try {
+  $Sessions | Remove-PSSession -ErrorAction Stop
+ } catch {
+  write-Colored -Color "Red" -ColoredText $Error[0]
+ }
+ write-colored "Magenta" -ColoredText "$($Sessions.Count) session(s) deleted"
+ #Remove Temporary Modules
+ Title
+ Remove-Module -Name "tmp_*"
+}
+#endregion SECTION : Non standard verbs
+#region SECTION : Misc Functions (Require Additionnal Tools)
 
 Function Reset-GraphicCard { # Disables/Enables device [Requires Nirsoft DevManView] - On windows 11 can use : Ctrl+Win+Shift+B
  Param (
@@ -9032,8 +9024,8 @@ Function Add-PasswordToPFX { # Add a password to a PFX File [Requires OpenSSL]
  Remove-Item $TempFile
  [pscustomobject]@{Location=$OutputFile;Password=$Password}
 }
-
-####################################################### Video / Audio Encoding #######################################################
+#endregion SECTION : Misc Functions (Require Additionnal Tools)
+#region SECTION : Video / Audio Encoding
 
 Function Encode { # Encodes Video using FFMPEG [Requires FFMPEG]
  Param (
@@ -9095,8 +9087,8 @@ Function Save-AudioTrack { # Uses FFmpeg
  $SelectedTrack = Get-AudioTracks -FileName $FileName
  ffmpeg -analyzeduration $AnalyzeMaxDuration -probesize $AnalyzeMaxDuration -i $FileName -map 0:a:$SelectedTrack "$($FileName)_AudioTrack_$($SelectedTrack).$OutputFormat"
 }
-
-########################################################Security (Check Admin Mods)#######################################################
+#endregion SECTION : Video / Audio Encoding
+#region SECTION : Security (Check Admin Mods)
 
 Function Get-LocalGroupMod { # Get Information on the modification of local groups
  try {
@@ -9219,8 +9211,8 @@ Function MassCheckSecurityPolicy { # Mass Check Local Security Policy on servers
  }
  Return $Result
 }
-
-####################################################### Certificates #######################################################
+#endregion SECTION : Security (Check Admin Mods)
+#region SECTION : Certificates
 
 Function Get-LocalCertificate { # Print all local certificates
  Param (
@@ -9243,8 +9235,8 @@ Function Get-EncryptionCertificate { # Retrive certificat that can be used for d
   | Where-Object {$_.KeyUsage -like '*Document Encryption*'} | Sort-Object NotAfter | Select-Object -Last 1
  return $Certificate
 }
-
-####################################################### VPN (OnPrem) #######################################################
+#endregion SECTION : Certificates
+#region SECTION : VPN (OnPrem)
 
 Function Get-VPNUserFromIP {
  Param (
@@ -9275,8 +9267,8 @@ Function Get-VPNInfoFromUser {
  write-host -ForegroundColor Cyan "Searching for VPN connection info for user $SamAccountName ($UPN) in the past $NumberOfDay days on server $VPNServerName (Initial search may take some time, please wait)"
  Get-EventLogNPSDetailed -ServerName $VPNServerName -StartTime $(Get-Date).addDays(-$NumberOfDay)  | Where-Object UPN -eq $UPN
 }
-
-####################################################### Azure Connection #######################################################
+#endregion SECTION : VPN (OnPrem)
+#region SECTION : Azure Connection
 
 Function Connect-AzureCli {
  Param (
@@ -9304,8 +9296,8 @@ Function Open-MgGraphConnection {
   }
  }
 }
-
-####################################################### Get Azure Resource Data using Azure Resource Graph API with KQL Queries #######################################################
+#endregion SECTION : Azure Connection
+#region SECTION : Get Azure Resource Data using Azure Resource Graph API with KQL Queries
 
 Function Get-AzureManagementGroups { # Get all subscription and associated Management Groups
   [CmdletBinding()]
@@ -9897,8 +9889,8 @@ Get-AzureGraph -Token $authDetails.Token -Method "PUT" -Body $JsonBody -GraphReq
   }
  }
 }
-
-####################################################### Get Azure Resource Data user Azure CLI (Legacy) #######################################################
+#endregion SECTION : Get Azure Resource Data using Azure Resource Graph API with KQL Queries
+#region SECTION : Get Azure Resource Data user Azure CLI (Legacy)
 
 Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot faster than using the Az Graph cmdline to "https://management.azure.com/subscriptions?api-version=2023-07-01"
 [CmdletBinding(DefaultParameterSetName='ShowAll')]
@@ -9962,15 +9954,15 @@ Function Get-AzureSubscriptionsAZCLI { # Get all subscription of a Tenant, a lot
   }
  }
 }
-
-####################################################### AzCli Env Management #######################################################
+#endregion SECTION : Get Azure Resource Data user Azure CLI (Legacy)
+#region SECTION : AzCli Env Management
 
 Function Get-AzureCliEnvironment { # Get Current Environment used by AzCli
  # az account list --query [?isDefault] | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
  az account show | ConvertFrom-Json | Select-Object tenantId,@{Name="SubscriptionID";Expression={$_.id}},@{Name="SubscriptionName";Expression={$_.name}},@{Name="WhoAmI";Expression={$_.user.name}}
 }
-
-####################################################### Get Azure Resource Information #######################################################
+#endregion SECTION : AzCli Env Management
+#region SECTION : Get Azure Resource Information
 
 Function Get-AzurePublicIPs { # Get all public IPs in Azure (Only resources of Type : Public IPs)
  Get-AzureSubscriptionsAZCLI | foreach-object {
@@ -10486,8 +10478,8 @@ Function Get-AzureApplicationGateway { # Check all Azure Application Gateway
    | Select-Object -ExcludeProperty properties *,@{Name="Listeners";Expression={($_.properties.httpListeners.properties.hostName + $_.properties.httpListeners.properties.hostNames) -join ";"}}
  }
 }
-
-######################################################## Convert Methods #######################################################
+#endregion SECTION : Get Azure Resource Information
+#region SECTION : Convert Methods
 
 Function Convert-Tag { # Convert Tags to a usable value
  Param (
@@ -10622,8 +10614,8 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret+=[pscustomobject]@{Cert=$TLSCERT;Key=$TLSKEY}
  $Secret
 }
-
-####################################################### User Rights Management #######################################################
+#endregion SECTION : Convert Methods
+#region SECTION : User Rights Management
 
 Function Get-AzureRBACRights { # Get permissions via Graph only request
  [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
@@ -11197,8 +11189,8 @@ Function Remove-AzureRBACRights { # Remove rights to a resource using UserName o
   }
  }
 }
-
-####################################################### App Registration, Service Principal creation #######################################################
+#endregion SECTION : User Rights Management
+#region SECTION : App Registration, Service Principal creation
 
 Function New-AzureAppRegistration { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
  [CmdletBinding()]
@@ -13351,8 +13343,8 @@ Function Remove-AzureAppRegistration { # Remove Azure App Registration | Service
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### Service Principal (Enterprise Applications) [Only] #######################################################
+#endregion SECTION : App Registration, Service Principal creation
+#region SECTION : Service Principal (Enterprise Applications) [Only]
 
 Function Get-AzureServicePrincipal { # Get Service Principal, either specific or via filter
  [CmdletBinding(DefaultParameterSetName = 'Filter')]
@@ -14715,8 +14707,8 @@ Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### User Role Assignement (Not RBAC) #######################################################
+#endregion SECTION : Service Principal (Enterprise Applications) [Only]
+#region SECTION : User Role Assignement (Not RBAC)
 
 Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
@@ -14964,8 +14956,8 @@ Function Add-AzureRole {
   Write-host -ForegroundColor Red "Error Adding Role ($($Error[0]))"
  }
 }
-
-####################################################### Devices #######################################################
+#endregion SECTION : User Role Assignement (Not RBAC)
+#region SECTION : Devices
 
 Function Get-AzureDeviceObjectIDFromName {
  param(
@@ -15030,8 +15022,8 @@ Function Get-AzureDevices {
   Write-host -ForegroundColor Red "Device $DeviceName not found"
  }
 }
-
-####################################################### Administrative Unit Management #######################################################
+#endregion SECTION : Devices
+#region SECTION : Administrative Unit Management
 
 Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with associated Data
  [CmdletBinding()]
@@ -15050,8 +15042,8 @@ Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with ass
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### Schema Extensions #######################################################
+#endregion SECTION : Administrative Unit Management
+#region SECTION : Schema Extensions
 
 Function Get-AzureADExtension { # Extract all schema extension of Azure AD
  #How to filter by Type :
@@ -15067,8 +15059,8 @@ Function Get-AzureADExtension { # Extract all schema extension of Azure AD
   $CurrentResult.Value | Select-Object ID,description,targettypes,status,owner
  }
 }
-
-####################################################### Defender for Cloud (MDC) #######################################################
+#endregion SECTION : Schema Extensions
+#region SECTION : Defender for Cloud (MDC)
 
 Function Get-MDCConfiguration { # Retrieve Microsoft Defender For Cloud (MDC) configuration for all Subscriptions of current Tenant (uses AzCli rest API Access) | EXAMPLE FOR UNKNOWN NUMBER OF VALUES IN TABLE
  [CmdletBinding()]
@@ -15191,8 +15183,8 @@ Function Enable-MDCDefaults { # Enable Microsoft Defender for Cloud (MDC)
  $Body = '{\"properties\":{\"extensions\": [ {\"isEnabled\": \"True\", \"name\": \"AIPromptEvidence\" }, { \"isEnabled\": \"False\", \"name\": \"AIPromptSharingWithPurview\" }],\"freeTrialRemainingTime\": \"P29DT22H11M\",\"pricingTier\": \"Standard\", \"resourcesCoverageStatus\": \"FullyCovered\"}}'
  az rest --method PUT --uri "$BaseURL/AI?api-version=$APIVersion" --headers "Content-Type=application/json" --body $body
 }
-
-####################################################### DevOps #######################################################
+#endregion SECTION : Defender for Cloud (MDC)
+#region SECTION : DevOps
 
 Function Get-ADO_Request { # Check documentation of API here : https://learn.microsoft.com/en-us/rest/api/azure/devops | Uses API Only
  <#
@@ -15777,8 +15769,8 @@ Function Add-ADOGroupMember { # Add ADO Group inside and ADO Group
   Write-Error "Failed to add member to group. $Msg"
  }
 }
-
-####################################################### MFA #######################################################
+#endregion SECTION : DevOps
+#region SECTION : MFA
 
 Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop - Fast) - seems to give about 1000 response per loop - Added a Restart on Throttle/Fail
   [CmdletBinding()]
@@ -16071,8 +16063,8 @@ Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authenticati
   Write-host -ForegroundColor Red "Error getting default MFA Method for user $UPNorID ($StatusCode | $StatusMessage))"
  }
 }
-
-####################################################### AAD Group Management #######################################################
+#endregion SECTION : MFA
+#region SECTION : AAD Group Management
 
 Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not required to have exact username) - Switch for ObjectID ID for faster result
  Param (
@@ -16717,8 +16709,8 @@ Function New-AzureADGroup { # Create New Group using Graph
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### AAD User Management #######################################################
+#endregion SECTION : AAD Group Management
+#region SECTION : AAD User Management
 
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
@@ -17183,8 +17175,8 @@ Function Convert-AzureADUserType { # Convert User Type from Guest to Member or M
    Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### Token Management #######################################################
+#endregion SECTION : AAD User Management
+#region SECTION : Token Management
 
 Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg with Secret or CertificateThumbprint on user device (personal cert) or interractive (No External Modules needed) and Managed Identity (tested in Function App)
  [CmdletBinding(DefaultParameterSetName = 'ClientSecret')]
@@ -17707,8 +17699,8 @@ Function Get-AuthMethod { # Used to replace in all scripts a standard method che
   }
  }
 }
-
-####################################################### Sharepoint Scripts #######################################################
+#endregion SECTION : Token Management
+#region SECTION : Sharepoint Scripts
 
 Function Get-SharepointSiteID { # Resolve a SharePoint Site ID from a full URL or hostname&path [Uses Rest API]
  [CmdletBinding()]
@@ -17827,8 +17819,8 @@ Function Get-SharepointSiteAppPermission { # List App Registration(s) permission
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### API Call Management #######################################################
+#endregion SECTION : Sharepoint Scripts
+#region SECTION : API Call Management
 
 Function New-StaticBearerToken { # Wrap a non-expiring API Key (e.g. Atlassian) into the token shape expected by Get-AuthMethod/Get-AzureGraph
  [CmdletBinding()]
@@ -18023,8 +18015,8 @@ Function Get-AtlassianOrgAPI { # Send a request to the Atlassian Organization Ad
   Write-Error "Error during Atlassian Org API Request $URL : $_"
  }
 }
-
-####################################################### Conditional Access #######################################################
+#endregion SECTION : API Call Management
+#region SECTION : Conditional Access
 
 Function Get-AzureConditionalAccessLocations { # Get all conditional Access Policies Locations
  [CmdletBinding()]
@@ -18355,8 +18347,8 @@ Function Disable-AzureConditionalAccessPolicy { # Disable Conditional Access Pol
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### Access Packages #######################################################
+#endregion SECTION : Conditional Access
+#region SECTION : Access Packages
 
 Function Get-AzureAccessPackages { # Get All Access Packages (can use ExpandAssignementPolicies to expand all policies, takes a while)
  Param (
@@ -18610,12 +18602,13 @@ Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assi
   $filter = [System.Uri]::EscapeDataString($filterParts -join " and ")
   $assignmentUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignments?`$filter=$filter&`$expand=target,accessPackage,assignmentPolicy"
   $allAssignments = @(get-azuregraph -Token $authDetails.Token -GraphRequest $assignmentUrl -ErrorAction Stop)
+  $activeAssignments = @($allAssignments | Where-Object { $_.state -ne "expired" })
 
   # TargetId can be either the target's directory objectId or the assignment's own id (e.g. copied from the GUI)
   $matchingAssignments = if ($TargetId) {
-   @($allAssignments | Where-Object { $_.target.objectId -in @($TargetId) -or $_.id -in @($TargetId) })
+   @($activeAssignments | Where-Object { $_.target.objectId -in @($TargetId) -or $_.id -in @($TargetId) })
   } else {
-   $allAssignments
+   $activeAssignments
   }
 
   if (-not $matchingAssignments) {
@@ -18628,17 +18621,42 @@ Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assi
    return
   }
 
-  # --- Step 4: Create remove requests in batches of 20 via Graph $batch to handle large volumes efficiently ---
+  # --- Step 4: Create remove requests ---
+  $requestUrl = "https://graph.microsoft.com/v1.0/$ResourcePath/assignmentRequests"
+  $removeResults = @()
+
+  if ($matchingAssignments.Count -eq 1) {
+   $assignment = $matchingAssignments[0]
+   $body = @{
+    requestType = "adminRemove"
+    assignment  = @{ id = $assignment.id }
+   } | ConvertTo-Json -Depth 5
+
+   $result = get-azuregraph -Token $authDetails.Token -GraphRequest $requestUrl -Method POST -Body $body -ErrorAction Stop
+   $removeResults += [PSCustomObject]@{
+    AssignmentId  = $assignment.id
+    TargetObjectId = $assignment.target.objectId
+    AssignmentState = $assignment.state
+    HTTPStatus     = 201
+    RequestId      = $result.id
+    RequestState   = if ($result.requestState) { $result.requestState } else { $result.state }
+    RequestStatus  = if ($result.requestStatus) { $result.requestStatus } else { $result.status }
+    Error           = $null
+   }
+   return $removeResults
+  }
+
   $batchUrl = "https://graph.microsoft.com/v1.0/`$batch"
   $requestUri = "/$ResourcePath/assignmentRequests"
-  $removeResults = @()
   $batchSize = 20
   $assignmentGroups = for ($i = 0; $i -lt $matchingAssignments.Count; $i += $batchSize) {
    ,@($matchingAssignments[$i..([Math]::Min($i + $batchSize - 1, $matchingAssignments.Count - 1))])
   }
 
   foreach ($group in $assignmentGroups) {
+   $requestMap = @{}
    $requests = for ($i = 0; $i -lt $group.Count; $i++) {
+    $requestMap["$i"] = $group[$i]
     @{
      id     = "$i"
      method = "POST"
@@ -18652,7 +18670,30 @@ Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assi
    }
 
    $batchBody = @{ requests = @($requests) } | ConvertTo-Json -Depth 10
-   $removeResults += get-azuregraph -Token $authDetails.Token -GraphRequest $batchUrl -Method POST -Body $batchBody -ErrorAction Stop
+  $batchResult = get-azuregraph -Token $authDetails.Token -GraphRequest $batchUrl -Method POST -Body $batchBody -ErrorAction Stop
+  foreach ($response in $batchResult.responses) {
+   $assignment = $requestMap[$response.id]
+   $errorMessage = if ($response.status -notin 200..299) {
+    if ($response.body.error.message) { $response.body.error.message } else { "Graph returned HTTP $($response.status)" }
+   }
+
+   $removeResults += [PSCustomObject]@{
+    AssignmentId  = $assignment.id
+    TargetObjectId = $assignment.target.objectId
+    AssignmentState = $assignment.state
+    HTTPStatus     = $response.status
+    RequestId      = $response.body.id
+    RequestState   = if ($response.body.requestState) { $response.body.requestState } else { $response.body.state }
+    RequestStatus  = if ($response.body.requestStatus) { $response.body.requestStatus } else { $response.body.status }
+    Error           = $errorMessage
+   }
+  }
+  }
+
+  $failedResults = @($removeResults | Where-Object { $_.HTTPStatus -notin 200..299 })
+  if ($failedResults) {
+  $failureSummary = ($failedResults | ForEach-Object { "$($_.AssignmentId): HTTP $($_.HTTPStatus) - $($_.Error)" }) -join "; "
+  throw "$($failedResults.Count) of $($removeResults.Count) removal requests failed. $failureSummary"
   }
 
   $removeResults
@@ -18660,8 +18701,8 @@ Function Remove-AzureAccessPackageAssignment { # Mass-remove Access Package assi
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### Log Analytics #######################################################
+#endregion SECTION : Access Packages
+#region SECTION : Log Analytics
 
 Function Convert-AzureLogAnalyticsRequestAnswer { # Convert Log Analytics Request to a proper PS Object [ Created with Gemini ]
  Param (
@@ -18739,8 +18780,8 @@ Function Get-AzureLogAnalyticsRequest { # Run cmd towards Log Analytics Workspac
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### Sentinel Specific Functions #######################################################
+#endregion SECTION : Log Analytics
+#region SECTION : Sentinel Specific Functions
 
 Function Get-SentinelUserInfo { # Get user logs from Sentinel
  Param (
@@ -19953,8 +19994,8 @@ Function Get-AzureServicePrincipalSignInLogs {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
-####################################################### Mail Management #######################################################
+#endregion SECTION : Sentinel Specific Functions
+#region SECTION : Mail Management
 
 Function Send-EncryptedEmail { # Will send an encrypted email using Outlook COM object (Encrypt-Only). Requires Outlook to be installed and configured on the machine running the script.
  param (
@@ -20331,8 +20372,8 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
 
  return $FullBody
 }
-
-####################################################### Azure Device management #######################################################
+#endregion SECTION : Mail Management
+#region SECTION : Azure Device management
 
 Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
  Param (
@@ -20404,9 +20445,14 @@ Function Get-AzureDeviceIntuneAssignementGroups {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+#endregion SECTION : Azure Device management
+#region SECTION : Loaded on Import
 
-####################################################### Aliases #######################################################
-
+#Variables
+# Set default colors used in functions
+$defaultblue="Cyan"
+# Set Azure Prompt as False by default as this slows down display
+[Switch]$global:AzurePrompt=$False
 
 #Alias
 Set-Alias -Name ls -Value "Get-ChildItemBen" -Option AllScope
@@ -20426,6 +20472,35 @@ Set-Alias -Name Home -value "LoginHome"
 Set-Alias -Name Which -value "Get-Command"
 Set-Alias -Name Reload -value "Get-Profile"
 
+# Check Os Type
+if ($IsLinux -or $IsMacOS) {
+ $username=[System.Environment]::UserName
+} else {
+ $username=([System.Security.Principal.WindowsIdentity]::GetCurrent().name).ToUpper()
+}
+
+# Set future console in QuickEdit mode
+if ( ($host.Name -match 'consolehost') ) {
+ Try {
+  set-itemproperty -path "HKCU:\Console" -name QuickEdit -Value 1 -ErrorAction Ignore
+ } catch {
+  Write-Verbose "Issue setting QuickEdit ${$Error[0]}"
+ }
+}
+
+# iClic Temp Path
+if ($IsWindows) {
+ if ($env:LOCALAPPDATA) {
+  $iClic_TempPath = Join-Path $env:USERPROFILE 'iClic'
+ } else {
+  $iClic_TempPath = Join-Path $env:TEMP 'iClic'
+ }
+} else {
+ $iClic_TempPath = Join-Path ([System.IO.Path]::GetTempPath()) 'iClic'
+}
+if (! (Test-Path $iClic_TempPath)) { New-item -ItemType Directory $iClic_TempPath -Force | Out-Null }
+
+# Check version and load Addons
 if (Assert-MinPSVersion 6 -Silent) {
  if ( (test-path $env:iClic_Addon_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Addon_Path }
  if ( (test-path $env:iClic_Perso_Path -ErrorAction SilentlyContinue)) { import-module $env:iClic_Perso_Path }
@@ -20436,3 +20511,5 @@ if (Assert-MinPSVersion 6 -Silent) {
   Write-Output -InputObject "WARNING : You are using old legacy PowerShell versions - Some Cmdlet will surely fail"
  }
 }
+
+#endregion SECTION : Loaded on Import
