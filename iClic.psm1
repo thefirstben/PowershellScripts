@@ -18824,6 +18824,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [switch]$ConditionalAccessIgnoreNotApplied,
   [switch]$SimplifiedQuery,
   [switch]$ShowRawResult,
+  [switch]$ShowUniqueDevices,
+  [switch]$ShowUniqueIPs,
   $Token,
   $ResultTypeExclusion, # Exclude specific result types (e.g. "50140" ("Keep me signed in"), "50126" ("Incorrect Password"), "53003" ("Blocked by CA Policy"), "50076" ("Standard MFA"))
   $ResultTypeInclusion, # Include only specific result types (e.g. "90094" for "Admin consent is required")
@@ -18925,6 +18927,26 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($ShowOnlyFailures) { $QueryStart += '| where ResultSignature == "FAILURE"' }
   if ($ResultTypeExclusion) { $QueryStart += '| where ResultType !in (' + ($ResultTypeExclusion -join ',') + ')' }
   if ($ResultTypeInclusion) { $QueryStart += '| where ResultType in (' + ($ResultTypeInclusion -join ',') + ')' }
+
+  # Get distinct Devices directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
+  if ($ShowUniqueDevices) {
+   $Query = $QueryStart + '| extend UnifiedDeviceDetailSTRING = coalesce(DeviceDetail_dynamic, parse_json(DeviceDetail_string))
+ | extend DeviceId = tostring(UnifiedDeviceDetailSTRING.deviceId), DeviceDisplayName = tostring(UnifiedDeviceDetailSTRING.displayName), DeviceOS = tostring(UnifiedDeviceDetailSTRING.operatingSystem), DeviceBrowser = tostring(UnifiedDeviceDetailSTRING.browser), DeviceTrustType = tostring(UnifiedDeviceDetailSTRING.trustType)
+ | where isnotempty(DeviceId) or isnotempty(DeviceDisplayName)
+ | summarize ConnectionCount = count() by DeviceId, DeviceDisplayName, DeviceOS, DeviceBrowser, DeviceTrustType
+ | sort by ConnectionCount desc'
+   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
+   if (! $ResultRaw) { return }
+   return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
+  }
+
+  # Get distinct IPs directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
+  if ($ShowUniqueIPs) {
+   $Query = $QueryStart + '| where isnotempty(IPAddress) | summarize ConnectionCount = count() by IPAddress | sort by ConnectionCount desc'
+   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
+   if (! $ResultRaw) { return }
+   return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
+  }
 
   # Add Unified Values
   $QueryStart += '| extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
@@ -19047,12 +19069,14 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   [switch]$ShowOnlyInteractive,
   [switch]$ShowSecretDetails,
   [switch]$ShowRawResult,
+  [switch]$ShowUniqueUsers,
   $Duration = '1d',
   $StartDuration,
   $EndDuration,
   $WorkspaceID
  )
   # Example : $Result = get-sentinelappInfo -App $AppName -Duration '1d' -SimplifiedQuery -StartDuration "2025-12-19 14:46:33" -EndDuration "2025-12-20 14:46:33"
+  # Example : $Result = get-sentinelappInfo -App $AppName -Duration '30d' -ShowUniqueUsers # Returns distinct UserDisplayName+UserPrincipalName, computed server-side (Sentinel) instead of client-side
   try {
 
   Write-Verbose "Getting WorkspaceID"
@@ -19128,6 +19152,14 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature =~ "SUCCESS"' }
   if ($ShowOnlyFailure) { $QueryStart += '| where ResultSignature =~ "FAILURE"' }
   if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
+
+  # Get distinct Users directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
+  if ($ShowUniqueUsers) {
+   $Query = $QueryStart + '| where isnotempty(UserPrincipalName) | summarize by UserDisplayName, UserPrincipalName, UserId | sort by UserPrincipalName asc'
+   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
+   if (! $ResultRaw) { return }
+   return ($ResultRaw | Select-Object UserDisplayName, UserPrincipalName, @{Name = 'UserObjectId'; Expression = { $_.UserId } })
+  }
 
   # Add Unified Values
   $QueryStart += '| extend UnifiedMFADetailSTRING = coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string))
