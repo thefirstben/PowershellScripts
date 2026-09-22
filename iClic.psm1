@@ -16535,92 +16535,58 @@ Function New-AzureADGroup { # Create New Group using Graph
 
 Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full info)
  Param (
-  [parameter(Mandatory = $false, ParameterSetName="Advanced")][Switch]$Advanced,
-  [parameter(Mandatory = $false, ParameterSetName="Graph")][Switch]$Graph,
   $ExportFileName = "$iClic_TempPath\Global_AzureAD_Users_Status_$([DateTime]::Now.ToString("yyyyMMdd")).csv",
   $Throttle = 2,
   $Token,
   [Switch]$FileExport,
   [Switch]$HideProgress
  )
- # Get list of all AAD users (takes some minutes with 50k+ users)
- if ($Advanced) {
-  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,mail:mail}' --output json --only-show-errors | ConvertFrom-Json
- } elseif ($Graph) {
-  Try {
-   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-   $header = $authDetails.Header
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
-   # To Add License check
-   $SKUList = Get-AzureSKUs -Token $authDetails.Token
+  # To Add License check
+  $SKUList = Get-AzureSKUs -Token $authDetails.Token
 
-   # Init Variables
-   $Count=0
-   $GlobalResult = @()
-   $FirstRun = $True
-   $ContinueRunning = $True
+  $GraphRequest = "/users?`$top=999&`$select=id,userPrincipalName,displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"
+  $RawResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphRequest -ShowState:(! $HideProgress)
 
-   While ($ContinueRunning) {
-    if (! $HideProgress) {
-     Progress -Message "Getting all User Status Loop $Count : " -Value $GlobalResult.Count -PrintTime
-    }
-    if ($FirstRun) {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users?`$top=999&`$select=id,userPrincipalName,
-     displayName,mail,companyName,onPremisesImmutableId,accountEnabled,createdDateTime,onPremisesSyncEnabled,preferredLanguage,userType,signInActivity,
-     creationType,onPremisesExtensionAttributes,assignedLicenses,employeeHireDate,employeeLeaveDateTime,lastPasswordChangeDateTime"
-     $FirstRun=$False
+  $GlobalResult = $RawResult | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses,onPremisesSyncEnabled *,
+  @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
+   @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
+   @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
+   @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
+   @{name="onPremisesSyncEnabled";expression={
+    if ($_.onPremisesSyncEnabled -eq "True") { # To avoid empty values of OnPremSync
+     "True"
     } else {
-     $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $NextRequest
+     "False"
     }
-    $NextRequest = $CurrentResult.'@odata.nextLink'
-    if ($NextRequest) {$ContinueRunning = $True} else {$ContinueRunning = $False}
-    $Count++
-    $GlobalResult += $CurrentResult.Value | select-object -ExcludeProperty signInActivity,onPremisesImmutableId,onPremisesExtensionAttributes,assignedLicenses,onPremisesSyncEnabled *,
-    @{name="Local_GUID";expression={if ($_.onPremisesImmutableId) {Convert-ImmutableIDToGUID $_.onPremisesImmutableId} else {"None"}}},
-     @{name="lastSignInDateTime";expression={$_.signInActivity.lastSignInDateTime}},
-     @{name="lastNonInteractiveSignInDateTime";expression={$_.signInActivity.lastNonInteractiveSignInDateTime}},
-     @{name="lastSuccessfulSignInDateTime";expression={$_.signInActivity.lastSuccessfulSignInDateTime}},
-     @{name="onPremisesSyncEnabled";expression={
-      if ($_.onPremisesSyncEnabled -eq "True") { # To avoid empty values of OnPremSync
-       "True"
-      } else {
-       "False"
-      }
-     }},
-     @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
-     @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
-     @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
-     @{name="extensionAttribute4";expression={$_.onPremisesExtensionAttributes.extensionAttribute4}},
-     @{name="extensionAttribute5";expression={$_.onPremisesExtensionAttributes.extensionAttribute5}},
-     @{name="extensionAttribute6";expression={$_.onPremisesExtensionAttributes.extensionAttribute6}},
-     @{name="extensionAttribute7";expression={$_.onPremisesExtensionAttributes.extensionAttribute7}},
-     @{name="extensionAttribute8";expression={$_.onPremisesExtensionAttributes.extensionAttribute8}},
-     @{name="extensionAttribute9";expression={$_.onPremisesExtensionAttributes.extensionAttribute9}},
-     @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
-     @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
-     @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}},
-     @{name="extensionAttribute13";expression={$_.onPremisesExtensionAttributes.extensionAttribute13}},
-     @{name="extensionAttribute14";expression={$_.onPremisesExtensionAttributes.extensionAttribute14}},
-     @{name="extensionAttribute15";expression={$_.onPremisesExtensionAttributes.extensionAttribute15}},
-     @{name="License";expression={(($_.assignedLicenses | ForEach-Object { ($SKUList[$SKUList.skuId.indexof($_.skuid)]).skuPartNumber}) | Sort-Object ) -join "," }}
-   }
-  } catch {
-   $ErrorInfo = $Error[0]
-   if ( $ErrorInfo.Exception.StatusCode -eq "TooManyRequests") {
-    Start-Sleep -Seconds $Throttle ; write-host "Being throttled waiting $Throttle`s"
-   } else {
-    Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
-   }
-  }
-  if (-not $FileExport) {
-   return $GlobalResult
-  } else {
-   $GlobalResult | Export-CSV $ExportFileName
-   Write-Blank
-   return $ExportFileName
-  }
- } else { # When launched without param
-  az ad user list --query '[].{userPrincipalName:userPrincipalName,displayName:displayName,accountEnabled:accountEnabled,dirSyncEnabled:dirSyncEnabled,createdDateTime:createdDateTime,creationType:creationType,mail:mail,userType:userType}' --output json --only-show-errors | convertfrom-json
+   }},
+   @{name="extensionAttribute1";expression={$_.onPremisesExtensionAttributes.extensionAttribute1}},
+   @{name="extensionAttribute2";expression={$_.onPremisesExtensionAttributes.extensionAttribute2}},
+   @{name="extensionAttribute3";expression={$_.onPremisesExtensionAttributes.extensionAttribute3}},
+   @{name="extensionAttribute4";expression={$_.onPremisesExtensionAttributes.extensionAttribute4}},
+   @{name="extensionAttribute5";expression={$_.onPremisesExtensionAttributes.extensionAttribute5}},
+   @{name="extensionAttribute6";expression={$_.onPremisesExtensionAttributes.extensionAttribute6}},
+   @{name="extensionAttribute7";expression={$_.onPremisesExtensionAttributes.extensionAttribute7}},
+   @{name="extensionAttribute8";expression={$_.onPremisesExtensionAttributes.extensionAttribute8}},
+   @{name="extensionAttribute9";expression={$_.onPremisesExtensionAttributes.extensionAttribute9}},
+   @{name="extensionAttribute10";expression={$_.onPremisesExtensionAttributes.extensionAttribute10}},
+   @{name="extensionAttribute11";expression={$_.onPremisesExtensionAttributes.extensionAttribute11}},
+   @{name="extensionAttribute12";expression={$_.onPremisesExtensionAttributes.extensionAttribute12}},
+   @{name="extensionAttribute13";expression={$_.onPremisesExtensionAttributes.extensionAttribute13}},
+   @{name="extensionAttribute14";expression={$_.onPremisesExtensionAttributes.extensionAttribute14}},
+   @{name="extensionAttribute15";expression={$_.onPremisesExtensionAttributes.extensionAttribute15}},
+   @{name="License";expression={(($_.assignedLicenses | ForEach-Object { ($SKUList[$SKUList.skuId.indexof($_.skuid)]).skuPartNumber}) | Sort-Object ) -join "," }}
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+ if (-not $FileExport) {
+  return $GlobalResult
+ } else {
+  $GlobalResult | Export-CSV $ExportFileName
+  Write-Blank
+  return $ExportFileName
  }
 }
 Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta for Detailed to get all default values, to get specific value they must be specifically selected, like signInActivity)
