@@ -1165,27 +1165,11 @@ Function Assert-IsInAAD {
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if ($authDetails.Method -eq "Token") {
-   if ($Type -eq 'Group') {
-    $Result = Get-AzureADGroup -Group $NameOrID -HideError -Token $authDetails.Token
-   } else {
-    $Result = Get-AzureADUserInfo -UPNorID $NameOrID -Token $authDetails.Token
-   }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  if ($Type -eq 'Group') {
+   $Result = Get-AzureADGroup -Group $NameOrID -HideError -Token $authDetails.Token
   } else {
-   if ($Type -eq 'Group') {
-    $ResultJson = az ad group show -g $NameOrID 2>&1
-    $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-    $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
-    if ($ErrorMessage) {
-     if ($ErrorMessage -like "*More than one group*") {
-      write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]"
-     }
-     if ($PrintError) { write-host -ForegroundColor "Red" -Object "Error searching for Group $NameOrID [$ErrorMessage]" }
-    }
-   } else {
-    $Result = az ad user show --id $NameOrID 2>&1
-   }
+   $Result = Get-AzureADUserInfo -UPNorID $NameOrID -Token $authDetails.Token
   }
   if ($Result) { return $True } else { return $False }
  } Catch {
@@ -11363,7 +11347,7 @@ Function Add-AzureServicePrincipal { # Add Service Principal to Tenant using an 
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-AzureAppRegistration { # Find App Registration Info using REST | Using AZ AD Cmdlet are 5 times slower than Az Rest | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
+Function Get-AzureAppRegistration { # Find App Registration Info using REST | Usefull to Find 'App Roles' : (Get-AzureAppRegistration -AppID $AppID).appRoles | select id,value
  [CmdletBinding()]
  Param (
   [parameter(Mandatory=$true,ParameterSetName="Application")][String]$Application,
@@ -11376,7 +11360,7 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
   $ValuesToShow = "createdDateTime,displayName,appId,id,description,notes,tags,signInAudience,appRoles,defaultRedirectUri,identifierUris,optionalClaims,publisherDomain,implicitGrantSettings,spa,web,publicClient,isFallbackPublicClient"
  )
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   $SearchByFilter = {
    param (
@@ -11385,11 +11369,7 @@ Function Get-AzureAppRegistration { # Find App Registration Info using REST | Us
    )
 
    $GraphURI = "https://graph.microsoft.com/v1.0/applications?`$count=true&`$select=$ValuesToShow&`$filter=$CurrentFilter eq '$CurrentValue'"
-   if ($authDetails.Method -eq "Token") {
-    $QueryResult = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $GraphURI).value
-   } else {
-    $QueryResult = (az rest --method GET --uri $GraphURI --headers Content-Type=application/json | ConvertFrom-Json).value
-   }
+   $QueryResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURI
 
    if ($QueryResult -and (@($QueryResult).Count -gt 1)) {
     throw "Multiple App Registrations found for $CurrentFilter '$CurrentValue'. Use a unique identifier."
@@ -11926,7 +11906,7 @@ Function Add-AzureAppRegistrationPermission { # Add rights on App Registration (
    $ServicePrincipalID = $API
   } else {
    Write-Verbose "Using API Name will search for GUID"
-   $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $API -Token $authDetails.Token
+   $ServicePrincipalID = (Get-AzureServicePrincipal -Token $authDetails.Token -Application $API -ErrorAction SilentlyContinue).Id
   }
   Write-Verbose "Check if value was found"
   if (! $ServicePrincipalID ) {Throw "API $API not found" } else { Write-Verbose "Found API ID : $ServicePrincipalID" }
@@ -12067,7 +12047,7 @@ Function Revoke-AzureAppRegistrationConsent { # Remove App Registration Consent
    }
   } else {
    Write-Verbose "Using App Registration Name, will search for AppID"
-   $AppSPID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $AppRegistration -Token $authDetails.Token -ErrorAction SilentlyContinue
+   $AppSPID = (Get-AzureServicePrincipal -Token $authDetails.Token -Application $AppRegistration -ErrorAction SilentlyContinue).Id
   }
   if (!$AppSPID) { Throw "Service Principal for '$AppRegistration' not found. (Check Enterprise Applications)" }
   Write-Verbose "Using Client Service Principal ID: $AppSPID"
@@ -12175,7 +12155,7 @@ Function Remove-AzureAppRegistrationPermission { # Remove Azure App Registration
 
   # BLOCK 2 - Find API ID
   if (Assert-IsGUID $API ) { $ServicePrincipalID = $API }
-  else { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $API }
+  else { $ServicePrincipalID = (Get-AzureServicePrincipal -Token $authDetails.Token -Application $API).Id }
   if (! $ServicePrincipalID ) { Throw "API $API not found" }
 
   # BLOCK 3 - Find Permission Detail
@@ -12541,115 +12521,19 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-AzureAppRegistrationAudience { # Check All App registration Audiences : this can be added to filter wrong configured ones | ? AppAudience -ne "AzureADMyOrg"
- az ad app list --all -o json --query "[].{DisplayName:displayName,AppID:appId,createdDateTime:createdDateTime,signInAudience:signInAudience}" | ConvertFrom-Json | Select-Object `
- @{Name="AppName";Expression={$_.DisplayName}},AppId,
- @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
- @{Name="AppAudience";Expression={$_.signInAudience}}
-}
-Function Set-AzureAppRegistrationTags_OLD { # Set Tag on App Registration, can add or overwrite existing (add no tags to list current tags)
- Param (
-  [parameter(Mandatory=$true,ParameterSetName="AppID")][String]$AppID,
-  [parameter(Mandatory=$true,ParameterSetName="ID")][String]$ID,
-  [parameter(Mandatory=$true,ParameterSetName="NAME")][String]$DisplayName,
-  $Tags,
-  [switch]$Overwrite,
-  [switch]$ShowResult
- )
-
- Try {
-
-  # Get current params to send to other function
-  $FunctionParams = $PSBoundParameters
-  # Remove Unneeded Tags
-  $FunctionParams.Remove('Tags') | Out-Null
-  $FunctionParams.Remove('Overwrite') | Out-Null
-  $FunctionParams.Remove('ShowResult') | Out-Null
-
-  # Get Current Tags
-  $SP_Info = Get-AzureAppRegistration @FunctionParams
-
-  write-colored -Color Cyan -PrintDate -NonColoredText "Current Tags on App Registration `'$($SP_Info.displayName)`' : " $($SP_Info.Tags -join ",")
-
-  if (! $Tags ) { Return }
-
-  # Add all Tags to a new array
-  $TagsToAdd = @()
-  $Tags | Foreach-Object { $TagsToAdd += $_ }
-
-  # Add existing tags to object, if any, except if overwrite
-  if (! $Overwrite) {
-   If ($SP_Info.Tags) { $TagsToAdd += $SP_Info.Tags }
-  }
-
-  # Remove duplicates
-  $TagsToAddUnique = $TagsToAdd | Select-Object -Unique
-
-  if ($SP_Info.Tags -eq $TagsToAddUnique) {
-   write-colored -Color Magenta -PrintDate -ColoredText "Tag to add and current tags are the same : $($TagsToAddUnique -Join ",")"
-   return
-  }
-
-  # Change format for required format
-  $TagsToAddUnique | Foreach-Object {
-   $TagsToAd_Converted_tmp += "\`"$($_)\`","
-  }
-
-  write-colored -Color Cyan -PrintDate -NonColoredText "Tags that will be added to App Registration `'$($SP_Info.displayName)`' : " $($TagsToAddUnique -Join ",")
-
-  # Generate Body
-  $TagsToAdd_Converted_prefix = '{"tags":['
-  $TagsToAdd_Converted_suffix = ']}'
-  $Body = ($TagsToAdd_Converted_prefix + $TagsToAd_Converted_tmp + $TagsToAdd_Converted_suffix) -replace ",]}","]}"
-
-  write-colored -Color Cyan -PrintDate -NonColoredText "Body sent to Graph API : " $Body
-
-  az rest --method PATCH --uri "https://graph.microsoft.com/v1.0/applications/$($SP_Info.ID)" `
-   --headers "Content-Type=application/json" `
-   --body $body
-
-  If ($ShowResult) {
-   $SP_Info = Get-AzureServicePrincipal @FunctionParams
-   write-colored -Color Cyan -PrintDate -NonColoredText "New Tags on App Registration `'$($SP_Info.displayName)`' : " $TagsToAd_Converted_tmp
-  }
- } catch {
-  write-host -foregroundcolor "Red" -Object $Error[0]
- }
-
-}
 Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add or overwrite existing (add no tags to list current tags)
- [CmdletBinding(DefaultParameterSetName = "ID")]
+ [CmdletBinding()]
  Param (
-  [parameter(Mandatory = $true, ParameterSetName = "AppID")][string]$AppID,
-  [parameter(Mandatory = $true, ParameterSetName = "ID")][string]$ID, # This is the Application Object ID
-  [parameter(Mandatory = $true, ParameterSetName = "NAME")][string]$DisplayName,
+  [parameter(Mandatory = $true)][Alias("AppID","ID","DisplayName")]$Application,
   [string[]]$Tags, # Not mandatory to print tags if no tags are specified
   [switch]$Overwrite,
   [switch]$ShowResult,
   $Token
  )
-
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
- $headers = $authDetails.Header
- $graphUri = "https://graph.microsoft.com/v1.0"
  try {
-  $application = $null
-  $getAppUri = ""
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
-  switch ($PSCmdlet.ParameterSetName) {
-   "ID"        { $getAppUri = "$graphUri/applications/$ID" }
-   "AppID"     {
-    $filter = [System.Web.HttpUtility]::UrlEncode("appId eq '$AppID'")
-    $getAppUri = "$graphUri/applications?`$filter=$filter"
-   }
-   "NAME"      {
-    $filter = [System.Web.HttpUtility]::UrlEncode("displayName eq '$DisplayName'")
-    $getAppUri = "$graphUri/applications?`$filter=$filter"
-   }
-  }
-
-  $appResponse = Invoke-RestMethod -Uri $getAppUri -Headers $Headers -Method Get
-  $application = if ($appResponse.value) { $appResponse.value[0] } else { $appResponse }
+  $application = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
 
   if (-not $application) {
    Write-Error "Could not find an Application Registration with the specified identifier."
@@ -12669,7 +12553,19 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
 
   $newTags = @()
   if (-not $Overwrite) {
-   $newTags += $currentTags
+   # Only tags using the "Key:Value" convention are eligible for replacement - plain tags (no colon) are just appended and deduplicated
+   $NewTagKeys = $Tags | Where-Object { $_ -like "*:*" } | ForEach-Object { ($_ -split ':',2)[0] }
+   $ConflictingTags = $currentTags | Where-Object { ($_ -like "*:*") -and (($_ -split ':',2)[0] -in $NewTagKeys) }
+   $ReplaceConflicting = $true
+   if ($ConflictingTags) {
+    Write-Host -ForegroundColor Yellow "The following existing tags share the same Key as a new tag : $($ConflictingTags -join ', ')"
+    $ReplaceConflicting = Question "Replace these tags instead of keeping both"
+   }
+   if ($ConflictingTags -and $ReplaceConflicting) {
+    $newTags += $currentTags | Where-Object { $_ -notin $ConflictingTags }
+   } else {
+    $newTags += $currentTags
+   }
   }
   $newTags += $Tags
 
@@ -12693,21 +12589,31 @@ Function Set-AzureAppRegistrationTags { # Set Tag on App Registration, can add o
   }
 
   Write-Host -ForegroundColor Cyan "Setting new tags to: $($newTags -join ', ')"
-  $updateUri = "$graphUri/applications/$($application.id)"
+  $updateUri = "https://graph.microsoft.com/v1.0/applications/$($application.id)"
   $updateBody = @{ tags = $newTags } | ConvertTo-Json
-  Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Patch -Body $updateBody
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest $updateUri -Method PATCH -Body $updateBody -ErrorAction Stop
   Write-Host -ForegroundColor Green "Tags updated successfully."
 
   if ($ShowResult) {
-   $finalApp = Invoke-RestMethod -Uri $updateUri -Headers $Headers -Method Get
+   $finalApp = Get-AzureGraph -Token $authDetails.Token -GraphRequest $updateUri -ErrorAction Stop
    Write-Host -ForegroundColor Cyan "New Tags: $($finalApp.tags -join ', ')"
   }
  } catch {
-  # This will now properly catch the error and display the JSON content
-  $errorDetail = $_.ErrorDetails.Message | ConvertFrom-Json
-  Write-Error "An error occurred during the Graph API operation: $($errorDetail.error.message)"
+  $errorDetailsMessage = $_.ErrorDetails.Message
+  if (-not [string]::IsNullOrWhiteSpace($errorDetailsMessage)) {
+   $parsedErrorMessage = $errorDetailsMessage | ConvertFrom-Json -ErrorAction SilentlyContinue
+   if ($parsedErrorMessage -and $parsedErrorMessage.error.message) {
+    $ConvertedErrorMessage = $parsedErrorMessage.error.message
+   } else {
+    $ConvertedErrorMessage = $errorDetailsMessage
+   }
+  } else {
+   $ConvertedErrorMessage = $_.Exception.Message
+  }
+  Write-Error "An error occurred during the Graph API operation: $ConvertedErrorMessage"
  }
 }
+
 Function Set-AzureAppRegistrationAcceptMappedClaims { # Set acceptMappedClaims and requestedAccessTokenVersion on an App Registration
  [CmdletBinding()]
  Param (
@@ -13632,23 +13538,6 @@ Function Get-AzureTenantInformationByTenantId { # Resolve Entra tenant public in
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-AzureServicePrincipalIDFromAppName { # Get Azure Service Principal (Enterprise App) information from APP Name (Not SP ObjectID)
- [CmdletBinding()]
- Param (
-  [Parameter(Mandatory=$true)]$AppRegistrationName,
-  $Token
- )
- Try {
- $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
- if ($authDetails.Method -eq "Token") {
-  (Get-AzureServicePrincipal -Token $authDetails.Token -DisplayName $AppRegistrationName).Id
- } else {
-  ((az ad sp list --filter "displayName eq '$AppRegistrationName'") | convertfrom-json).ID
- }
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
 Function Get-AzureServicePrincipalNameFromID { # Get Azure Service Principal Name from Object ID or App ID
  [CmdletBinding(DefaultParameterSetName='ID')]
  Param (
@@ -14555,7 +14444,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
  }
  if (! $SubscriptionID ) { write-host -ForegroundColor Red "Subscription $SubscriptionName not found" ; Return}
 
- if (! $ServicePrincipalID) { $ServicePrincipalID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $ServicePrincipalName }
+ if (! $ServicePrincipalID) { $ServicePrincipalID = (Get-AzureServicePrincipal -Token $authDetails.Token -Application $ServicePrincipalName).Id }
  if (! $ServicePrincipalID ) { write-host -ForegroundColor Red "Service Principal $ServicePrincipalName not found" ; Return}
 
  if ($ResourceGroupName) {
@@ -16074,8 +15963,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if ($authDetails.Method -eq "Token") {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   if ( ! (Assert-IsGUID $Group) ) {
    Write-Verbose "When using graph Group GUID is mandatory - Will Search"
    $GroupID = (Get-AzureADGroup -Group $Group -HideError -Token $authDetails.Token).ID
@@ -16095,7 +15983,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
    }
    if ( (! $MemberID) -and ($MemberType -eq "ServicePrincipal" -or $MemberType -eq "Auto") ) {
     Write-Verbose "Searching for ServicePrincipals"
-    $MemberID = Get-AzureServicePrincipalIDFromAppName -AppRegistrationName $Member -Token $authDetails.Token
+    $MemberID = (Get-AzureServicePrincipal -Token $authDetails.Token -Application $Member -ErrorAction SilentlyContinue).Id
    }
    if ( (! $MemberID) -and ($MemberType -eq "Device" -or $MemberType -eq "Auto") ) {
     Write-Verbose "Searching for Devices"
@@ -16108,14 +15996,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   $Body = @{ groupIds = @( $GroupID ) } | ConvertTo-Json
   $Result = get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/directoryObjects/$MemberID/checkMemberGroups" -Method POST -Body $Body
   if ($Result -eq $GroupID) { return $True } else { return $False }
-   } else {
-  if (Assert-IsGUID $Group) {
-   (az ad group member check --group $Group --member-id $Member -o json --only-show-errors | ConvertFrom-Json).Value
-  } else {
-   (az ad group member check --group $Group --member-id (Get-AzureADUserStartingWith $Member).ID -o json --only-show-errors | ConvertFrom-Json).Value
-  }
- }
-  } Catch {
+ } Catch {
   if ($_.ErrorDetails.Message) {
    $ErrorCode = ($_.ErrorDetails.Message | ConvertFrom-Json).Error.code
    if ($ErrorCode -eq "Request_ResourceNotFound") {
@@ -16127,7 +16008,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
   }
  }
 }
-Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using AzCli or Token) - Before beta it did not list Service principals
+Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group - Before beta it did not list Service principals
  Param (
   [Parameter(Mandatory)]$Group,
   $Token,
@@ -16158,33 +16039,21 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
    }
   }
 
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-
-  if ($authDetails.Method -eq "Token") { $header = $authDetails.Header }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   # Check if parameter was a GUID or the Name, and if it was a GUID, check if ForceName parameter is set to get the GroupName
   if (Assert-IsGUID $Group) {
    $GroupGUID = $Group
    if ($ForceName) {
     Write-Verbose "Search Using GUID - Using ForceName - Getting GroupName"
-    if ($authDetails.Method -eq "Token") {
-     $GroupName = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$Group").displayName
-    } else {
-     $GroupName = (az ad group show -g $Group | convertfrom-json).displayname
-    }
-
+    $GroupName = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups/$Group").displayName
    } else { # If name is not used then set the Group Name as the GUID
     Write-Verbose "Search Using GUID"
     $GroupName = $Group
    }
   } else { # If the Group name was sent we need to find the GUID
    Write-Verbose "Search Using Name - Searching for GUID"
-   if ($authDetails.Method -eq "Token") {
-    # $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$Group')").value.id
-    $GroupGUID = (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$Group'&`$select=id").value.id
-   } else {
-    $GroupGUID = (az ad group show -g $Group | convertfrom-json).id
-   }
+   $GroupGUID = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/groups?`$filter=displayName eq '$Group'&`$select=id").id
    $GroupName = $Group # In this case the Group Name is the parameter sent to the function
   }
   if (! $GroupGUID) {Throw "$Group not found)"} else { write-verbose "Found GUID : $GroupGUID"}
@@ -16195,74 +16064,26 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group (Using Az
    $SearchType = "transitiveMembers" } else { $SearchType = "members"
   }
 
-  if ($authDetails.Method -eq "Token") {
-   if ($Fast) {
-    Write-Verbose "Search Using Fast Parameter - Will only search for UPN & ID"
-    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
+  if ($Fast) {
+   Write-Verbose "Search Using Fast Parameter - Will only search for UPN & ID"
+   $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999&`$select=userPrincipalName,id"
+  } else {
+   $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
+  }
+  Write-Verbose "Running Request"
+  $GraphResultRAW = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL
+  Write-Verbose "Adding Type"
+  $GraphResult = $GraphResultRAW | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},*,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
+  if ($RecurseHideGroups) { $GraphResult = $GraphResult | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
+  if ($Readable) {
+   Write-Verbose "Using Readable Tag : Remove *id parameters, and expand OnPremSecurityAttribute"
+   if (! $Fast) {
+    $GraphResult | Select-Object $ReadableProperties
    } else {
-    $GraphURL = "https://graph.microsoft.com/beta/groups/$GroupGUID/$SearchType`?`$top=999"
-   }
-   Write-Verbose "Running Request"
-   $GraphResultRAW = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL
-   Write-Verbose "Adding Type"
-   $GraphResult = $GraphResultRAW | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},*,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
-   if ($RecurseHideGroups) { $GraphResult = $GraphResult | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
-   if ($Readable) {
-    Write-Verbose "Using Readable Tag : Remove *id parameters, and expand OnPremSecurityAttribute"
-    if (! $Fast) {
-     $GraphResult | Select-Object $ReadableProperties
-    } else {
-     $GraphResult | Select-Object -ExcludeProperty *ID,'@odata.type'
-    }
-   } else {
-    $GraphResult
+    $GraphResult | Select-Object -ExcludeProperty *ID,'@odata.type'
    }
   } else {
-   # Initialize Variables
-   $FirstRun = $True
-   $ContinueRunning = $True
-   While ($ContinueRunning) { # Run until there are results
-    if ($FirstRun) {
-     $GraphURL = '"https://graph.microsoft.com/beta/groups/"'+$GroupGUID+'"/"'+$SearchType+'"?$top=999"'
-     $CurrentResult = az rest --method get --uri $GraphURL --headers "Content-Type=application/json" | ConvertFrom-Json
-     $FirstRun=$False
-    } else {
-     $ResultJson = az rest --method get --uri $NextRequest --header Content-Type="application/json" -o json 2>&1
-     # Add error management for API limitation of Azure when using Az Rest
-     $CurrentResult = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | convertfrom-json
-     $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
-     If (($ErrorMessage -and ($ErrorMessage -notlike "*Unable to encode the output with cp1252 encoding*"))) {
-      Write-Host -ForegroundColor "Red" -Object "Detected Error ($ErrorMessage) ; Restart Current Loop after a 10s sleep"
-      Start-Sleep 10
-      Continue
-     }
-    }
-    # Prepare Next Link
-    $NextRequest = "`""+$CurrentResult.'@odata.nextLink'+"`""
-    if ($CurrentResult.'@odata.nextLink') {
-     $ContinueRunning = $True
-     Write-Verbose "API Call : Next Link Found - Will Loop Again"
-    } else {
-     $ContinueRunning = $False
-     Write-Verbose "API Call : End Loop"
-    }
-    # To avoid having groups in group when using Resurse Mode
-    if ($RecurseHideGroups) { $CurrentResult.Value = $CurrentResult.Value | Where-Object '@odata.type' -ne '#microsoft.graph.group' }
-    # Filter data and return current value (meaning the values will appear over time instead of at the end - better for memory usage)
-    if ($Fast) {
-     Write-Verbose "Printing data with Fast Tag"
-     $ReturnValue = $CurrentResult.Value | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName,id,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}
-    } else {
-     $ReturnValue = $CurrentResult.Value | ForEach-Object {
-      if (-not $_.PSObject.Properties['onPremisesExtensionAttributes']) { # Check if onPremisesExtensionAttributes exists on the current object If not, add the property with an empty value (or $null)
-       $_ | Add-Member -MemberType NoteProperty -Name "onPremisesExtensionAttributes" -Value $null
-      }
-      $_  # Output Object
-     } | Sort-Object displayName | Select-Object @{Name="GroupID";Expression={$GroupGUID}},@{Name="GroupName";Expression={$GroupName}},userPrincipalName, displayName, mail,
-     accountEnabled, userType, id, onPremisesSyncEnabled, onPremisesExtensionAttributes,@{Name="Type";Expression={($_.'@odata.type'.split("."))[-1]}}, createdDateTime, employeeHireDate, employeeLeaveDateTime
-    }
-    if ($Readable) {$ReturnValue | Select-Object -ExcludeProperty *id ;  Write-Verbose "Using Readable Tag : Remove *id parameters"} else { $ReturnValue }
-   }
+   $GraphResult
   }
   Write-Verbose "Finished $($($MyInvocation.MyCommand.Name))"
  } Catch {
@@ -16288,10 +16109,12 @@ Function Get-AzureADGroup { # Get Azure Ad Group Details
   if (! $HideError) {Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"}
  }
 }
-Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith (Using AzCli)
+Function Get-AzureADGroups { # Get all groups (with members), works with wildcard - Startswith
  Param (
   [Parameter(Mandatory)]$GroupName,
   [Switch]$ShowMembers,
+  [Switch]$ExpandMembers,
+  [Switch]$ExpandMembersRaw,
   [Switch]$ShowAppRoles,
   [Switch]$ShowMemberOf,
   [Switch]$ExcludeDynamicGroups,
@@ -16301,37 +16124,27 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
 
  Try {
   if (Assert-IsGUID $GroupName) { Throw "GroupName must be a name not a GUID as this is a search function" }
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  if ($authDetails.Method -eq "Token") {
-   $header = $authDetails.Header
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
-   $GroupList = @()
-   $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups?`$filter=startswith(displayname,'$GroupName')" -MaximumRetryCount 2
-   $GroupList += $CurrentResult.Value
-   while ($CurrentResult.'@odata.nextLink') {
-    $CurrentResult = $CurrentResult = Invoke-RestMethod -Method GET -headers $header -Uri $CurrentResult.'@odata.nextLink' -MaximumRetryCount 2
-    $GroupList += $CurrentResult.Value
+  $GroupList = @(Get-AzureGraph -Token $authDetails.Token -BaseURL "https://graph.microsoft.com/v1.0" -GraphRequest "/groups?`$filter=startswith(displayname,'$GroupName')")
+
+  if ($ShowAppRoles) {
+   $GroupWithRoles = @()
+   $GroupList | ForEach-Object {
+    $AppRoles = Get-AzureGraph -Token $authDetails.Token -BaseURL "https://graph.microsoft.com/v1.0" -GraphRequest "/groups/$($_.ID)/appRoleAssignments"
+    $_ | Add-Member -MemberType "NoteProperty" -Name "AppRoles" -Value $AppRoles.resourceDisplayName
+    $GroupWithRoles += $_
    }
-   if ($ShowAppRoles) {
-    $GroupWithRoles = @()
-    $GroupList | ForEach-Object {
-     $AppRoles = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$($_.ID)/appRoleAssignments" -MaximumRetryCount 2
-     $_ | Add-Member -MemberType "NoteProperty" -Name "AppRoles" -Value $AppRoles.value.resourceDisplayName
-     $GroupWithRoles += $_
-    }
-    $GroupList = $GroupWithRoles
+   $GroupList = $GroupWithRoles
+  }
+  if ($ShowMemberOf) {
+   $GroupWithRoles = @()
+   $GroupList | ForEach-Object {
+    $memberOf = Get-AzureGraph -Token $authDetails.Token -BaseURL "https://graph.microsoft.com/v1.0" -GraphRequest "/groups/$($_.ID)/memberOf"
+    $_ | Add-Member -MemberType "NoteProperty" -Name "memberOf" -Value $($memberOf | Select-Object id,displayName)
+    $GroupWithRoles += $_
    }
-   if ($ShowMemberOf) {
-    $GroupWithRoles = @()
-    $GroupList | ForEach-Object {
-     $memberOf = Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/groups/$($_.ID)/memberOf" -MaximumRetryCount 2
-     $_ | Add-Member -MemberType "NoteProperty" -Name "memberOf" -Value $($memberOf.value | Select-Object id,displayName)
-     $GroupWithRoles += $_
-    }
-    $GroupList = $GroupWithRoles
-   }
-  } else { # If not using Tokens, simpler function (additional Switches are not available)
-   $GroupList = az ad group list --filter "startswith(displayName, '$GroupName')" -o json | ConvertFrom-Json
+   $GroupList = $GroupWithRoles
   }
 
   # Exclude Dynamic Groups if requested
@@ -16348,18 +16161,19 @@ Function Get-AzureADGroups { # Get all groups (with members), works with wildcar
   if (! $ShowMemberOf) { $Result = $Result | Select-Object -ExcludeProperty memberOf }
 
   if ($ShowMembers) {
-   $Result | Select-Object *,@{Name="Members";Expression={
+   $Result = $Result | Select-Object *,@{Name="Members";Expression={
     if ($_.displayName -NotIn $DoNotExpandGroups) {
-     if ($authDetails.Method -eq "Token") {
-      Get-AzureADGroupMembers -Group $($_.GroupID) -Recurse -RecurseHideGroups -ForceName -Token $authDetails.Token
-     } else {
-      Get-AzureADGroupMembers -Group $($_.GroupID) -Recurse -RecurseHideGroups -ForceName
-     }
+     Get-AzureADGroupMembers -Group $($_.GroupID) -Recurse -RecurseHideGroups -ForceName -Token $authDetails.Token
     }
    }}
-  } else {
-   $Result
   }
+  if ($ExpandMembersRaw) {
+   $Result.members
+  } elseif ($ExpandMembers) {
+   $Result.members | Select-Object GroupName,userPrincipalName,displayName
+  } else {
+  $Result
+ }
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
@@ -16611,32 +16425,39 @@ Function Copy-AzureADGroupMembers { # Copy Group Members from one group to anoth
 Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Groups
  Param (
   [Parameter(Mandatory)]$GroupPrefix,
-  [switch]$PrintOnly
+  [switch]$PrintOnly,
+  $Token
  )
- $GroupList = Get-AzureADGroups -GroupName $GroupPrefix -ShowMembers -ExcludeDynamicGroups
- $Result = $GroupList |
-  `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} -ErrorAction SilentlyContinue |
-  `Where-Object {! $_.accountEnabled} |
-  `Where-Object userPrincipalName |
-  `Select-Object userPrincipalName,displayName,accountEnabled,GroupName,id -ErrorAction SilentlyContinue
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $GroupList = Get-AzureADGroups -GroupName $GroupPrefix -ShowMembers -ExcludeDynamicGroups -Token $authDetails.Token
+  $Result = $GroupList |
+   `Select-Object -ExpandProperty members @{Name="GroupName";Expression={$_.displayName}} -ErrorAction SilentlyContinue |
+   `Where-Object {! $_.accountEnabled} |
+   `Where-Object userPrincipalName |
+   `Select-Object userPrincipalName,displayName,accountEnabled,GroupName,id -ErrorAction SilentlyContinue
 
- if ($($Result.Count) -eq 0) {
-  Write-Host -Foregroundcolor Green "No disabled user found in groups starting with $GroupPrefix, nothing to do in $($GroupList.Count) groups"
- } else {
-  write-host "Found $($Result.Count) disabled account in group $GroupPrefix*"
-  if ($PrintOnly) {
-   $Result
+  if ($($Result.Count) -eq 0) {
+   Write-Host -Foregroundcolor Green "No disabled user found in groups starting with $GroupPrefix, nothing to do in $($GroupList.Count) groups"
   } else {
-   $QuestionResult = Question "Are you sure you want to remove the users from their respective Groups"
-   if ($QuestionResult) {
-    $Result | ForEach-Object {
-     Write-Host "Removing user $($_.displayName) ($($_.userPrincipalName)) from group $($_.GroupName)"
-     az ad group member remove --group $_.GroupName --member-id $_.id
+   write-host "Found $($Result.Count) disabled account in group $GroupPrefix*"
+   if ($PrintOnly) {
+    $Result
+   } else {
+    $QuestionResult = Question "Are you sure you want to remove the users from their respective Groups"
+    if ($QuestionResult) {
+     $Result | ForEach-Object {
+      Write-Host "Removing user $($_.displayName) ($($_.userPrincipalName)) from group $($_.GroupName)"
+      Remove-AzureADGroupMember -Group $_.GroupName -Member $_.id -Token $authDetails.Token
+     }
     }
    }
   }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
 Function New-AzureADGroup { # Create New Group using Graph
  Param (
   $Token,
@@ -20434,6 +20255,7 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
 
  return $FullBody
 }
+
 #endregion SECTION : Mail Management
 #region SECTION : Azure Device management
 
@@ -20507,12 +20329,15 @@ Function Get-AzureDeviceIntuneAssignementGroups {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
 #endregion SECTION : Azure Device management
 #region SECTION : Loaded on Import
 
 #Variables
+
 # Set default colors used in functions
 $defaultblue="Cyan"
+
 # Set Azure Prompt as False by default as this slows down display
 [Switch]$global:AzurePrompt=$False
 
@@ -20527,12 +20352,14 @@ Set-Alias -Name du -Value "Get-DiskUsage" -Option AllScope
 Set-Alias -Name df -Value "Get-PartitionInfo" -Option AllScope
 Set-Alias -Name dns -Value "Test-DNS" -Option AllScope
 Set-Alias -Name grep -Value "Select-String"
-Function Start-Jdownloader { get-job | remove-job ;  invoke-expression -Command "java -jar C:\JDownloader\JDownloader.jar &" }
-Function LoadMMC { mmc "$env:OneDriveCommercial\RootConsole.msc" }
 Set-Alias -Name jd -value Start-Jdownloader
 Set-Alias -Name Home -value "LoginHome"
 Set-Alias -Name Which -value "Get-Command"
 Set-Alias -Name Reload -value "Get-Profile"
+
+# Advanced Aliases
+Function Start-Jdownloader { get-job | remove-job ;  invoke-expression -Command "java -jar C:\JDownloader\JDownloader.jar &" }
+Function LoadMMC { mmc "$env:OneDriveCommercial\RootConsole.msc" }
 
 # Check Os Type
 if ($IsLinux -or $IsMacOS) {
