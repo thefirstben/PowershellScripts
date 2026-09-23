@@ -16457,7 +16457,6 @@ Function Remove-AzureADDisabledUsersFromGroups { # Remove disabled users from Gr
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-
 Function New-AzureADGroup { # Create New Group using Graph
  Param (
   $Token,
@@ -16530,6 +16529,59 @@ Function New-AzureADGroup { # Create New Group using Graph
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function Sync-UserGroupMembership {
+ Param (
+  [Parameter(Mandatory)] [string] $GroupID,
+  [Parameter(Mandatory)] [array] $DesiredUsers,
+  [Parameter(Mandatory)] [string] $GroupDescription,
+    [Parameter(Mandatory)] $Token,
+    [switch] $AddOnly
+ )
+
+ Write-Output "Getting current members for $GroupDescription"
+ $CurrentMembers = Get-AzureADGroupMembers -Group $GroupID -Fast -Token $Token -ErrorAction Stop
+
+ $DesiredUserHash = @{}
+ foreach ($User in $DesiredUsers) {
+  if ($User.id) { $DesiredUserHash[$User.id] = $User }
+ }
+
+ $CurrentMemberHash = @{}
+ foreach ($Member in $CurrentMembers) {
+  if ($Member.id) { $CurrentMemberHash[$Member.id] = $Member }
+  elseif ($Member.ID) { $CurrentMemberHash[$Member.ID] = $Member }
+ }
+
+ $UsersToAdd = $DesiredUsers | Where-Object { $_.id -and !$CurrentMemberHash.ContainsKey($_.id) }
+ $UsersToRemove = $CurrentMembers | Where-Object {
+  $MemberId = if ($_.id) { $_.id } else { $_.ID }
+  $MemberId -and !$DesiredUserHash.ContainsKey($MemberId)
+ }
+
+ Write-Output "$GroupDescription desired users: $($DesiredUserHash.Count)"
+ Write-Output "$GroupDescription current members: $($CurrentMemberHash.Count)"
+ Write-Output "$GroupDescription users to add: $($UsersToAdd.Count)"
+ if ($AddOnly) {
+  Write-Output "$GroupDescription add-only mode enabled; users to remove: $($UsersToRemove.Count)"
+ } else {
+  Write-Output "$GroupDescription users to remove: $($UsersToRemove.Count)"
+ }
+
+ foreach ($User in $UsersToAdd) {
+  Write-Output "Adding $($User.userPrincipalName) ($($User.id)) to $GroupDescription"
+  Add-AzureADGroupMember -Group $GroupID -Member $User.id -Token $Token -ErrorAction Stop
+ }
+
+ if (!$AddOnly) {
+  foreach ($User in $UsersToRemove) {
+   $MemberId = if ($User.id) { $User.id } else { $User.ID }
+   Write-Output "Removing $($User.userPrincipalName) ($MemberId) from $GroupDescription"
+   Remove-AzureADGroupMember -Group $GroupID -Member $MemberId -Token $Token -ErrorAction Stop
+  }
+ }
+
+ $CurrentMembers = $null ; $CurrentMemberHash = $null ; $DesiredUserHash = $null ; $UsersToAdd = $null ; $UsersToRemove = $null
+}
 #endregion SECTION : AAD Group Management
 #region SECTION : AAD User Management
 
@@ -16591,7 +16643,7 @@ Function Get-AzureADUsers { # Get all AAD User of a Tenant (limited info or full
 }
 Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta for Detailed to get all default values, to get specific value they must be specifically selected, like signInActivity)
  Param (
-  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)][Alias("UPNorID")]$User,
   [Switch]$Detailed,
   [Switch]$ShowManager,
   [Switch]$ShowMemberOf,
@@ -16603,17 +16655,17 @@ Function Get-AzureADUserInfo { # Show user information From AAD (Uses Graph Beta
 
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  if (Assert-IsGUID $UPNorID) {
+  if (Assert-IsGUID $User) {
    Write-Verbose "Using GUID"
-   $UserGUID = $UPNorID
+   $UserGUID = $User
   } else {
    Write-Verbose "Using UPN, will have to get GUID"
-   $UserGUID = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$UPNorID'" -ErrorAction Stop).id
+   $UserGUID = (Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$User'" -ErrorAction Stop).id
  }
- if (! $UserGUID) { Throw "User $UPNorID was not found" }
+ if (! $UserGUID) { Throw "User $User was not found" }
  Write-Verbose "Getting user detail using GUID $UserGUID"
  if ($Detailed) { # Version v1.0 of graph is really limited with the values it returns
-   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID" -ErrorAction Stop
+   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID" -ErrorAction Stop
   } else {
    $Filter = "id,onPremisesImmutableId,userPrincipalName,displayName,mail,accountEnabled,createdDateTime,signInActivity,lastPasswordChangeDateTime"
    $RestResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UserGUID`?`$select=$Filter" -ErrorAction Stop
@@ -18722,6 +18774,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
  | where isnotempty(DeviceId) or isnotempty(DeviceDisplayName)
  | summarize ConnectionCount = count() by DeviceId, DeviceDisplayName, DeviceOS, DeviceBrowser, DeviceTrustType
  | sort by ConnectionCount desc'
+   Write-Verbose "Final Query : $Query"
    $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
    if (! $ResultRaw) { return }
    return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
@@ -18730,6 +18783,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   # Get distinct IPs directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
   if ($ShowUniqueIPs) {
    $Query = $QueryStart + '| where isnotempty(IPAddress) | summarize ConnectionCount = count() by IPAddress | sort by ConnectionCount desc'
+    Write-Verbose "Final Query : $Query"
    $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
    if (! $ResultRaw) { return }
    return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
@@ -18783,7 +18837,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   # Merge Start & End
   $Query = $QueryStart + $QueryEnd
 
-  write-verbose "Final Query : $Query"
+  Write-Verbose "Final Query : $Query"
 
   # Launch Query
   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
@@ -18943,6 +18997,7 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
   # Get distinct Users directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
   if ($ShowUniqueUsers) {
    $Query = $QueryStart + '| where isnotempty(UserPrincipalName) | summarize by UserDisplayName, UserPrincipalName, UserId | sort by UserPrincipalName asc'
+    Write-Verbose "Final Query : $Query"
    $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
    if (! $ResultRaw) { return }
    return ($ResultRaw | Select-Object UserDisplayName, UserPrincipalName, @{Name = 'UserObjectId'; Expression = { $_.UserId } })
@@ -18991,6 +19046,8 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
 
   # Merge Start & End
   $Query = $QueryStart + $QueryEnd
+
+  Write-Verbose "Final Query : $Query"
 
   # Launch Query
   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
@@ -19134,6 +19191,8 @@ Function Get-SentinelIPInfo { #Get logs from Sentinel filtered on IP
 
   # Merge Start & End
   $Query = $QueryStart + $QueryEnd
+
+  Write-Verbose "Final Query : $Query"
 
   # Launch Query
   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
@@ -19312,6 +19371,7 @@ Function Get-SentinelAuditInfo {
 "@
 
  # 4. Execute
+ Write-Verbose "Final Query : $Query"
  $Result = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
  if ($Result) {
   $localTz = if ($env:WEBSITE_TIME_ZONE) { [System.TimeZoneInfo]::FindSystemTimeZoneById($env:WEBSITE_TIME_ZONE) } else { [System.TimeZoneInfo]::Local }
@@ -19424,7 +19484,7 @@ Function Get-SentinelGraphActivityInfo {
  $QueryLines += '| sort by TimeGenerated desc'
  $Query = $QueryLines -join "`n"
 
- write-verbose "Constructed KQL Query:`n$Query"
+ Write-Verbose "Final Query : $Query"
  # 3. Execute
  Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
 }
