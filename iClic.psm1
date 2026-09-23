@@ -16532,10 +16532,10 @@ Function New-AzureADGroup { # Create New Group using Graph
 Function Sync-UserGroupMembership {
  Param (
   [Parameter(Mandatory)] [string] $GroupID,
-  [Parameter(Mandatory)] [array] $DesiredUsers,
+  [Parameter(Mandatory)] [AllowEmptyCollection()] [array] $DesiredUsers,
   [Parameter(Mandatory)] [string] $GroupDescription,
-    [Parameter(Mandatory)] $Token,
-    [switch] $AddOnly
+  [Parameter(Mandatory)] $Token,
+  [switch] $AddOnly
  )
 
  Write-Output "Getting current members for $GroupDescription"
