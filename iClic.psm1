@@ -19387,7 +19387,7 @@ Function Get-SentinelAuditInfo {
     ModifiedProperties = tostring(Change_All_Details)
 
   $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorType, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectID, ActivityAppId, ActivityAppOwnerOrganizationId, SourceIPAddress, Change_Property, OldValue, NewValue, ModifiedProperties" })
-  | sort by TimeGenerated desc
+  | sort by TimeGenerated asc
 "@
 
  # 4. Execute
@@ -19501,7 +19501,7 @@ Function Get-SentinelGraphActivityInfo {
   $QueryLines += '| project TimeGenerated, AppId, UserId, IPAddress, RequestMethod, RequestUri, ResponseStatusCode, UserAgent, DurationMs, OperationId, RequestId'
  }
 
- $QueryLines += '| sort by TimeGenerated desc'
+ $QueryLines += '| sort by TimeGenerated asc'
  $Query = $QueryLines -join "`n"
 
  Write-Verbose "Final Query : $Query"
