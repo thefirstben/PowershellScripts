@@ -7721,18 +7721,42 @@ Function Get-FileFromURL { # Download file from URL - Try to follow link if poss
 
  Write-Colored -Color Cyan -PrintDate -ColoredText "Starting download of file $outputfile, please wait"
 
+ if ($OutputFolder) {
+  $destinationPath = Join-Path -Path $OutputFolder -ChildPath $outputfile
+ } else {
+  $destinationPath = $outputfile
+ }
+ Write-Colored -Color Cyan -PrintDate -ColoredText "Source URL: $link"
+ Write-Colored -Color Cyan -PrintDate -ColoredText "Destination: $destinationPath"
+ Write-Colored -Color Cyan -PrintDate -ColoredText "PowerShell version: $($PSVersionTable.PSVersion)"
+
  try {
-  Invoke-WebRequest -Uri $link -OutFile "$OutputFolder$outputfile" -UseBasicParsing -ErrorAction Stop
+  $response = Invoke-WebRequest -Uri $link -OutFile $destinationPath -UseBasicParsing -ErrorAction Stop
+  if ($response.StatusCode) {
+   Write-Colored -Color Cyan -PrintDate -ColoredText "HTTP status: $($response.StatusCode) $($response.StatusDescription)"
+  }
  } catch {
-  write-Colored -Color "Red" -PrintDate -ColoredText $error[0]
+  $exception = $_.Exception
+  Write-Colored -Color "Red" -PrintDate -ColoredText "Download failed: $($exception.Message)"
+  if ($exception.Response) {
+   Write-Colored -Color "Red" -PrintDate -ColoredText "HTTP status: $([int]$exception.Response.StatusCode) $($exception.Response.StatusDescription)"
+  }
+  if ($exception.InnerException) {
+   Write-Colored -Color "Red" -PrintDate -ColoredText "Inner exception: $($exception.InnerException.Message)"
+  }
   return
  }
 
- $FileSize = Format-FileSize (Get-ChildItem "$OutputFolder$outputfile").Length
+ if (!(Test-Path -LiteralPath $destinationPath)) {
+  Write-Colored -Color "Red" -PrintDate -ColoredText "Download completed but no file was created at: $destinationPath"
+  return
+ }
 
- Write-Colored -Color Cyan -PrintDate -ColoredText "Downloaded file $($OutputFolder+$outputfile) in $((Get-Date).Subtract($start_time).Seconds) second(s) [$FileSize]"
+ $FileSize = Format-FileSize (Get-ChildItem -LiteralPath $destinationPath).Length
 
- return "$OutputFolder$outputfile"
+ Write-Colored -Color Cyan -PrintDate -ColoredText "Downloaded file $destinationPath in $((Get-Date).Subtract($start_time).Seconds) second(s) [$FileSize]"
+
+ return $destinationPath
 }
 Function Get-FileContent { # Can be used to search for a string in a file
  Param (
@@ -12426,97 +12450,79 @@ Function Get-AzureAppRegistrationExpiration { # Get All App Registration Secret 
   $GraphRequest = "https://graph.microsoft.com/v1.0/applications?`$select=DisplayName,Notes,Tags,AppID,createdDateTime,signInAudience,passwordCredentials,keyCredentials&`$top=999"
   $AppList = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphRequest
 
-  Write-Verbose "Getting All Key Credentials"
-  $KeyList = $AppList | Where-Object passwordCredentials | Select-Object `
-  @{Name="AppName";Expression={$_.DisplayName}},AppID,
-  @{Name="AppNotes";Expression={$_.notes}},
-  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
-  @{Name="AppTags";Expression={
-   write-verbose "Processing Tags for App Registration $($_.DisplayName)"
-   $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
-    $DuplicateTagNames = @()
-    $_.Tags | ForEach-Object {
-     $TagParts = $_ -split ':', 2
-     $TagName = $TagParts[0].Trim()
-     $TagValue = if ($TagParts.Count -gt 1) { $TagParts[1].Trim() } else { '' }
-     if ($TagList.PSObject.Properties.Name -contains $TagName) {
-      $DuplicateTagNames += $TagName
-      } else {
-       $TagList | Add-Member -MemberType NoteProperty -Name $TagName -Value $TagValue
-     }
-    }
-    if ($DuplicateTagNames.Count -gt 0) {
-      Write-Warning "Duplicate tag(s) on App Registration '$($_.DisplayName)': $((($DuplicateTagNames | Select-Object -Unique) -join ', ')). Keeping the first value and skipping duplicates."
-    }
-    $TagList
-  }},
-  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty passwordCredentials | Select-Object -Property `
-   @{Name="SecretDescription";Expression={$_.DisplayName}},
-   @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
-   @{Name="SecretExpiration";Expression={$_.endDateTime}},
-   @{Name="SecretType";Expression={"Key"}},
-    @{Name="KeyCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).passwordCredentials.Count}},*
+  $CredentialTypes = @(
+   @{Property="passwordCredentials";Type="Key"},
+   @{Property="keyCredentials";Type="Certificate"}
+  )
 
-  Write-Verbose "Getting All Certificate Credentials"
-  $CertificateList = $AppList | Where-Object keyCredentials | Select-Object `
-  @{Name="AppName";Expression={$_.DisplayName}},AppID,
-  @{Name="AppNotes";Expression={$_.notes}},
-  @{Name="AppCreatedOn";Expression={$_.createdDateTime}},
-  @{Name="AppTags";Expression={
-   write-verbose "Processing Tags for App Registration $($_.DisplayName)"
-   $TagList = [PSCustomObject]@{} # Example to add all Members to an Object without knowing the name first
-    $DuplicateTagNames = @()
-    $_.Tags | ForEach-Object {
-     $TagParts = $_ -split ':', 2
-     $TagName = $TagParts[0].Trim()
-     $TagValue = if ($TagParts.Count -gt 1) { $TagParts[1].Trim() } else { '' }
-     if ($TagList.PSObject.Properties.Name -contains $TagName) {
-      $DuplicateTagNames += $TagName
-      } else {
-       $TagList | Add-Member -MemberType NoteProperty -Name $TagName -Value $TagValue
-     }
-    }
-    if ($DuplicateTagNames.Count -gt 0) {
-      Write-Warning "Duplicate tag(s) on App Registration '$($_.DisplayName)': $((($DuplicateTagNames | Select-Object -Unique) -join ', ')). Keeping the first value and skipping duplicates."
-    }
-    $TagList
-  }},
-  @{Name="AppAudience";Expression={$_.signInAudience}} -ExpandProperty keyCredentials | Select-Object -Property `
-   @{Name="SecretDescription";Expression={$_.DisplayName}},
-   @{Name="SecretCreatedOn";Expression={$_.startDateTime}},
-   @{Name="SecretExpiration";Expression={$_.endDateTime}},
-   @{Name="SecretType";Expression={"Certificate"}},
-    @{Name="CertificateCount";Expression={($AppList | Where-Object AppID -eq $_.AppID).keyCredentials.Count}},*
+  Write-Verbose "Getting All Key & Certificate Credentials"
+  $ResultList = $AppList | Where-Object { $_.passwordCredentials -or $_.keyCredentials } | ForEach-Object {
+   $App = $_
 
-  Write-Verbose "Merge Secret & Certificates"
-  $ResultList = $KeyList + $CertificateList | Sort-Object SecretExpiration | Select-Object `
-   AppName,AppNotes,AppTags,AppId,AppCreatedOn,AppAudience,SecretDescription,SecretCreatedOn,SecretExpiration,KeyCount,CertificateCount,SecretType,hint,
-   @{Name="TimeUntilExpiration";Expression={(NEW-TIMESPAN -Start $Date_Today -End $_.SecretExpiration).Days}} | Select-Object *,
-   @{Name="Status";Expression={
-    If ($_.TimeUntilExpiration -gt $MaxExpiration) {
-     "Infinite"
-    } elseif ($_.TimeUntilExpiration -ge $Expiration) {
-     "OK for at least $Expiration days"
-    } elseif (($_.TimeUntilExpiration -le $Expiration) -and ($_.TimeUntilExpiration -gt 0)) {
-     "Expiring in $($_.TimeUntilExpiration) days"
-    } elseif ($_.TimeUntilExpiration -eq 0) {
-     "Expires today"
-    } elseif ($_.TimeUntilExpiration -lt 0) {
-     "Expired"
+   Write-Verbose "Processing Tags for App Registration $($App.DisplayName)"
+   $TagList = [PSCustomObject]@{}
+   $DuplicateTagNames = @()
+   $App.Tags | ForEach-Object {
+    $TagParts = $_ -split ':', 2
+    $TagName = $TagParts[0].Trim()
+    $TagValue = if ($TagParts.Count -gt 1) { $TagParts[1].Trim() } else { '' }
+    if ($TagList.PSObject.Properties.Name -contains $TagName) {
+     $DuplicateTagNames += $TagName
     } else {
-     $_.TimeUntilExpiration
+     $TagList | Add-Member -MemberType NoteProperty -Name $TagName -Value $TagValue
     }
-   }},
-   @{Name="SecretCount";Expression={$_.KeyCount + $_.CertificateCount}}
+   }
+   if ($DuplicateTagNames.Count -gt 0) {
+    Write-Warning "Duplicate tag(s) on App Registration '$($App.DisplayName)': $((($DuplicateTagNames | Select-Object -Unique) -join ', ')). Keeping the first value and skipping duplicates."
+   }
 
-  
+   $KeyCount = ($App.passwordCredentials | Measure-Object).Count
+   $CertificateCount = ($App.keyCredentials | Measure-Object).Count
+
+   foreach ($CredentialType in $CredentialTypes) {
+    foreach ($Credential in $App.($CredentialType.Property)) {
+     $TimeUntilExpiration = (New-TimeSpan -Start $Date_Today -End $Credential.endDateTime).Days
+     $Status = if ($TimeUntilExpiration -gt $MaxExpiration) {
+      "Infinite"
+     } elseif ($TimeUntilExpiration -ge $Expiration) {
+      "OK for at least $Expiration days"
+     } elseif ($TimeUntilExpiration -gt 0) {
+      "Expiring in $TimeUntilExpiration days"
+     } elseif ($TimeUntilExpiration -eq 0) {
+      "Expires today"
+     } else {
+      "Expired"
+     }
+
+     [PSCustomObject]@{
+      AppName = $App.DisplayName
+      AppNotes = $App.notes
+      AppTags = $TagList
+      AppId = $App.appId
+      AppCreatedOn = $App.createdDateTime
+      AppAudience = $App.signInAudience
+      SecretDescription = $Credential.displayName
+      SecretCreatedOn = $Credential.startDateTime
+      SecretExpiration = $Credential.endDateTime
+      KeyCount = $KeyCount
+      CertificateCount = $CertificateCount
+      SecretType = $CredentialType.Type
+      hint = $Credential.hint
+      TimeUntilExpiration = $TimeUntilExpiration
+      Status = $Status
+      SecretCount = $KeyCount + $CertificateCount
+     }
+    }
+   }
+  }
+
   if ($ShowAll) {
    $ResultList | Sort-Object SecretExpiration
   } else {
    $ResultList | Sort-Object SecretExpiration | Where-Object { $_.TimeUntilExpiration -le [int]$Expiration }
   }
 
-  Write-Verbose "Found $(($KeyList + $CertificateList).Count) App Registration with Secrets out of $($AppList.Count) total Apps"
+  Write-Verbose "Found $(@($ResultList.AppId | Select-Object -Unique).Count) App Registration with Secrets out of $($AppList.Count) total Apps"
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
