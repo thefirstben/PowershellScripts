@@ -10629,8 +10629,8 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
  [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
  Param (
   # == Parameters available in ALL sets ==
-  [parameter(Mandatory = $true)]$AzureToken,# Management.Azure.com token => Can be the same app, but it's a different Endpoint
-  [parameter(Mandatory = $true)]$UserToken, # Graph Token
+  [parameter(Mandatory = $false)]$AzureToken,# Management.Azure.com token => Can be the same app, but it's a different Endpoint
+  [parameter(Mandatory = $false)]$UserToken, # Graph Token
   [Switch]$Readable, # Simplified view excluding uneeded data
   [Switch]$ExactScope, # Check to see what this is used for
   [Switch]$HideDefender, # Exclude Defender permissions which are often too much and not relevant for most of the use cases
@@ -10663,6 +10663,17 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
   [string]$APIVersionMgmt = "2021-04-01"
  )
  Try {
+    if (-not $AzureToken) {
+   $AzureToken = $global:AzureToken
+    }
+    if (-not $UserToken) {
+   $UserToken = $global:Token
+    }
+  if ($global:Tokens) {
+   if (-not $AzureToken) { $AzureToken = $global:Tokens.AzureToken }
+   if (-not $UserToken) { $UserToken = $global:Tokens.UserToken }
+    }
+
   Write-Verbose "Checking Azure Token Validity"
   if (! $(Assert-IsTokenLifetimeValid -Token $AzureToken -ErrorAction Stop) ) { Throw "AzureToken is invalid, provide a valid token" }
 
@@ -10924,72 +10935,22 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
   Write-Error $_
  }
 }
-Function Add-AzureADGroupRBACRights { # Add RBAC Rights (Subscription is mandatory - at least name) | Not yet fully tested but works on Subscription
- [CmdletBinding(DefaultParameterSetName='ScopeID')]
- Param (
-  [Parameter(Mandatory=$true)]$ObjectID, # Object ID of element that will have the permissions
-  [Parameter(Mandatory=$true)]$Role, # Name of the permission to add
-  [Parameter(Mandatory=$true, ParameterSetName = 'SubscriptionID')]$SubscriptionID,
-  [Parameter(Mandatory=$true, ParameterSetName = 'SubscriptionName')]$SubscriptionName,
-  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionID')]
-  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionName')]
-  [Parameter(Mandatory=$false, ParameterSetName = 'ResourceRG')]$ResourceGroup,
-  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionID')]
-  [Parameter(Mandatory=$false, ParameterSetName = 'SubscriptionName')]
-  [Parameter(Mandatory=$false, ParameterSetName = 'Resource')]$Resource,
-  [Parameter(Mandatory=$False, ParameterSetName = "ScopeID")]$ScopeID
- )
- if (! $SubscriptionID) {
-  Progress -Message "Current step " -Value "Retreiving all subscriptions" -PrintTime
-  $SubscriptionID = (Get-AzureSubscriptionsAZCLI | Where-Object Name -eq $SubscriptionName).ID
- }
-
- az account set --subscription $subscriptionId
-
- if ($Resource) {
-  $ScopeID = ((az resource list --output json).tolower() | convertfrom-json | Where-Object name -eq $Resource).ID
- } elseif ($ResourceGroup) {
-  $ScopeID = (az group show --resource-group $ResourceGroup | ConvertFrom-Json).ID
- } else {
-  $ScopeID = "/subscriptions/$SubscriptionID"
- }
- $ResultJson = az role assignment create --assignee $ObjectID --role $Role --scope $ScopeID 2>&1
- $ErrorMessage = $ResultJson | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }
- $Result = $ResultJson | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ConvertFrom-Json
- if ($ErrorMessage) {
-  write-host -ForegroundColor "Red" -Object "Error adding permission for ObjectID $ObjectID [$ErrorMessage]"
- } else {
-  $principalId = $Result.principalId
-  $principalType = $Result.principalType
-  $scope = $Result.scope
-  $roleDefinitionName = $Result.roleDefinitionName
-  write-host -ForegroundColor "Green" -Object "Successfully added $roleDefinitionName permission for $principalId [$principalType] on scope $scope"
- }
-}
-Function Add-AzureADRBACRights { # Add rights to a resource using UserName or Object ID (for types other than users) - Requires Exact Scope - Using Azure CLI
- Param (
-  [parameter(Mandatory = $true, ParameterSetName="UserName")]$UserName,
-  [parameter(Mandatory = $true, ParameterSetName="ID")][GUID]$Id,
-  [parameter(Mandatory = $true, ParameterSetName="ID")][ValidateSet("Group","ServicePrincipal","User","ForeignGroup")]$ID_Type,
-  [Parameter(Mandatory=$true)]$Role,
-  [Parameter(Mandatory=$true)]$Scope
- )
- if ($ID) {
-  az role assignment create --assignee-object-id $ID --role $Role --scope $Scope --assignee-principal-type $ID_Type
- } else {
-  az role assignment create --assignee $UserName --role $Role --scope $Scope
- }
-}
 Function Add-AzureRBACRights { # Add Azure RBAC permissions
+  [CmdletBinding(DefaultParameterSetName = 'FullResourceScope')]
   Param (
-  [parameter(Mandatory = $true, ParameterSetName="ID")][String]$Id, # Changed to String to handle input flexibility
-  [parameter(Mandatory = $true, ParameterSetName="ID")][ValidateSet("Group","ServicePrincipal","User","ForeignGroup")]$ID_Type,
+  [parameter(Mandatory = $true)][String]$Id, # Changed to String to handle input flexibility
+  [parameter(Mandatory = $true)][ValidateSet("Group","ServicePrincipal","User","ForeignGroup")]$ID_Type,
   [Parameter(Mandatory=$true)]$Role, # Can be Name or ID
-  [Parameter(Mandatory=$true)]$Scope,
+  [Parameter(Mandatory=$true, ParameterSetName='ManagementGroupScope')][String]$ManagementGroupID,
+  [Parameter(Mandatory=$true, ParameterSetName='SubscriptionScope')][String]$Subscription,
+  [Parameter(Mandatory=$true, ParameterSetName='ResourceGroupScope')][String]$ResourceGroup,
+  [Parameter(Mandatory=$true, ParameterSetName='ResourceScope')][String]$Resource,
+  [Parameter(Mandatory=$true, ParameterSetName='FullResourceScope')][Alias('Scope')][String]$FullScope,
   [Parameter(Mandatory=$false)][String]$Description, # Optional description like in Azure Portal
   [Parameter(Mandatory=$false)]$Condition, # New Parameter for ABAC Logic
   [Parameter(Mandatory=$false)]$ConditionVersion = "2.0", # Default version for Conditions
-  $Token, # Must be Azure Management Token
+  [parameter(Mandatory = $false)]$AzureToken,# Management.Azure.com token => Can be the same app, but it's a different Endpoint
+  [parameter(Mandatory = $false)]$UserToken, # Graph Token
   $APIVersion = "2022-04-01",
   [switch]$Eligible, # Create a PIM Eligible assignment instead of an Active one
   [Parameter(Mandatory=$false)]$EligibleDuration = "P365D", # ISO8601 duration (ex : P365D / PT8H) - Default policy usually caps eligibility at 1 year
@@ -10999,7 +10960,60 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   )
 
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+    if (-not $AzureToken) {
+   $AzureToken = $global:AzureToken
+    }
+    if (-not $UserToken) {
+   $UserToken = $global:Token
+    }
+  if ($global:Tokens) {
+   if (-not $AzureToken) { $AzureToken = $global:Tokens.AzureToken }
+   if (-not $UserToken) { $UserToken = $global:Tokens.UserToken }
+    }
+
+    Write-Verbose "Checking Azure Token Validity"
+    if (! $(Assert-IsTokenLifetimeValid -Token $AzureToken -ErrorAction Stop) ) { Throw "AzureToken is invalid, provide a valid token" }
+
+    Write-Verbose "Checking User Token Validity"
+    if (! $(Assert-IsTokenLifetimeValid -Token $UserToken -ErrorAction Stop) ) { Throw "UserToken is invalid, provide a valid token" }
+
+  if (-not (Assert-IsGUID $Id)) {
+   switch ($ID_Type) {
+    'ServicePrincipal' {
+      $ResolvedPrincipal = @(Get-AzureServicePrincipal -Application $Id -Token $UserToken -ErrorAction Stop)
+    }
+     'Group' { $ResolvedPrincipal = @(Get-AzureADGroup -Group $Id -Token $UserToken -ErrorAction Stop) }
+     'ForeignGroup' { $ResolvedPrincipal = @(Get-AzureADGroup -Group $Id -Token $UserToken -ErrorAction Stop) }
+    default { Throw "A display name can only be resolved for ServicePrincipal, Group, or ForeignGroup. Provide a GUID for ID_Type '$ID_Type'." }
+   }
+
+   if ($ResolvedPrincipal.Count -eq 0) { Throw "No $ID_Type found for '$Id'." }
+   if ($ResolvedPrincipal.Count -gt 1) { Throw "Multiple $ID_Type objects found for '$Id'. Use the object ID instead." }
+   if (-not $ResolvedPrincipal[0].Id) { Throw "The resolved $ID_Type '$Id' does not contain an object ID." }
+   $Id = $ResolvedPrincipal[0].Id
+  }
+
+  switch ($PSCmdlet.ParameterSetName) {
+   'ManagementGroupScope' {
+    $FullScope = "/providers/Microsoft.Management/managementGroups/$ManagementGroupID"
+   }
+   'SubscriptionScope' {
+    $SubscriptionObject = @(Get-AzureSubscriptions -Subscription $Subscription -Exact -Token $AzureToken)
+    if (-not $SubscriptionObject) { Throw "Subscription $Subscription not found" }
+    $FullScope = "/subscriptions/$($SubscriptionObject[0].SubscriptionID)"
+   }
+   'ResourceGroupScope' {
+    $ResourceGroupObject = @(Get-AzureResourceGroup -Name $ResourceGroup -Exact -Token $AzureToken)
+    if (-not $ResourceGroupObject) { Throw "Resource Group $ResourceGroup not found" }
+    $FullScope = $ResourceGroupObject[0].id
+   }
+   'ResourceScope' {
+    $ResourceObject = @(Get-AzureResource -Name $Resource -Exact -Token $AzureToken)
+    if (-not $ResourceObject) { Throw "Resource $Resource not found" }
+    $FullScope = $ResourceObject[0].id
+   }
+  }
+
   Write-Verbose "Getting Role Definition"
   # Resolve Role Definition ID
   # The API requires: /subscriptions/{sub}/providers/Microsoft.Authorization/roleDefinitions/{guid}
@@ -11007,7 +11021,7 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   # Initialize Variable
   $roleDefId = $null
 
-  Write-Verbose "Using Scope $Scope"
+  Write-Verbose "Using Scope $FullScope"
 
   # Check if input is already a fully qualified ID
   if ($Role -match "^/subscriptions/") {
@@ -11016,10 +11030,10 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   } else {
    # It's a name (e.g., "Contributor"). We must search for it. Search at the scope provided.
    Write-Verbose "Role Definition Name provided, will search for ID"
-   $roleSearchUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleDefinitions?`$filter=roleName eq '$Role'&api-version=$APIVersion"
-   $roleResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest $roleSearchUrl
-   if ($roleResult.Count -eq 0) { Throw "Role '$Role' not found at scope '$Scope'." }
-   if ($roleResult.Count -gt 1) { Throw "Role '$Role' was found multiple times at scope '$Scope'." }
+  $roleSearchUrl = "https://management.azure.com$($FullScope)/providers/Microsoft.Authorization/roleDefinitions?`$filter=roleName eq '$Role'&api-version=$APIVersion"
+  $roleResult = Get-AzureGraph -Token $AzureToken -GraphRequest $roleSearchUrl
+  if ($roleResult.Count -eq 0) { Throw "Role '$Role' not found at scope '$FullScope'." }
+  if ($roleResult.Count -gt 1) { Throw "Role '$Role' was found multiple times at scope '$FullScope'." }
    $roleDefId = $roleResult.id
   }
 
@@ -11066,17 +11080,17 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
 
    $body = @{ properties = $properties } | ConvertTo-Json -Depth 5
 
-   Write-Host -ForegroundColor Cyan -Object "Assigning ELIGIBLE role $Role for $Id [$ID_Type] on Scope $Scope"
-   $putUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleEligibilityScheduleRequests/$($assignmentName)?api-version=$PIMAPIVersion"
+  Write-Host -ForegroundColor Cyan -Object "Assigning ELIGIBLE role $Role for $Id [$ID_Type] on Scope $FullScope"
+  $putUrl = "https://management.azure.com$($FullScope)/providers/Microsoft.Authorization/roleEligibilityScheduleRequests/$($assignmentName)?api-version=$PIMAPIVersion"
   } else {
    $body = @{ properties = $properties } | ConvertTo-Json -Depth 5
 
-   Write-Host -ForegroundColor Cyan -Object "Assigning role $Role for $Id [$ID_Type] on Scope $Scope"
-   $putUrl = "https://management.azure.com$($Scope)/providers/Microsoft.Authorization/roleAssignments/$($assignmentName)?api-version=$APIVersion"
+  Write-Host -ForegroundColor Cyan -Object "Assigning role $Role for $Id [$ID_Type] on Scope $FullScope"
+  $putUrl = "https://management.azure.com$($FullScope)/providers/Microsoft.Authorization/roleAssignments/$($assignmentName)?api-version=$APIVersion"
   }
 
   # Run Graph Method
-  $response = Get-AzureGraph -Token $authDetails.Token -GraphRequest $putUrl -ErrorAction Stop -Method PUT -Body $body
+  $response = Get-AzureGraph -Token $AzureToken -GraphRequest $putUrl -ErrorAction Stop -Method PUT -Body $body
   Write-Host -ForegroundColor Green "Success: Role assigned."
   if ($Verbose) { return $response }
 
