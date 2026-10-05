@@ -10623,7 +10623,7 @@ Function Convert-KubectlTLSSecretToPSObject { #Convert TLS Secret (found with Ku
  $Secret
 }
 #endregion SECTION : Convert Methods
-#region SECTION : User Rights Management
+#region SECTION : Azure Rights Management (RBAC)
 
 Function Get-AzureRBACRights { # Get permissions via Graph only request
  [CmdletBinding(DefaultParameterSetName = 'ManagementGroupScope')]
@@ -10808,6 +10808,37 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
   Write-Error "An error occurred while processing the final results: $_"
  }
 
+ # Only assignments created by MS-PIM can be activations, check their scopes once each (atScope to avoid listing all child resources)
+ Write-Verbose "Checking PIM created assignments for activated eligible roles"
+ $PIMObjectID = $null
+ try {
+  $PIMObjectID = @(Get-AzureGraph -Token $UserToken -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals?`$filter=appId eq '01fc33a7-78ba-4d2f-a4b7-768e336e890e'&`$select=id" -ErrorAction Stop)[0].id
+ } catch {
+  Write-Verbose "Could not resolve MS-PIM Service Principal, activated assignments will show as Permanent. Error: $_"
+ }
+ if ($PIMObjectID) {
+  $PIMCreatedAssignments = @($RequestResultWithGUIDS | Where-Object { $_.AssignmentType -eq 'Permanent' -and $_.createdBy -eq $PIMObjectID })
+  $ActivatedKeys = @{}
+  $PIMScopes = @($PIMCreatedAssignments.scope | Select-Object -Unique)
+  Write-Verbose "Found $($PIMCreatedAssignments.Count) PIM created assignments on $($PIMScopes.Count) unique scope(s)"
+  foreach ($PIMScope in $PIMScopes) {
+   $PIMFilterParts = @("atScope()")
+   if ($TargetPrincipalId) { $PIMFilterParts += "principalId eq '$TargetPrincipalId'" }
+   try {
+    $ActiveInstances = Get-AzureGraph -Token $AzureToken -GraphRequest "https://management.azure.com$($PIMScope)/providers/Microsoft.Authorization/roleAssignmentScheduleInstances?api-version=$APIVersionEligible&`$filter=$($PIMFilterParts -join ' and ')" -ErrorAction Stop
+    @($ActiveInstances.properties) | Where-Object { $_.assignmentType -eq 'Activated' } | ForEach-Object {
+     if ($_.originRoleAssignmentId) { $ActivatedKeys[$_.originRoleAssignmentId] = $true }
+     $ActivatedKeys["$($_.scope)|$($_.principalId)|$($_.roleDefinitionId.split('/')[-1])"] = $true
+    }
+   } catch {
+    Write-Verbose "Could not retrieve active schedule instances for scope '$PIMScope'. Error: $_"
+   }
+  }
+  $PIMCreatedAssignments | ForEach-Object {
+   if ($ActivatedKeys[$_.assignmentId] -or $ActivatedKeys["$($_.scope)|$($_.principalId)|$($_.roleDefinitionId.split('/')[-1])"]) { $_.AssignmentType = 'Activated' }
+  }
+ }
+
  # Add Role GUID
  Write-Verbose "Add Role Definition ID to Object"
  $RequestResultWithGUIDSAndRoleIDs = $RequestResultWithGUIDS | Select-Object *,@{name="roleDefinitionGUID";expression={$_.roleDefinitionId.split('/')[-1]}}
@@ -10846,7 +10877,8 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
  $PrincipalListGlobal += $RequestResultWithGUIDSAndRoleIDs.principalId
  $PrincipalListGlobal += $RequestResultWithGUIDSAndRoleIDs.createdBy
  $PrincipalListGlobal += $RequestResultWithGUIDSAndRoleIDs.updatedBy
- $PrincipalList = $PrincipalListGlobal| Where-Object { $_ -ne "" } | Select-Object -Unique
+ # Force array so a single principal is not indexed as a string of characters
+ $PrincipalList = @($PrincipalListGlobal | Where-Object { $_ } | Select-Object -Unique)
 
  # Initialize an empty array to store the results from all batches
  $PrincipalConvertedTable = @()
@@ -10927,7 +10959,7 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
   }}
 
   if ($Readable) {
-   $RequestResult | Sort-Object Scope,principalName | Select-Object AssignmentType,principalType,principalName,roleDefinitionName,roleDefinitionType,ManagementGroup,SubscriptionName,ResourceGroupName,ResourceName,ResourceType,scope,assignmentId
+   $RequestResult | Sort-Object Scope,principalName,ResourceType | Select-Object AssignmentType,principalType,principalName,roleDefinitionName,roleDefinitionType,ManagementGroup,SubscriptionName,ResourceGroupName,ResourceName,ResourceType,scope,assignmentId
   } else {
    $RequestResult
   }
@@ -10945,6 +10977,7 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
   [Parameter(Mandatory=$true, ParameterSetName='SubscriptionScope')][String]$Subscription,
   [Parameter(Mandatory=$true, ParameterSetName='ResourceGroupScope')][String]$ResourceGroup,
   [Parameter(Mandatory=$true, ParameterSetName='ResourceScope')][String]$Resource,
+  [Parameter(Mandatory=$false, ParameterSetName='ResourceScope')][String]$Container, # Blob container inside the Storage Account set in -Resource
   [Parameter(Mandatory=$true, ParameterSetName='FullResourceScope')][Alias('Scope')][String]$FullScope,
   [Parameter(Mandatory=$false)][String]$Description, # Optional description like in Azure Portal
   [Parameter(Mandatory=$false)]$Condition, # New Parameter for ABAC Logic
@@ -11011,6 +11044,10 @@ Function Add-AzureRBACRights { # Add Azure RBAC permissions
     $ResourceObject = @(Get-AzureResource -Name $Resource -Exact -Token $AzureToken)
     if (-not $ResourceObject) { Throw "Resource $Resource not found" }
     $FullScope = $ResourceObject[0].id
+    if ($Container) {
+     if ($ResourceObject[0].type -ne 'microsoft.storage/storageaccounts') { Throw "Resource $Resource is not a Storage Account (type : $($ResourceObject[0].type)), -Container cannot be used" }
+     $FullScope = "$FullScope/blobServices/default/containers/$Container"
+    }
    }
   }
 
@@ -11211,7 +11248,8 @@ Function Remove-AzureRBACRights { # Remove rights to a resource using UserName o
   }
  }
 }
-#endregion SECTION : User Rights Management
+
+#endregion SECTION : Azure Rights Management (RBAC)
 #region SECTION : App Registration, Service Principal creation
 
 Function New-AzureAppRegistration { # Create a single App Registration completely blank (No rights) - Can associate/create a SP for RBAC rights
@@ -14617,9 +14655,9 @@ Function Remove-AzureServicePrincipalSecret { # Remove expired Service Principal
  }
 }
 #endregion SECTION : Service Principal (Enterprise Applications) [Only]
-#region SECTION : User Role Assignement (Not RBAC)
+#region SECTION : User Role Assignment (Not RBAC)
 
-Function Get-AzureADRoleAssignements { # With GRAPH [Shows ALL Azure Roles assignements, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
+Function Get-AzureADRoleAssignments { # With GRAPH [Shows ALL Azure Roles assignments, unlike the other cmdline that misses some information] - But right now does not allow Eligible check
  Param (
   $Token,
   [Switch]$HideGUID
@@ -14865,7 +14903,8 @@ Function Add-AzureRole {
   Write-host -ForegroundColor Red "Error Adding Role ($($Error[0]))"
  }
 }
-#endregion SECTION : User Role Assignement (Not RBAC)
+
+#endregion SECTION : User Role Assignment (Not RBAC)
 #region SECTION : Devices
 
 Function Get-AzureDeviceObjectIDFromName {
