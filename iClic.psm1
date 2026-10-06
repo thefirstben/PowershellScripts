@@ -20264,7 +20264,8 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
   [int]$lifetimeInMinutes,
   [datetime]$startDateTimeLocal,
   [datetime]$endDateTimeLocal,
-  $Result
+  $Result,
+  [switch]$AskForEnforcement
  )
 
  $TapRows = @()
@@ -20323,6 +20324,10 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
   $CreatedMessage = "The following Temporary Access Pass has been created:"
  } else {
   $CreatedMessage = "The following $TapCount Temporary Access Pass entries have been created:"
+ }
+
+ if ($AskForEnforcement) {
+  $CreatedMessage += "<P style='color: red; font-weight: bold;'>You have until endDateTimeLocal seen in table above to set up Passkey and Passwordless in MsAuthenticator (done via MsAuthenticator app)</P>"
  }
 
  # Build the full HTML Body
