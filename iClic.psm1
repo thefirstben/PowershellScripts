@@ -9741,6 +9741,11 @@ Function Get-AzureResource { # Get Azure Resources using API with KQL
   # Had to make more detailed because of potential issues in resources with incorrect parameters
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
+  if ($global:Tokens) {
+   if (-not $AzureToken) { $AzureToken = $global:Tokens.AzureToken }
+   if (-not $UserToken) { $UserToken = $global:Tokens.UserToken }
+  }
+
   if ($Readable) {
    Write-Verbose "Getting Subscription Information for better read input"
    # Get Subscriptions Name information
@@ -9897,6 +9902,7 @@ Get-AzureGraph -Token $authDetails.Token -Method "PUT" -Body $JsonBody -GraphReq
   }
  }
 }
+
 #endregion SECTION : Get Azure Resource Data using Azure Resource Graph API with KQL Queries
 #region SECTION : Get Azure Resource Data user Azure CLI (Legacy)
 
@@ -10486,6 +10492,7 @@ Function Get-AzureApplicationGateway { # Check all Azure Application Gateway
    | Select-Object -ExcludeProperty properties *,@{Name="Listeners";Expression={($_.properties.httpListeners.properties.hostName + $_.properties.httpListeners.properties.hostNames) -join ";"}}
  }
 }
+
 #endregion SECTION : Get Azure Resource Information
 #region SECTION : Convert Methods
 
@@ -10663,16 +10670,12 @@ Function Get-AzureRBACRights { # Get permissions via Graph only request
   [string]$APIVersionMgmt = "2021-04-01"
  )
  Try {
-    if (-not $AzureToken) {
-   $AzureToken = $global:AzureToken
-    }
-    if (-not $UserToken) {
-   $UserToken = $global:Token
-    }
+  if (-not $AzureToken) { $AzureToken = $global:AzureToken }
+  if (-not $UserToken) { $UserToken = $global:Token }
   if ($global:Tokens) {
    if (-not $AzureToken) { $AzureToken = $global:Tokens.AzureToken }
    if (-not $UserToken) { $UserToken = $global:Tokens.UserToken }
-    }
+  }
 
   Write-Verbose "Checking Azure Token Validity"
   if (! $(Assert-IsTokenLifetimeValid -Token $AzureToken -ErrorAction Stop) ) { Throw "AzureToken is invalid, provide a valid token" }
@@ -13416,6 +13419,10 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
      }
      if ($UseConsistencyLevelEventual) { $GraphParams.ConsistencyLevelEventual = $true }
      $Result = Get-AzureGraph @GraphParams
+    if (-not $Result) {
+     Write-Warning "No Service Principals found matching the supplied filters."
+     return @()
+    }
      # Common conversion
      $ReplyURLColumn = $Result | get-member -MemberType NoteProperty -Name replyUrls
      if ($ReplyURLColumn) { $Result = $Result | Select-Object *,@{Name="URLs";Expression={$_.replyUrls -join ","}} }
@@ -14091,6 +14098,99 @@ Function Get-AzureServicePrincipalPermissions { # Get Assigned API Permission. U
   } else {
    Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
   }
+ }
+}
+Function Get-AzureServicePrincipalPermissionsForAllApps {
+ [CmdletBinding()]
+ Param (
+  [string[]]$ExcludedServicePrincipalTypes = @("ServiceIdentity","ManagedIdentity","SocialIdp"),
+  [switch]$HideGUID,
+  [switch]$HideDate,
+  [switch]$Readable,
+  $Token
+ )
+
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $ServicePrincipals = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest 'https://graph.microsoft.com/v1.0/servicePrincipals?$select=id,displayName,servicePrincipalType,appRoles' -ErrorAction Stop)
+  $PrincipalById = @{}
+  $RoleByResourceId = @{}
+  foreach ($Principal in $ServicePrincipals) {
+   $PrincipalById[$Principal.id] = $Principal
+   $Roles = @{}
+   foreach ($Role in $Principal.appRoles) {
+    $Roles[$Role.id] = $Role
+   }
+   $RoleByResourceId[$Principal.id] = $Roles
+  }
+
+  $DelegatedGrants = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest 'https://graph.microsoft.com/v1.0/oauth2PermissionGrants' -ErrorAction Stop)
+  $GrantsByClientId = @{}
+  foreach ($Grant in $DelegatedGrants) {
+   if (! $GrantsByClientId.ContainsKey($Grant.clientId)) {
+    $GrantsByClientId[$Grant.clientId] = [System.Collections.Generic.List[object]]::new()
+   }
+   $GrantsByClientId[$Grant.clientId].Add($Grant)
+  }
+
+  $SelectedPrincipals = @($ServicePrincipals | Where-Object { $_.servicePrincipalType -notin $ExcludedServicePrincipalTypes })
+  $Result = [System.Collections.Generic.List[object]]::new()
+  $Count = 0
+  foreach ($Principal in $SelectedPrincipals) {
+   $Count++
+   Write-Progress -Activity 'Checking service principal permissions' -Status "$($Principal.displayName) - $Count/$($SelectedPrincipals.Count)" -PercentComplete ($Count * 100 / $SelectedPrincipals.Count)
+   $Assignments = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/servicePrincipals/$($Principal.id)/appRoleAssignments" -ErrorAction Stop)
+   foreach ($Assignment in $Assignments) {
+    $Role = $null
+    if ($RoleByResourceId.ContainsKey($Assignment.resourceId)) {
+     $Role = $RoleByResourceId[$Assignment.resourceId][$Assignment.appRoleId]
+    }
+    $Result.Add([pscustomobject][ordered]@{
+     id = $Assignment.id
+     deletedDateTime = $Assignment.deletedDateTime
+     appRoleId = $Assignment.appRoleId
+     createdDateTime = $Assignment.createdDateTime
+     principalDisplayName = $Principal.displayName
+     principalId = $Assignment.principalId
+     principalType = 'ServicePrincipal'
+     resourceDisplayName = $Assignment.resourceDisplayName
+     resourceId = $Assignment.resourceId
+     PermissionType = 'Application'
+     appRoleDisplayName = $Role.displayName
+     appRoleValue = $Role.value
+     ConsentType = 'Admin Consent'
+    })
+   }
+
+   foreach ($Grant in $GrantsByClientId[$Principal.id]) {
+    $Resource = $PrincipalById[$Grant.resourceId]
+    foreach ($Scope in ($Grant.scope -split ' ')) {
+     if (! $Scope) { continue }
+     $Result.Add([pscustomobject][ordered]@{
+      id = $Grant.id
+      deletedDateTime = ''
+      appRoleId = $Grant.clientId
+      createdDateTime = ''
+      principalDisplayName = $Principal.displayName
+      principalId = $Grant.principalId
+      principalType = 'ServicePrincipal'
+      resourceDisplayName = $Resource.displayName
+      resourceId = $Grant.resourceId
+      PermissionType = 'Delegated'
+      appRoleDisplayName = $Scope
+      appRoleValue = $Resource.displayName
+      ConsentType = $(if ($Grant.consentType -eq 'AllPrincipals') { 'Admin Consent' } else { 'User Consent' })
+     })
+    }
+   }
+  }
+
+  $Output = $Result
+  if ($HideGUID -or $Readable) { $Output = $Output | Select-Object -ExcludeProperty *ID }
+  if ($HideDate -or $Readable) { $Output = $Output | Select-Object -ExcludeProperty *DateTime }
+  $Output
+ } Finally {
+  Write-Progress -Activity 'Checking service principal permissions' -Completed
  }
 }
 Function Add-AzureServicePrincipalPermission { # Add rights on Service Principal - Does not require an App Registration (Works on Managed Identity) - CHECK, A ISSUE SEEMS TO EXIST
@@ -18721,6 +18821,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [switch]$ShowOnlyInteractive,
   [switch]$ConditionalAccessIgnoreNotApplied,
   [switch]$SimplifiedQuery,
+  [switch]$IncludeMFARequirement,
   [switch]$ShowRawResult,
   [switch]$ShowUniqueDevices,
   [switch]$ShowUniqueIPs,
@@ -18888,6 +18989,9 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    ResultDescription,DeviceDisplayName = UnifiedDeviceDetailSTRING.displayName,
    DeviceOS = UnifiedDeviceDetailSTRING.operatingSystem,DeviceBrowser = UnifiedDeviceDetailSTRING.browser,DeviceTrust = UnifiedDeviceDetailSTRING.trustType,
    Conditional_Access_Success, Conditional_Access_Failure'
+  if ($IncludeMFARequirement) {
+   $QueryStart += ', MFARequirement = tostring(UnifiedStatusSTRING.additionalDetails) '
+  }
   }
 
   # Query will always end with this
@@ -20363,18 +20467,21 @@ Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to
  (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/users/$UserID/ownedDevices?`$select=$ValuesToShow").Value
 }
 Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates for Devices vs Users
+ [CmdletBinding(DefaultParameterSetName = 'Set')]
  Param (
   [Parameter(Mandatory)][GUID]$DeviceObjectID,
   [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
-  [Parameter(Mandatory)]$Value,
+  [Parameter(Mandatory, ParameterSetName = 'Set')]$Value,
   $Token,
-  [Switch]$ShowResult
+  [Switch]$ShowResult,
+  [Parameter(Mandatory, ParameterSetName = 'Clear')][Switch]$Clear
  )
   Try {
    $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
    if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
    $header = $authDetails.Header
 
+  if ($Clear) { $Value = $null }
    $params = @{
     "extensionAttributes" = @{
      $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
