@@ -16175,7 +16175,8 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group - Before 
   [Switch]$ForceName, # Used to get the Name as in Az CLI it only gives GUID otherwise
   [Switch]$RecurseHideGroups, # Using recursive still shows groups by default, but using this switch they will be hidden
   [Switch]$Fast, # Restrict the amounts of columns to make faster response time
-  [Switch]$Readable # Removes all GUID information in the result
+  [Switch]$Readable, # Removes all GUID information in the result
+  [Switch]$ShowExtensionAttributes # Show Extension Attributes
  )
  Try {
   Write-Verbose "Start $($($MyInvocation.MyCommand.Name))"
@@ -16183,18 +16184,21 @@ Function Get-AzureADGroupMembers { # Get Members from a Azure Ad Group - Before 
  # We create the list of columns here.
   # We use .GetNewClosure() to ensure the $Name variable is "frozen" for each iteration.
   $ReadableProperties = @('GroupName','displayName','userPrincipalName','accountEnabled','userType')
-  $ReadableProperties += 1..15 | ForEach-Object {
-   $Index = $_
-   $Name = "extensionAttribute$Index"
-   @{
-    Name = $Name
-    Expression = {
-     # We check if the parent object exists, then access the specific property by name
-     if ($_.onPremisesExtensionAttributes) {
-      return $_.onPremisesExtensionAttributes.$Name
-     }
-     return $null
-    }.GetNewClosure() # This captures the correct value of $Name for each column
+  if ($ShowExtensionAttributes) {
+   Write-Verbose "Adding Extension Attributes to Readable Properties"
+   $ReadableProperties += 1..15 | ForEach-Object {
+    $Index = $_
+    $Name = "extensionAttribute$Index"
+    @{
+     Name = $Name
+     Expression = {
+      # We check if the parent object exists, then access the specific property by name
+      if ($_.onPremisesExtensionAttributes) {
+       return $_.onPremisesExtensionAttributes.$Name
+      }
+      return $null
+     }.GetNewClosure() # This captures the correct value of $Name for each column
+    }
    }
   }
 
@@ -19018,7 +19022,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    }
   } else {
    # Stop here if no results where found
-   return
+   return @() | Sort-Object -Property TimeGenerated
   }
 
   # Build ordered column list: time columns first, then everything else
@@ -19027,7 +19031,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($SimplifiedQuery -or $ShowRawResult) {
    $colOrder = $timeColumns + ($ResultRaw[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
    $colOrder = $colOrder | Where-Object { $_ -notin @('TimeGenerated','Local_Timezone') }
-   return ($ResultRaw | Select-Object -Property $colOrder)
+   return ($ResultRaw | Select-Object -Property $colOrder | Sort-Object -Property TimeGenerated)
   } else {
    $Result = $ResultRaw | ForEach-Object {
     # Use Add-Member to create the new properties on the read-only object
@@ -19054,7 +19058,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
 
    $colOrder = $timeColumns + ($Result[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
-   return ($Result | Select-Object -Property $colOrder)
+   return ($Result | Select-Object -Property $colOrder | Sort-Object -Property TimeGenerated)
   }
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
