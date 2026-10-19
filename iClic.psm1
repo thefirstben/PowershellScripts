@@ -9446,6 +9446,182 @@ Function Get-AzureManagementGroups { # Get all subscription and associated Manag
   }
  }
 }
+Function Get-AzureSecurityPolicyAssignments { # Find where Regulatory Standards (NIST, ISO, CIS, MCSB...) are assigned (Management Groups / Subscriptions / Resource Groups)
+ # Example : Get-AzureSecurityPolicyAssignments | Sort-Object StandardName, ScopeLevel | Format-Table StandardName, ScopeType, ScopeName, IsTenantRoot, EnforcementMode
+ # Example : Get-AzureSecurityPolicyAssignments -Standard "*NIST*"
+ # Example : Get-AzureSecurityPolicyAssignments -All # All Azure Policy initiative assignments, not only standards
+ # Example : Get-AzureSecurityPolicyAssignments -IncludeDefender # Also query Defender standards on each management group and subscription (slower)
+ [CmdletBinding()]
+ Param (
+  $Token,
+  $Standard, # Wildcard filter on Standard name (ex: "*ISO*")
+  [Switch]$All,
+  [Switch]$IncludeDefender,
+  $APIVersion = "2024-04-01",
+  $PolicyAPIVersion = "2023-04-01",
+  $SecurityAPIVersion = "2024-08-01"
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $ARGUrl = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=$APIVersion"
+
+  # Resource Graph returns 'data' + '$skipToken' (no 'value'), so paging is handled here
+  $InvokeARG = {
+   Param ($Query)
+   $Results = @()
+   $SkipToken = $null
+   do {
+    $Options = @{ resultFormat = "objectArray" ; '$top' = 1000 }
+    if ($SkipToken) { $Options['$skipToken'] = $SkipToken }
+    $Body = @{ query = $Query ; options = $Options } | ConvertTo-Json -Depth 5
+    $Response = Get-AzureGraph -Token $authDetails.Token -GraphRequest $ARGUrl -Method POST -Body $Body
+    if ($Response.data) { $Results += $Response.data }
+    $SkipToken = $Response.'$skipToken'
+   } while ($SkipToken)
+   $Results
+  }
+
+  # 1. All Initiative (Policy Set) assignments on every scope
+  Write-Verbose "Retrieving Initiative assignments..."
+  $Assignments = & $InvokeARG "policyresources
+   | where type =~ 'microsoft.authorization/policyassignments'
+   | extend policyDefinitionId = tostring(properties.policyDefinitionId)
+   | where policyDefinitionId contains '/policySetDefinitions/'
+   | project id, name, policyDefinitionId,
+     assignmentDisplayName = tostring(properties.displayName),
+     scope = tostring(properties.scope),
+     enforcementMode = tostring(properties.enforcementMode),
+     subscriptionId, resourceGroup"
+
+  # 2. Initiative definitions (Built-In from ARM + Custom from Resource Graph) to get Name/Category
+  Write-Verbose "Retrieving Initiative definitions..."
+  $SetDefinitions = @{}
+  $BuiltIn = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com/providers/Microsoft.Authorization/policySetDefinitions?api-version=$PolicyAPIVersion&`$filter=policyType eq 'BuiltIn'"
+  $BuiltInList = if ($BuiltIn.value) { $BuiltIn.value } else { $BuiltIn }
+  $BuiltInList | Where-Object { $_.id } | ForEach-Object {
+   $SetDefinitions[$_.id.ToLower()] = [PSCustomObject]@{ DisplayName = $_.properties.displayName ; Category = $_.properties.metadata.category ; Version = $_.properties.version ; PolicyType = $_.properties.policyType }
+  }
+  & $InvokeARG "policyresources
+   | where type =~ 'microsoft.authorization/policysetdefinitions'
+   | project id, displayName = tostring(properties.displayName), category = tostring(properties.metadata.category), version = tostring(properties.version), policyType = tostring(properties.policyType)" | ForEach-Object {
+   $SetDefinitions[$_.id.ToLower()] = [PSCustomObject]@{ DisplayName = $_.displayName ; Category = $_.category ; Version = $_.version ; PolicyType = $_.policyType }
+  }
+
+  # 3. Scope names (Management Groups + Subscriptions)
+  Write-Verbose "Retrieving Management Groups and Subscriptions names..."
+  $ScopeNames = @{}
+  & $InvokeARG "resourcecontainers
+   | where type =~ 'microsoft.management/managementgroups' or type =~ 'microsoft.resources/subscriptions'
+   | project id, name, displayName = tostring(properties.displayName), tenantId" | ForEach-Object {
+   $ScopeNames[$_.id.ToLower()] = [PSCustomObject]@{ Id = $_.id ; Name = if ($_.displayName) { $_.displayName } else { $_.name } ; IsTenantRoot = ($_.name -eq $_.tenantId) }
+  }
+
+  $GetScope = {
+   Param ($Scope)
+   $ScopeInfo = $ScopeNames[$Scope.ToLower()]
+   $ScopeType, $ScopeLevel = switch -Regex ($Scope) {
+    '/providers/Microsoft.Management/managementGroups/' { if ($ScopeInfo.IsTenantRoot) { "Tenant Root Group", 0 } else { "Management Group", 1 } ; break }
+    '/resourceGroups/' { "Resource Group", 3 ; break }
+    '^/subscriptions/' { "Subscription", 2 ; break }
+    default { "Other", 4 }
+   }
+   [PSCustomObject]@{
+    ScopeType = $ScopeType
+    ScopeLevel = $ScopeLevel
+    ScopeName = if ($ScopeInfo) { $ScopeInfo.Name } else { ($Scope -split '/')[-1] }
+    IsTenantRoot = [bool]$ScopeInfo.IsTenantRoot
+   }
+  }
+
+  # MCSB (formerly Azure Security Benchmark) is not tagged 'Regulatory Compliance' but is a Defender standard
+  $MCSBId = "/providers/microsoft.authorization/policysetdefinitions/1f3afdf9-d0c9-4c3d-847f-89da613e70a8"
+
+  $PolicyResults = $Assignments | ForEach-Object {
+   $DefinitionId = $_.policyDefinitionId.ToLower()
+   $Definition = $SetDefinitions[$DefinitionId]
+   $Scope = if ($_.scope) { $_.scope } else { ($_.id -split '/providers/Microsoft.Authorization/policyAssignments/')[0] }
+   $ScopeDetails = & $GetScope $Scope
+
+   [PSCustomObject]@{
+    StandardName = if ($Definition.DisplayName) { $Definition.DisplayName } else { $_.assignmentDisplayName }
+    Source = "Azure Policy"
+    Category = $Definition.Category
+    Version = $Definition.Version
+    ScopeType = $ScopeDetails.ScopeType
+    ScopeLevel = $ScopeDetails.ScopeLevel
+    ScopeName = $ScopeDetails.ScopeName
+    IsTenantRoot = $ScopeDetails.IsTenantRoot
+    AssignmentName = $_.assignmentDisplayName
+    EnforcementMode = $_.enforcementMode
+    Scope = $Scope
+    AssignmentId = $_.id
+    PolicySetDefinitionId = $_.policyDefinitionId
+    IsStandard = ($Definition.Category -in @('Regulatory Compliance', 'Security Center')) -or ($DefinitionId -eq $MCSBId)
+   }
+  }
+
+  $DefenderResults = @()
+  if ($IncludeDefender) {
+   # Defender standards use a separate resource type and require one list call per scope.
+   Write-Verbose "Retrieving Defender for Cloud Standard assignments on $($ScopeNames.Count) scopes..."
+   $SecurityStandards = @{}
+   $DefenderAssignments = @{}
+   $ScopeIndex = 0
+   $CatalogCalls = 0
+   foreach ($ScopeEntry in $ScopeNames.Values) {
+    $ScopeIndex++
+    Write-Verbose "Defender scope $ScopeIndex/$($ScopeNames.Count): $($ScopeEntry.Name) ($($ScopeEntry.Id))"
+    $Found = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com$($ScopeEntry.Id)/providers/Microsoft.Security/standardAssignments?api-version=$SecurityAPIVersion" -ErrorAction Continue
+    $Found | Where-Object { $_.id } | ForEach-Object { $DefenderAssignments[$_.id.ToLower()] = $_ }
+    if ($SecurityStandards.Count -eq 0 -and $ScopeEntry.IsTenantRoot) {
+     $CatalogCalls++
+     Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://management.azure.com$($ScopeEntry.Id)/providers/Microsoft.Security/securityStandards?api-version=$SecurityAPIVersion" -ErrorAction Continue |
+      Where-Object { $_.id } | ForEach-Object { $SecurityStandards[($_.id -split '/')[-1].ToLower()] = $_.properties.displayName }
+    }
+   }
+   Write-Verbose "Defender lookup finished: $ScopeIndex assignment-list calls and $CatalogCalls standard-catalog calls to Get-AzureGraph (excluding any additional HTTP pages or retries)."
+
+   $DefenderResults = $DefenderAssignments.Values | ForEach-Object {
+    $Scope = ($_.id -split '/providers/Microsoft.Security/standardAssignments/')[0]
+    $ScopeDetails = & $GetScope $Scope
+    $StandardId = $_.properties.assignedStandard.id
+    $StandardName = $SecurityStandards[($StandardId -split '/')[-1].ToLower()]
+
+    [PSCustomObject]@{
+     StandardName = if ($StandardName) { $StandardName } else { $_.properties.displayName }
+     Source = "Defender Standard"
+     Category = "Defender for Cloud"
+     Version = $null
+     ScopeType = $ScopeDetails.ScopeType
+     ScopeLevel = $ScopeDetails.ScopeLevel
+     ScopeName = $ScopeDetails.ScopeName
+     IsTenantRoot = $ScopeDetails.IsTenantRoot
+     AssignmentName = $_.properties.displayName
+     EnforcementMode = $_.properties.effect
+     Scope = $Scope
+     AssignmentId = $_.id
+     PolicySetDefinitionId = $StandardId
+     IsStandard = $True
+    }
+   }
+  } else {
+   Write-Verbose "Skipping Defender for Cloud standards. Use -IncludeDefender to query them."
+  }
+
+  @($PolicyResults) + @($DefenderResults) | Where-Object { $_ } | Where-Object {
+   ($All -or $_.IsStandard) -and (-not $Standard -or $_.StandardName -like $Standard -or $_.AssignmentName -like $Standard)
+  } | Sort-Object StandardName, ScopeLevel, ScopeName
+ } catch {
+  $Exception = $($Error[0])
+  if ($Exception.ErrorDetails.message) {
+   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
+   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_ ($StatusCode | $StatusMessage)"
+  } else {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+ }
+}
 Function Get-AzureSubscriptions { # Get Azure Subscriptions using API with KQL
  [CmdletBinding()]
  Param (
@@ -17874,7 +18050,7 @@ Function Get-AzureGraph { # Send base graph request without any requirements
   While ($ContinueRunning) {
    try { # Try/Catch for Throttle issues
     if ($FirstRun) {
-     Write-Verbose "First Loop of Get-AzureGraph on $URL"
+     Write-Verbose "First Loop of Get-AzureGraph on $URL with Method ($Method)"
      # Call the REST-API
      if ($Body) {
       $CurrentResult = Invoke-RestMethod -Method $Method -headers $header -Uri $url -Body $Body -ContentType "application/json"
@@ -18816,8 +18992,10 @@ Function Get-AzureLogAnalyticsRequest { # Run cmd towards Log Analytics Workspac
 #region SECTION : Sentinel Specific Functions
 
 Function Get-SentinelUserInfo { # Get user logs from Sentinel
+ [CmdletBinding(DefaultParameterSetName = 'User')]
  Param (
-  [Parameter(Mandatory = $true)]$User,
+  [Parameter(Mandatory = $true, ParameterSetName = 'User')]$User,
+  [Parameter(Mandatory = $true, ParameterSetName = 'Device')][guid]$DeviceId,
   [switch]$ConditionalAccessShowOnlySuccess,
     [switch]$ConditionalAccessShowOnlyFailure,
   [switch]$ShowOnlySuccess,
@@ -18847,7 +19025,9 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
   if (! $WorkspaceID) {Throw "Workspace ID Not Found (Either set variable or pass the parameter)"} else {write-verbose "Found Workspace ID : $WorkspaceID"}
 
-  if ( ! (Assert-IsGUID $User) ) {
+  if ($PSCmdlet.ParameterSetName -eq 'Device') {
+   Write-Verbose "Searching for Device GUID : $DeviceId"
+  } elseif ( ! (Assert-IsGUID $User) ) {
    Write-Verbose "User GUID not provided, searching for user via UserType $UserType (slower)"
    # Get User ID from User Token
    Write-Verbose "Getting user Token"
@@ -18912,8 +19092,13 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   # Start of Query
   $QueryStart = 'union SigninLogs, AADNonInteractiveUserSignInLogs
  | where TimeGenerated between ('+$TimeFrame+')
- | where UserId == "'+$UserID+'"
  '
+
+  if ($PSCmdlet.ParameterSetName -eq 'Device') {
+   $QueryStart += '| where tostring(coalesce(DeviceDetail_dynamic, parse_json(DeviceDetail_string)).deviceId) == "'+$DeviceId+'" or AuthenticationDetails has "'+$DeviceId+'" '
+  } else {
+   $QueryStart += '| where UserId == "'+$UserID+'" '
+  }
 
  if ($AppFilter) {
    $QueryStart += '| where AppId =~ "'+$AppID+'" or ResourceIdentity =~ "'+$AppID+'" '
@@ -18941,7 +19126,10 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    Write-Verbose "Final Query : $Query"
    $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
    if (! $ResultRaw) { return }
-   return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
+    if ($PSCmdlet.ParameterSetName -eq 'Device') {
+     return ($ResultRaw | Select-Object @{Name = 'SearchedDevice'; Expression = { $DeviceId } }, *)
+    }
+    return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
   }
 
   # Get distinct IPs directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
@@ -18950,7 +19138,10 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
     Write-Verbose "Final Query : $Query"
    $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
    if (! $ResultRaw) { return }
-   return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
+    if ($PSCmdlet.ParameterSetName -eq 'Device') {
+     return ($ResultRaw | Select-Object @{Name = 'SearchedDevice'; Expression = { $DeviceId } }, *)
+    }
+    return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
   }
 
   # Add Unified Values
@@ -19063,6 +19254,34 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
+}
+Function Get-SentinelDeviceInfo {
+ [CmdletBinding()]
+ Param (
+  [Parameter(Mandatory = $true)][Alias('Device')][guid]$DeviceId,
+  [switch]$ConditionalAccessShowOnlySuccess,
+  [switch]$ConditionalAccessShowOnlyFailure,
+  [switch]$ShowOnlySuccess,
+  [switch]$ShowOnlyFailures,
+  [switch]$ShowOnlyInteractive,
+  [switch]$ConditionalAccessIgnoreNotApplied,
+  [switch]$SimplifiedQuery,
+  [switch]$IncludeMFARequirement,
+  [switch]$ShowRawResult,
+  [switch]$ShowUniqueDevices,
+  [switch]$ShowUniqueIPs,
+  $Token,
+  $ResultTypeExclusion,
+  $ResultTypeInclusion,
+  $AzureMonitorToken,
+  $Duration,
+  $StartDuration,
+  $EndDuration,
+  $WorkspaceID,
+  $AppFilter
+ )
+
+ Get-SentinelUserInfo @PSBoundParameters
 }
 Function Get-SentinelAppInfo { # Get App logs from Sentinel
  Param (
@@ -20070,6 +20289,8 @@ Function Get-AzureServicePrincipalSignInLogs {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
+
 #endregion SECTION : Sentinel Specific Functions
 #region SECTION : Mail Management
 
