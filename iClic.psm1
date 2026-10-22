@@ -14790,9 +14790,10 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
 Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service principal, Assignement IDs are recommended, but UserName is possible but will be a lot slower. Uses Rest API with Token
  Param (
   [parameter(Mandatory = $true)][Alias('ServicePrincipalID')]$ServicePrincipal, # Service Principal To Update (DisplayName, AppID or Object ID)
-  [parameter(Mandatory = $true)]$ObjectToAddID, # User or group or object to add
+  [parameter(Mandatory = $true)][Alias('ObjectToAddID')]$Member,
   $AppRole, # AppRole to add (default : User)
-  $Token
+  $Token,
+  [ValidateSet("userPrincipalName","groups","ServicePrincipals")]$Type = "userPrincipalName"
  )
  Try {
  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
@@ -14814,6 +14815,21 @@ Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service pr
  if (! $ServicePrincipalInfo.ID) { Throw "Service Principal not found: $ServicePrincipal" }
  $ServicePrincipalID = $ServicePrincipalInfo.ID
 
+ if (Assert-IsGUID $Member) {
+  $MemberGUID = $Member
+ } else {
+  $MemberEscaped = [System.Uri]::EscapeDataString(($Member -replace "'", "''"))
+  if ($Type -eq "userPrincipalName") {
+   $MemberURI = "https://graph.microsoft.com/v1.0/users?`$count=true&`$select=id&`$filter=userPrincipalName eq '$MemberEscaped'"
+  } else {
+   $MemberURI = "https://graph.microsoft.com/v1.0/$Type`?`$filter=displayname eq '$MemberEscaped'"
+  }
+  $MemberGUID = (Invoke-RestMethod -Method GET -Headers $headers -Uri $MemberURI -ErrorAction Stop).Value.Id
+ }
+
+ if (! $MemberGUID) { Throw "$Member not found as $Type" }
+ if (@($MemberGUID).Count -ne 1) { Throw "Multiple members found for $Member as $Type; use an Object ID" }
+
  if ($AppRole) {
   if (Assert-IsGUID $AppRole) {
    $AppRoleID = $AppRole
@@ -14825,7 +14841,7 @@ Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service pr
  }
 
  $Body = (@{
-  "principalId" = "$ObjectToAddID"
+  "principalId" = "$MemberGUID"
   "resourceId" =  "$ServicePrincipalID"
  })
 
@@ -14847,8 +14863,7 @@ Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service pr
  # $CMDParams ;  return
  Invoke-RestMethod @CMDParams
  } catch {
-  # write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $(($Error[0].ErrorDetails.message | ConvertFrom-Json).error.message)"
-  write-host -foregroundcolor "Red" -Object "Error adding permissions $ObjectToAddID to app $ServicePrincipalID : $($Error[0])"
+  write-host -foregroundcolor "Red" -Object "Error adding permissions $Member to app $ServicePrincipalID : $($Error[0])"
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
