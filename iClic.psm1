@@ -14112,14 +14112,11 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -ErrorAction Stop
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -ErrorAction Stop -TokenOnly
 
   # Resolve the service principal from a single application input.
-  if ($authDetails.Method -eq "Token") {
-   $ResolvedServicePrincipal = Get-AzureServicePrincipal -Application $Application -Token $authDetails.Token -ErrorAction Stop
-  } else {
-   $ResolvedServicePrincipal = Get-AzureServicePrincipal -Application $Application -ErrorAction Stop
-  }
+  $ResolvedServicePrincipal = Get-AzureServicePrincipal -Application $Application -Token $authDetails.Token -ErrorAction Stop
+
   if (@($ResolvedServicePrincipal).Count -gt 1) {
    throw "Multiple service principals found for Application '$Application'. Please pass a unique identifier."
   }
@@ -14130,20 +14127,11 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   # Get App Assignements
   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
 
-  if ($authDetails.Method -eq "Token") {
-   # $AppAssigments = (Invoke-RestMethod -Method GET -headers $authDetails.Header -Uri $URI).Value
-   $AppAssigments = get-azuregraph -GraphRequest $URI -Token $authDetails.Token
-  } else {
-   $AppAssigments = (az rest --method GET --uri $URI --header Content-Type=application/json | ConvertFrom-Json).Value
-  }
+  $AppAssigments = get-azuregraph -GraphRequest $URI -Token $authDetails.Token
+  
   # If App Roles is selected add the information to the result
   If ($ShowAppRole) {
-   if ($authDetails.Method -eq "Token") {
-    $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token
-   } else {
-    $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID
-   }
-
+   $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token
    $AppAssigments | ForEach-Object {
     if ($AppRole) { $CurrentRole = $AppRole[$AppRole.RuleID.indexof($_.appRoleId)] }
     $_ | Add-Member -MemberType NoteProperty -Name RoleName -Value $CurrentRole.value
@@ -14168,21 +14156,13 @@ Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assign
   $Token
  )
   Try {
-   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-   if ($authDetails.Method -eq "Token") {
-   $headers = $authDetails.Header
-   if ( ! $AssignmentID) {
-    $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID -Token $authDetails.Token | Where-Object principalDisplayName -eq $UserDisplayName
-    if ( ! $PermissionInfo) { Throw "$UserDisplayName was not found" } else { $AssignmentID = $PermissionInfo.id }
-   }
-   Invoke-RestMethod -Method DELETE -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
-  } else {
-   if ( ! $AssignmentID) {
-    $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID | Where-Object principalDisplayName -eq $UserDisplayName
-    if ( ! $PermissionInfo) { Throw "$UserDisplayName was not found" } else { $AssignmentID = $PermissionInfo.id }
-   }
-   az rest --method DELETE --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $headers = $authDetails.Header
+  if ( ! $AssignmentID) {
+   $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID -Token $authDetails.Token | Where-Object principalDisplayName -eq $UserDisplayName
+   if ( ! $PermissionInfo) { Throw "$UserDisplayName was not found" } else { $AssignmentID = $PermissionInfo.id }
   }
+  Invoke-RestMethod -Method DELETE -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
  } Catch {
   Write-Error $_
  }
@@ -15198,69 +15178,114 @@ Function Add-AzureRole {
 #endregion SECTION : User Role Assignment (Not RBAC)
 #region SECTION : Devices
 
-Function Get-AzureDeviceObjectIDFromName {
+Function Get-AzureDeviceInfo { # Get Azure Device Information
  param(
-  [parameter(Mandatory=$true)][String]$DeviceName,
-  [parameter(Mandatory=$true)]$Token
- )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- $RequestURL = "https://graph.microsoft.com/v1.0/devices?`$filter=displayName eq '$DeviceName'&`$select=id,deviceId,displayName"
- $Result = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
- if ($Result.Value) {
-  return $Result.Value
- } else {
-  Write-host -ForegroundColor Red "Device $DeviceName not found"
- }
-}
-Function Get-AzureDeviceInfo {
- param(
-  [parameter(Mandatory=$true)][GUID]$DeviceID,
+  [parameter(Mandatory=$true)]$Device,
   $Token
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+  if (! (Assert-IsGUID -Value $Device)) {
+   $DeviceInfo = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/devices?`$filter=displayName eq '$Device'"
+   if ($DeviceInfo) {
+    $DeviceID = $DeviceInfo.id
+   } else {
+    Throw "Device $Device not found"
+   }
+  } else {
+   $DeviceID = $Device
+  }
 
   $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/devices/$DeviceID"
 
   if ($Result) {
    return $Result
   } else {
-   Write-host -ForegroundColor Red "Device $DeviceID not found"
+   Throw "Device $DeviceID not found"
   }
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 
 }
-Function Get-AzureDevices {
- param(
-  [parameter(Mandatory=$true)][String]$DeviceName,
-  [parameter(Mandatory=$true)]$Token
+Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
+ Param (
+  [Parameter(Mandatory)][Alias("UserID")]$User,
+  $ValuesToShow = "displayName,deviceOwnership,isCompliant,enrollmentType,enrollmentProfileName,managementType,profileType,trustType,manufacturer,accountEnabled,approximateLastSignInDateTime,createdDateTime",
+  $Token # Access Token retrieved with Get-AzureGraphAPIToken
  )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- $RequestURL = "https://graph.microsoft.com/v1.0/devices?`$filter=startswith(displayname,'$DeviceName')"
 
- $FullResult = @()
- $CurrentResult = (Invoke-RestMethod -Method GET -headers $headers -Uri $RequestURL)
- $FullResult += $CurrentResult.value
- While ($CurrentResult.'@odata.nextLink') {
-  $CurrentResult = Invoke-RestMethod -Method GET -headers $headers -Uri $CurrentResult.'@odata.nextLink'
-  $FullResult += $CurrentResult.value
- }
- if ($FullResult) {
-  return $FullResult
- } else {
-  Write-host -ForegroundColor Red "Device $DeviceName not found"
+ Try {
+
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/users/$User/ownedDevices?`$select=$ValuesToShow"
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates for Devices vs Users
+ [CmdletBinding(DefaultParameterSetName = 'Set')]
+ Param (
+  [Parameter(Mandatory)]$Device,
+  [Parameter(Mandatory)][Int32][ValidateRange(1,15)]$ExtensionAttributeNumber,
+  [Parameter(Mandatory, ParameterSetName = 'Set')]$Value,
+  [Switch]$ShowResult,
+  [Parameter(Mandatory, ParameterSetName = 'Clear')][Switch]$Clear,
+  $Token
+ )
+  Try {
+   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+
+   if (! (Assert-IsGUID -Value $Device)) {
+    $DeviceObjectID = (Get-AzureDeviceInfo -Device $Device -Token $authDetails.Token).id
+   } else {
+    $DeviceObjectID = $Device
+   }
+
+   if (! $DeviceObjectID) { Throw "Device not found with provided value: $Device" }
+
+   if ($Clear) { $Value = $null }
+
+   $ParamJson = @{
+    "extensionAttributes" = @{
+     $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
+    }
+   } | ConvertTo-json
+
+
+   Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID" -Method PATCH -Body $ParamJson
+   if ($ShowResult) {
+    $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
+    Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID" | Select-Object displayName,userPrincipalName, @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
+   }
+  } catch {
+   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+  }
+}
+Function Get-AzureDeviceIntuneAssignementGroups { # Find if a group is used in Intune, and show in which policies
+ Param (
+  [Parameter(Mandatory)]$Group,
+  $Token
+ )
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  if (! (Assert-IsGUID -Value $Group -ErrorAction Stop)) {
+   $GroupID = (Get-AzureADGroup -Group $Group -Token $authDetails.Token -ErrorAction Stop).id
+  } else {
+   $GroupID = $Group
+  }
+  if (! $GroupID) { Throw "Group not found with provided value: $Group" }
+  $AllIntunePoliciesWithAssignements = Get-AzureGraph -Token $authDetails.Token -GraphRequest 'https://graph.microsoft.com/v1.0/deviceManagement/deviceConfigurations?$expand=assignments' -ErrorAction Stop
+  Write-Verbose "Found $($AllIntunePoliciesWithAssignements.Count) Intune Device Configurations with Assignments, filtering for GroupID $GroupID"
+  $AllIntunePoliciesWithAssignements | Where-Object {$_.assignments.target.GroupID -eq $GroupID}
+
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
+
 #endregion SECTION : Devices
 #region SECTION : Administrative Unit Management
 
@@ -15281,6 +15306,7 @@ Function Get-AzureADAdministrativeUnit { # Get all Administrative Units with ass
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
 #endregion SECTION : Administrative Unit Management
 #region SECTION : Schema Extensions
 
@@ -16337,7 +16363,7 @@ Function Assert-IsAADUserInAADGroup { # Check if a User is in a AAD Group (Not r
    }
    if ( (! $MemberID) -and ($MemberType -eq "Device" -or $MemberType -eq "Auto") ) {
     Write-Verbose "Searching for Devices"
-    $MemberID = (Get-AzureDeviceObjectIDFromName -DeviceName $Member -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
+    $MemberID = (Get-AzureDeviceInfo -Device $Member -Token $authDetails.Token -ErrorAction SilentlyContinue).ID
    }
    if (! $MemberID) { Throw "Member $Member Not Found"} else { Write-Verbose "Found MemberID $MemberID"}
   } else {
@@ -16936,6 +16962,7 @@ Function Sync-UserGroupMembership {
 
  $CurrentMembers = $null ; $CurrentMemberHash = $null ; $DesiredUserHash = $null ; $UsersToAdd = $null ; $UsersToRemove = $null
 }
+
 #endregion SECTION : AAD Group Management
 #region SECTION : AAD User Management
 
@@ -20691,83 +20718,6 @@ Function New-UserEmailContentForTAP { # Used to prepare TAP email content in a s
 }
 
 #endregion SECTION : Mail Management
-#region SECTION : Azure Device management
-
-Function Get-AzureADUserOwnedDevice { # Find Owned Devices for a User, useful to find all devices a user has registered and can be used for Conditional Access
- Param (
-  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
-  [parameter(Mandatory = $true)]$UserID,
-  $ValuesToShow = "displayName,deviceOwnership,isCompliant,enrollmentType,enrollmentProfileName,managementType,profileType,trustType,manufacturer,accountEnabled,approximateLastSignInDateTime,createdDateTime"
- )
- if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { write-error "Token is invalid, provide a valid token" ; Return }
- $headers = @{
-  'Authorization' = "$($Token.token_type) $($Token.access_token)"
-  'Content-type'  = "application/json"
- }
- (Invoke-RestMethod -Method GET -headers $headers -Uri "https://graph.microsoft.com/v1.0/users/$UserID/ownedDevices?`$select=$ValuesToShow").Value
-}
-Function Set-AzureDeviceExtensionAttribute { # Same as User but with the updates for Devices vs Users
- [CmdletBinding(DefaultParameterSetName = 'Set')]
- Param (
-  [Parameter(Mandatory)][GUID]$DeviceObjectID,
-  [Parameter(Mandatory)][Int32][ValidateRange(1,12)]$ExtensionAttributeNumber,
-  [Parameter(Mandatory, ParameterSetName = 'Set')]$Value,
-  $Token,
-  [Switch]$ShowResult,
-  [Parameter(Mandatory, ParameterSetName = 'Clear')][Switch]$Clear
- )
-  Try {
-   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-   if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-   $header = $authDetails.Header
-
-  if ($Clear) { $Value = $null }
-   $params = @{
-    "extensionAttributes" = @{
-     $("extensionAttribute"+$ExtensionAttributeNumber) = $Value
-    }
-   }
-
-   $ParamJson = $params | convertto-json
-   Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID"  -Body $ParamJson | Out-Null
-   if ($ShowResult) {
-    $ExtensionAttributeName = $("extensionAttribute"+$ExtensionAttributeNumber)
-    Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/v1.0/devices/$DeviceObjectID" | Select-Object displayName,userPrincipalName,
-     @{name="extensionAttribute";expression={$_.onPremisesExtensionAttributes.$ExtensionAttributeName}}
-   }
-  } catch {
-   $Exception = $($Error[0])
-   $StatusCodeJson = $Exception.ErrorDetails.message
-   if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-   $StatusMessageJson = $Exception.ErrorDetails.message
-   if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-   if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error $($Error[0].TargetObject)" ; $StatusMessage = $($Error[0])}
-   Write-host -ForegroundColor Red -Object "Error setting extension attribute $ExtensionAttributeNumber for Device $DeviceObjectID ($StatusCode | $StatusMessage))"
-  }
-}
-Function Get-AzureDeviceIntuneAssignementGroups {
- Param (
-  [Parameter(Mandatory)]$Group,
-  $Token
- )
- Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  if (! (Assert-IsGUID -Value $Group -ErrorAction Stop)) {
-   $GroupID = (Get-AzureADGroup -Group $Group -Token $authDetails.Token -ErrorAction Stop).id
-  } else {
-   $GroupID = $Group
-  }
-  if (! $GroupID) { Throw "Group not found with provided value: $Group" }
-  $AllIntunePoliciesWithAssignements = Get-AzureGraph -Token $authDetails.Token -GraphRequest 'https://graph.microsoft.com/v1.0/deviceManagement/deviceConfigurations?$expand=assignments' -ErrorAction Stop
-  Write-Verbose "Found $($AllIntunePoliciesWithAssignements.Count) Intune Device Configurations with Assignments, filtering for GroupID $GroupID"
-  $AllIntunePoliciesWithAssignements | Where-Object {$_.assignments.target.GroupID -eq $GroupID}
-
- } Catch {
-  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
- }
-}
-
-#endregion SECTION : Azure Device management
 #region SECTION : Loaded on Import
 
 #Variables
