@@ -17425,12 +17425,15 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]$Certificate,
   # This switch activates the 'Interactive' parameter set.
   [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive,
+  [parameter(Mandatory = $False, ParameterSetName="Interactive")][ValidateRange(1, 3600)][int]$InteractiveTimeoutSeconds = 300,
   # Parameter for Managed Identity Set ---
   [parameter(Mandatory = $True, ParameterSetName="ManagedIdentity")][switch]$ManagedIdentity,
   # Dedicated parameter for User-Assigned Managed Identity ---
   [parameter(Mandatory = $False, ParameterSetName="ManagedIdentity")][string]$UserAssignedClientID
  )
 
+ $httpListener = $null
+ $context = $null
  try {
   # --- Endpoint and Body setup based on Parameter Set ---
   $tokenResponse = $null
@@ -17612,23 +17615,40 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     "&response_type=code" +
     "&redirect_uri=$([System.Web.HttpUtility]::UrlEncode($redirectUri))" +
     "&response_mode=query" +
+    "&prompt=select_account" +
     "&scope=$([System.Web.HttpUtility]::UrlEncode($Scope))"
 
-   Write-Host "Launching browser for interactive login. Please complete authentication..." -ForegroundColor Yellow
-   Start-Process $authUrl
+   Write-Warning "Launching browser for interactive login. Select the intended account. Press Ctrl+C in PowerShell to cancel, or wait up to $InteractiveTimeoutSeconds seconds. If the wrong browser opens, open the URL below in the intended browser or a private window."
+   Write-Host $authUrl
+   Start-Process $authUrl -ErrorAction Stop
 
    # 3. Wait for the user to login and be redirected
-   $context = $httpListener.GetContext()
+   $contextTask = $httpListener.GetContextAsync()
+   $loginTimer = [System.Diagnostics.Stopwatch]::StartNew()
+   while (-not $contextTask.IsCompleted) {
+    if ($loginTimer.Elapsed.TotalSeconds -ge $InteractiveTimeoutSeconds) {
+     throw "Interactive login timed out after $InteractiveTimeoutSeconds seconds. Run the command again and use the intended browser and account."
+    }
+    [void]$contextTask.Wait(200)
+   }
+   $context = $contextTask.GetAwaiter().GetResult()
    $authCode = $context.Request.QueryString["code"]
+   $authError = $context.Request.QueryString["error"]
+   $authErrorDescription = $context.Request.QueryString["error_description"]
 
    # 4. Send a response to the browser and stop the listener
-   $responseHtml = "<html><body><h1>Authentication successful!</h1><p>You can close this browser tab now.</p></body></html>"
+   $responseHtml = if ($authError -or -not $authCode) {
+    "<html><body><h1>Authentication failed or was cancelled.</h1><p>Return to PowerShell for details. You can close this browser tab.</p></body></html>"
+   } else {
+    "<html><body><h1>Authentication response received.</h1><p>Return to PowerShell to check the result. You can close this browser tab.</p></body></html>"
+   }
    $buffer = [System.Text.Encoding]::UTF8.GetBytes($responseHtml)
    $context.Response.ContentLength64 = $buffer.Length
    $context.Response.OutputStream.Write($buffer, 0, $buffer.Length)
    $context.Response.Close()
    $httpListener.Stop()
 
+    if ($authError) { throw "Interactive authentication failed: $authError. $authErrorDescription" }
    if (-not $authCode) { throw "Authentication failed or was cancelled. Authorization code not received." }
 
    # 5. Exchange the authorization code for an access token
@@ -17697,19 +17717,8 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    throw "Token acquisition failed for an unknown reason. ($Scope)"
   }
  } catch {
-  if ($PSCmdlet.ParameterSetName -eq "Interactive" -and $httpListener) {
-   Write-Verbose "Cleaning up HttpListener in catch block..."
-   try {
-    if ($context -and $context.Response) { $context.Response.Close() }
-   } catch {
-    Write-Verbose "Ignore errors closing the response context, it might be already closed or null"
-   }
-   try {
-    if ($httpListener.IsListening) { $httpListener.Stop() }
-    $httpListener.Close()
-   } catch {
-    Write-Verbose "Ignore errors stopping the listener"
-   }
+  if ($PSCmdlet.ParameterSetName -eq "Interactive") {
+   $PSCmdlet.ThrowTerminatingError($_)
   }
 
   # Use the $_ automatic variable, which reliably contains the current exception.
@@ -17720,6 +17729,19 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    Write-Error "Underlying Exception Message: $($_.Exception.Message)"
   }
   return $null
+ } finally {
+  if ($httpListener) {
+   try {
+    if ($context -and $context.Response) { $context.Response.Close() }
+   } catch {
+    Write-Verbose "Ignore errors closing the response context, it might be already closed or null"
+   }
+   try {
+    $httpListener.Close()
+   } catch {
+    Write-Verbose "Ignore errors closing the listener"
+   }
+  }
  }
 }
 Function Assert-IsTokenLifetimeValid { # Check validity of token
