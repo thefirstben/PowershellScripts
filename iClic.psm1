@@ -17425,6 +17425,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
   [parameter(Mandatory = $True, ParameterSetName="Certificate")]$Certificate,
   # This switch activates the 'Interactive' parameter set.
   [parameter(Mandatory = $True, ParameterSetName="Interactive")][switch]$Interactive,
+  [parameter(Mandatory = $False, ParameterSetName="Interactive")][string]$RefreshToken,
   [parameter(Mandatory = $False, ParameterSetName="Interactive")][ValidateRange(1, 3600)][int]$InteractiveTimeoutSeconds = 300,
   # Parameter for Managed Identity Set ---
   [parameter(Mandatory = $True, ParameterSetName="ManagedIdentity")][switch]$ManagedIdentity,
@@ -17575,6 +17576,27 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
    Write-Verbose "Using Interactive Login"
    $interactiveTenant = if ($TenantID) { $TenantID } else { "organizations" }
    $tokenEndpoint = "https://login.microsoftonline.com/$interactiveTenant/oauth2/v2.0/token"
+    if ($RefreshToken) {
+     $Body = @{
+      grant_type = 'refresh_token'
+      client_id = $ApplicationID
+      refresh_token = $RefreshToken
+      scope = $Scope
+     }
+     try {
+      $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $Body -ErrorAction Stop
+      if (-not $tokenResponse.refresh_token) {
+      $tokenResponse | Add-Member -NotePropertyName refresh_token -NotePropertyValue $RefreshToken -Force
+      }
+     } catch {
+      $OAuthError = $null
+      try { $OAuthError = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction Stop } catch { }
+      if ($OAuthError.error -notin 'invalid_grant', 'interaction_required', 'consent_required') { throw }
+      Write-Warning "Silent token renewal requires sign-in or consent for $Scope."
+     }
+    }
+    if (-not $tokenResponse) {
+    $InteractiveScope = "$Scope offline_access"
    # --- Native Interactive Authentication Flow ---
 
    # 1. Set up a listener on localhost to catch the redirect
@@ -17616,7 +17638,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     "&redirect_uri=$([System.Web.HttpUtility]::UrlEncode($redirectUri))" +
     "&response_mode=query" +
     "&prompt=select_account" +
-    "&scope=$([System.Web.HttpUtility]::UrlEncode($Scope))"
+    "&scope=$([System.Web.HttpUtility]::UrlEncode($InteractiveScope))"
 
    Write-Warning "Launching browser for interactive login. Select the intended account. Press Ctrl+C in PowerShell to cancel, or wait up to $InteractiveTimeoutSeconds seconds. If the wrong browser opens, open the URL below in the intended browser or a private window."
    Write-Host $authUrl
@@ -17657,9 +17679,10 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
     client_id  = $ApplicationID
     code    = $authCode
     redirect_uri  = $redirectUri
-    scope   = $Scope
+    scope   = $InteractiveScope
    }
    $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $Body
+     }
   }
 
   # --- Process and return the token ---
@@ -17697,6 +17720,7 @@ Function Get-AzureGraphAPIToken { # Generate Graph API Token, Works with App Reg
 
    $token = [PSCustomObject]@{
     token_source        = $PSCmdlet.ParameterSetName
+    client_id           = if ($PSCmdlet.ParameterSetName -eq 'Interactive') { $ApplicationID } else { $LocalAppID }
     token_type          = $tokenResponse.token_type
     access_token        = $tokenResponse.access_token
     token_response      = $tokenResponse
