@@ -628,6 +628,20 @@ function Convert-SIDToAzureObjectId { # Get Azure ObjectID From SID (based on : 
 
  return $guid
 }
+function Convert-AzureObjectIDToSID {
+ [CmdletBinding()]
+ [OutputType([String])]
+ param(
+  [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+  [Guid]$ObjectID
+ )
+ process {
+  $bytes = $ObjectID.ToByteArray()
+  $array = New-Object 'UInt32[]' 4
+  [Buffer]::BlockCopy($bytes, 0, $array, 0, 16)
+  'S-1-12-1-' + ($array -join '-')
+ }
+}
 Function Convert-MacAddressFormat { # Convert Mac format to proper format [ Thanks Gemini ]
     <#
     .SYNOPSIS
