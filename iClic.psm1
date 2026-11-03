@@ -15486,6 +15486,8 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
   [string]$BaseURI = "https://dev.azure.com/"
  )
 
+ $AzureDevOpsServiceAppID = "499b84ac-1321-427f-aa17-267ca6975798" # Azure DevOps
+
  # Global Try/Catch for Auth + Execution
  try {
   # 1. Standardized Authentication
@@ -15493,7 +15495,9 @@ Function Get-ADO_Request { # Check documentation of API here : https://learn.mic
   # This ensures the header construction below always has valid token properties.
   try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  if ($authDetails.token.scope -ne '499b84ac-1321-427f-aa17-267ca6975798/.default') { throw "Token does not have the required scope. ADO Token is mandatory" }
+  $TokenScopes = ([string]$authDetails.token.scope) -split '\s+'
+  if (-not ($TokenScopes -contains "$AzureDevOpsServiceAppID/.default" -or
+            $TokenScopes -contains "$AzureDevOpsServiceAppID/user_impersonation")) { throw "Token does not have the required scope. ADO Token is mandatory" }
   } catch {
   Throw "Authentication failed: $($_.Exception.Message)"
   return
@@ -15574,13 +15578,10 @@ Function Get-ADOPermissions_Groups { # Get all ADO Permissions for all Projects 
  )
 
  Try {
- if (! $Token) { $Token = $global:ADOToken }
- if (! $Token) { throw "No Token provided and no global ADOToken available" }
- # if ($Token.scope -ne '499b84ac-1321-427f-aa17-267ca6975798/.default') { throw "Token does not have the required scope. ADO Token is mandatory" }
- # $TokenValid = Assert-IsTokenLifetimeValid -Token $Token
- # if (! $TokenValid) { throw "Token is invalid - Expiration : $($Token.expiration)" }
- if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
- if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
+  if (! $Token) { $Token = $global:ADOToken }
+  if (! $Token) { throw "No Token provided and no global ADOToken available" }
+  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
+  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
 
 
  # 1. Get Project List
@@ -15663,13 +15664,10 @@ Function Get-ADOProjectList { # Get All Azure DevOps project list | Uses on Get-
  )
  Try {
 
- if (! $Token) { $Token = $global:ADOToken }
- if (! $Token) { throw "No Token provided and no global ADOToken available" }
- # if ($Token.scope -ne '499b84ac-1321-427f-aa17-267ca6975798/.default') { throw "Token does not have the required scope. ADO Token is mandatory" }
- # $TokenValid = Assert-IsTokenLifetimeValid -Token $Token
- # if (! $TokenValid) { throw "Token is invalid - Expiration : $($Token.expiration)" }
- if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
- if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
+  if (! $Token) { $Token = $global:ADOToken }
+  if (! $Token) { throw "No Token provided and no global ADOToken available" }
+  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
+  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
 
   Get-ADO_Request -RequestURI "projects" -Token $Token -Organization $Organization
 
@@ -15685,16 +15683,12 @@ Function Get-ADOUsers { # Get All Azure DevOps Users | Uses on Get-ADO_Request
  )
  Try {
 
- if (! $Token) { $Token = $global:ADOToken }
- if (! $Token) { throw "No Token provided and no global ADOToken available" }
- # if ($Token.scope -ne '499b84ac-1321-427f-aa17-267ca6975798/.default') { throw "Token does not have the required scope. ADO Token is mandatory" }
- # $TokenValid = Assert-IsTokenLifetimeValid -Token $Token
- # if (! $TokenValid) { throw "Token is invalid - Expiration : $($Token.expiration)" }
- if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
- if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
+  if (! $Token) { $Token = $global:ADOToken }
+  if (! $Token) { throw "No Token provided and no global ADOToken available" }
+  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
+  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
 
-
- Get-ADO_Request -RequestURI "graph/users" -Token $Token -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
+  Get-ADO_Request -RequestURI "graph/users" -Token $Token -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
 
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -15706,14 +15700,11 @@ Function Get-ADOGroups { # Get All Azure DevOps Groups | Uses on Get-ADO_Request
   [Parameter(Mandatory = $false)]$Organization
  )
  Try {
+
  if (! $Token) { $Token = $global:ADOToken }
  if (! $Token) { throw "No Token provided and no global ADOToken available" }
- # if ($Token.scope -ne '499b84ac-1321-427f-aa17-267ca6975798/.default') { throw "Token does not have the required scope. ADO Token is mandatory" }
- # $TokenValid = Assert-IsTokenLifetimeValid -Token $Token
- # if (! $TokenValid) { throw "Token is invalid - Expiration : $($Token.expiration)" }
  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
-
 
   Get-ADO_Request -RequestURI "graph/groups" -Token $Token -Organization $Organization -BaseURI "https://vssps.dev.azure.com/"
 
@@ -15730,9 +15721,6 @@ Function Get-ADORepositoryList { # Get All Azure DevOps Repository from a single
  Try {
  if (! $Token) { $Token = $global:ADOToken }
  if (! $Token) { throw "No Token provided and no global ADOToken available" }
- # if ($Token.scope -ne '499b84ac-1321-427f-aa17-267ca6975798/.default') { throw "Token does not have the required scope. ADO Token is mandatory" }
- # $TokenValid = Assert-IsTokenLifetimeValid -Token $Token
- # if (! $TokenValid) { throw "Token is invalid - Expiration : $($Token.expiration)" }
  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
  
@@ -15773,7 +15761,7 @@ Function Get-ADORepositoryList { # Get All Azure DevOps Repository from a single
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-ADOProjectMembers {# Get all members of a Project (it lists only Groups AAD & ADO) | Uses on Get-ADO_Request
+Function Get-ADOProjectMembers {# Get all members of a Project (it lists only Groups AAD & ADO)
  <#
  .SYNOPSIS
   Lists all Groups (ADO & AAD) in a specific Project.
@@ -15797,9 +15785,6 @@ Function Get-ADOProjectMembers {# Get all members of a Project (it lists only Gr
 
  if (! $Token) { $Token = $global:ADOToken }
  if (! $Token) { throw "No Token provided and no global ADOToken available" }
- # if ($Token.scope -ne '499b84ac-1321-427f-aa17-267ca6975798/.default') { throw "Token does not have the required scope. ADO Token is mandatory" }
- # $TokenValid = Assert-IsTokenLifetimeValid -Token $Token
- # if (! $TokenValid) { throw "Token is invalid - Expiration : $($Token.expiration)" }
  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
 
@@ -15834,7 +15819,6 @@ Function Get-ADOProjectMembers {# Get all members of a Project (it lists only Gr
  Write-Verbose "2. Resolving Scope Descriptor..."
  try {
   $DescUrl = "$VsspsUrl/_apis/graph/descriptors/$ProjectId`?api-version=7.0-preview"
-  # $DescRes = Invoke-RestMethod -Uri $DescUrl -Method Get -Headers $Header -ErrorAction Stop
   $DescRes = Get-AzureGraph -GraphRequest $DescUrl -Token $token -ErrorAction Stop
 
   $ScopeDescriptor = $DescRes
@@ -15848,7 +15832,6 @@ Function Get-ADOProjectMembers {# Get all members of a Project (it lists only Gr
  Write-Verbose "3. Fetching groups..."
  try {
   $GroupsUrl = "$VsspsUrl/_apis/graph/groups`?scopeDescriptor=$ScopeDescriptor&api-version=7.0-preview"
-  # $Response = Invoke-RestMethod -Uri $GroupsUrl -Method Get -Headers $Header -ErrorAction Stop
   $Response = Get-AzureGraph -GraphRequest $GroupsUrl -Token $token -ErrorAction Stop
 
   $AllGroups = $Response
@@ -15878,25 +15861,19 @@ Function Get-ADOProjectMembers {# Get all members of a Project (it lists only Gr
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requires Group Descriptor in Azure DevOps) | Uses on Get-ADO_Request
+Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requires Group Descriptor in Azure DevOps)
  param (
   [Parameter(Mandatory)][string]$GroupDescriptor,
-  [Parameter(Mandatory)]$Token,
-  [Parameter(Mandatory)][string]$Organization,
+  $Token,
+  $Organization,
   [Switch]$ShowAll
  )
 
- # 1. Standardized Authentication
  try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
- } catch {
-  Write-Error "Authentication check failed: $($_.Exception.Message)"
-  return
- }
-
- $Header = @{
-  'Authorization' = "$($authDetails.token.token_type) $($authDetails.token.access_token)"
- }
+  if (! $Token) { $Token = $global:ADOToken }
+  if (! $Token) { throw "No Token provided and no global ADOToken available" }
+  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
+  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
 
  # 1. Clean Input
  $CleanDescriptor = ($GroupDescriptor -split '\?')[0].Trim().Trim("'").Trim('"')
@@ -15908,9 +15885,7 @@ Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requir
  # 2. Get Membership List (The IDs)
  try {
   $MemUrl = "$BaseUrl/_apis/graph/memberships/$EncodedDescriptor`?direction=down&api-version=7.0-preview"
-  # $Response = Invoke-RestMethod -Uri $MemUrl -Method Get -Headers $Header
-  $Response = Get-AzureGraph -GraphRequest $MemUrl -Token $authDetails.token -ErrorAction Stop
-  $MembershipLinks = $Response.value
+  $MembershipLinks = Get-AzureGraph -GraphRequest $MemUrl -Token $Token -ErrorAction Stop
  } catch {
   Write-Error "Failed to get members. API Error: $($_.Exception.Message)"
   return
@@ -15937,7 +15912,7 @@ Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requir
   if (-not $MemberDetails) {
   try {
    $Url = "$BaseUrl/_apis/graph/users/$EncodedMember`?api-version=7.0-preview"
-   $MemberDetails = Invoke-RestMethod -Uri $Url -Method Get -Headers $Header -ErrorAction Stop
+   $MemberDetails = Get-AzureGraph -GraphRequest $Url -Token $Token -ErrorAction Stop
    $MemberDetails | Add-Member -MemberType NoteProperty -Name "Type" -Value "User" -Force
   } catch {
    Write-Verbose "  [$MemberDescriptor] Not a User. Checking Group..."
@@ -15948,7 +15923,7 @@ Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requir
   if (-not $MemberDetails) {
   try {
    $Url = "$BaseUrl/_apis/graph/groups/$EncodedMember`?api-version=7.0-preview"
-   $MemberDetails = Invoke-RestMethod -Uri $Url -Method Get -Headers $Header -ErrorAction Stop
+   $MemberDetails = Get-AzureGraph -GraphRequest $Url -Token $Token -ErrorAction Stop
    $MemberDetails | Add-Member -MemberType NoteProperty -Name "Type" -Value "Group" -Force
   } catch {
    Write-Verbose "  [$MemberDescriptor] Not a Group. Checking Service Principal..."
@@ -15959,7 +15934,7 @@ Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requir
   if (-not $MemberDetails) {
   try {
    $Url = "$BaseUrl/_apis/graph/serviceprincipals/$EncodedMember`?api-version=7.0-preview"
-   $MemberDetails = Invoke-RestMethod -Uri $Url -Method Get -Headers $Header -ErrorAction Stop
+   $MemberDetails = Get-AzureGraph -GraphRequest $Url -Token $Token -ErrorAction Stop
    $MemberDetails | Add-Member -MemberType NoteProperty -Name "Type" -Value "ServicePrincipal" -Force
   } catch {
    Write-Verbose "  [$MemberDescriptor] Not a Service Principal."
@@ -15985,6 +15960,9 @@ Function Get-ADOGroupMembers { # Get all members of a Azure DevOps Group (Requir
   $FullMembers | Sort-Object displayName
  } else {
   $FullMembers | Sort-Object displayName | Select-Object displayName, principalName, Type, descriptor
+ }
+ } Catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function New-ADOAADGroup { # Create AAD Group inside Azure DevOps based on AAD GRoup
