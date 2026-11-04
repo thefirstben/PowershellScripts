@@ -14571,13 +14571,18 @@ Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal a
  }
 }
 Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on enterprise app to ensure Assignement is required
+ [CmdletBinding()]
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID,
+  [Parameter(Mandatory = $true, HelpMessage = 'Specify the Application (GUID, AppID, ObjectID, or Display Name).')]
+  [Alias('ServicePrincipalID','AppID','ID','ObjectID','DisplayName','AppName')][string]$Application,
+  [Parameter(HelpMessage = 'When Application is a GUID, prioritize ObjectID over AppID for lookup.')][switch]$PriorityObjectID,
   $Token
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID"
+  $AppInfo = Get-AzureServicePrincipal -Application $Application -PriorityObjectID:$PriorityObjectID -Token $authDetails.Token -ErrorAction Stop
+  if (! $AppInfo.ID) { Throw "Service Principal not found with Application : $Application" }
+  $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$($AppInfo.ID)"
   $CurrentValue = Get-AzureGraph -Token $authDetails.Token -GraphRequest $URI -ErrorAction Stop
   if ( ! $CurrentValue.AppID ) { Throw "Service Principal not found" }
   $Body = (@{
@@ -14586,7 +14591,7 @@ Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on en
   $BodyJSON = $Body | ConvertTo-JSON -Depth 6
 
   Get-AzureGraph -Token $authDetails.Token -GraphRequest $URI -ErrorAction Stop -Method PATCH -Body $BodyJSON
-  Write-Verbose "Assignement required value set to true on $ServicePrincipalID"
+  Write-Verbose "Assignement required value set to true on $($AppInfo.ID)"
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
