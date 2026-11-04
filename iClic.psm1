@@ -19168,6 +19168,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [switch]$ShowRawResult,
   [switch]$ShowUniqueDevices,
   [switch]$ShowUniqueIPs,
+  [switch]$ShowUniqueApps,
   $Token,
   $ResultTypeExclusion, # Exclude specific result types (e.g. "50140" ("Keep me signed in"), "50126" ("Incorrect Password"), "53003" ("Blocked by CA Policy"), "50076" ("Standard MFA"))
   $ResultTypeInclusion, # Include only specific result types (e.g. "90094" for "Admin consent is required")
@@ -19296,6 +19297,18 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   # Get distinct IPs directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
   if ($ShowUniqueIPs) {
    $Query = $QueryStart + '| where isnotempty(IPAddress) | summarize ConnectionCount = count() by IPAddress | sort by ConnectionCount desc'
+    Write-Verbose "Final Query : $Query"
+   $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
+   if (! $ResultRaw) { return }
+    if ($PSCmdlet.ParameterSetName -eq 'Device') {
+     return ($ResultRaw | Select-Object @{Name = 'SearchedDevice'; Expression = { $DeviceId } }, *)
+    }
+    return ($ResultRaw | Select-Object @{Name = 'SearchedUser'; Expression = { $User } }, *)
+  }
+
+  # Get distinct Apps/Resources directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
+  if ($ShowUniqueApps) {
+   $Query = $QueryStart + '| where isnotempty(AppDisplayName) and isnotempty(ResourceDisplayName) | summarize ConnectionCount = count() by AppDisplayName, AppId, ResourceDisplayName, ResourceServicePrincipalId | sort by ConnectionCount desc'
     Write-Verbose "Final Query : $Query"
    $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
    if (! $ResultRaw) { return }
