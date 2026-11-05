@@ -14163,17 +14163,33 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
 }
 Function Remove-AzureServicePrincipalAssignments { # Remove Assignements, Assignement IDs are recommended, but UserName is possible but will be a lot slower
  Param (
-  [Parameter(Mandatory=$true)]$ServicePrincipalID,
-  [Parameter(Mandatory=$true, ParameterSetName="Direct")]$AssignmentID, # Strongly Recommended and a lot faster
-  [Parameter(Mandatory=$true, ParameterSetName="Search")]$UserDisplayName,
+  [Parameter(Mandatory=$true)][Alias("ServicePrincipalID","Application","ServicePrincipalName")][string]$ServicePrincipal, # GUID, AppID or Display Name
+  [Parameter(Mandatory=$true)][Alias("AssignmentID","UserDisplayName")][string]$Assignment, # Assignment GUID (faster) or principal display name
   $Token
  )
-  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+ Try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly -ErrorAction Stop
   $headers = $authDetails.Header
-  if ( ! $AssignmentID) {
-   $PermissionInfo = Get-AzureServicePrincipalAssignments -ServicePrincipalID $ServicePrincipalID -Token $authDetails.Token | Where-Object principalDisplayName -eq $UserDisplayName
-   if ( ! $PermissionInfo) { Throw "$UserDisplayName was not found" } else { $AssignmentID = $PermissionInfo.id }
+  $GuidRef = [guid]::Empty
+
+  # Resolve the Service Principal (Get-AzureServicePrincipal handles GUIDs and names)
+  $ResolvedServicePrincipal = @(Get-AzureServicePrincipal -Application $ServicePrincipal -Token $authDetails.Token -ErrorAction Stop)
+  if ($ResolvedServicePrincipal.Count -gt 1) {
+   throw "Multiple service principals found for '$ServicePrincipal'. Please pass a unique identifier."
+  }
+  $ServicePrincipalID = $ResolvedServicePrincipal[0].ID
+  if (! $ServicePrincipalID) { Throw "Service Principal '$ServicePrincipal' not found" }
+
+  if ([guid]::TryParse($Assignment, [ref]$GuidRef)) {
+   $AssignmentID = $Assignment
+  } else {
+   $PermissionInfo = @(Get-AzureServicePrincipalAssignments -Application $ServicePrincipalID -Token $authDetails.Token -ErrorAction Stop | Where-Object principalDisplayName -eq $Assignment)
+   if ($PermissionInfo.Count -eq 0) { Throw "Assignment '$Assignment' was not found" }
+   if ($PermissionInfo.Count -gt 1) {
+    $Details = ($PermissionInfo | ForEach-Object { "$($_.principalDisplayName) [$($_.principalType)] (AssignmentID: $($_.id))" }) -join "; "
+    Throw "Multiple assignments found for '$Assignment': $Details. Please use the AssignmentID."
+   }
+   $AssignmentID = $PermissionInfo[0].id
   }
   Invoke-RestMethod -Method DELETE -headers $headers -Uri "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo/$AssignmentID"
  } Catch {
@@ -14556,7 +14572,7 @@ Function Remove-AzureServicePrincipalPermissions { # Remove rights on Service Pr
   }
  }
 }
-Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignement Status
+Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal and group them by type and Role Assignment Status
  Param (
   [Switch]$ShowAssignements # Slow
  )
@@ -14570,7 +14586,7 @@ Function Get-AzureServicePrincipalRoleAssignment { # Get all Service Principal a
   $AllApps | Select-Object appdisplayname,servicePrincipalType,accountEnabled,appRoleAssignmentRequired | Group-Object signInAudience,servicePrincipalType,appRoleAssignmentRequired
  }
 }
-Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on enterprise app to ensure Assignement is required
+Function Set-AzureServicePrincipalAssignementRequired { # Set the Checkbox on enterprise app to ensure Assignment is required
  [CmdletBinding()]
  Param (
   [Parameter(Mandatory = $true, HelpMessage = 'Specify the Application (GUID, AppID, ObjectID, or Display Name).')]
@@ -14785,7 +14801,7 @@ Function Add-AzureServicePrincipalRBACPermission { # Add RBAC Permissions for Se
   Add-AzureADRBACRights -ID_Type ServicePrincipal -Id $ServicePrincipalID -Role $Permission -Scope "/subscriptions/$SubscriptionID"
  }
 }
-Function Add-AzureServicePrincipalAssignments { # Add Assignements to Service principal, Assignement IDs are recommended, but UserName is possible but will be a lot slower. Uses Rest API with Token
+Function Add-AzureServicePrincipalAssignments { # Add Assignments to Service principal, Assignment IDs are recommended, but UserName is possible but will be a lot slower. Uses Rest API with Token
  Param (
   [parameter(Mandatory = $true)][Alias('ServicePrincipalID')]$ServicePrincipal, # Service Principal To Update (DisplayName, AppID or Object ID)
   [parameter(Mandatory = $true)][Alias('ObjectToAddID')]$Member,
