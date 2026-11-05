@@ -16135,45 +16135,33 @@ Function Get-AzureADUserMFA { # Extract all MFA Data for all users (Graph Loop -
 }
 Function Add-AzureADUserMFAPhone { # Add phone number as a method for users
  Param (
-  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  $Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$PhoneNumber,
-  [parameter(Mandatory = $true)]$User # can be UPN or GUID
+  [parameter(Mandatory = $true)][Alias("User")]$UPNorID # can be UPN or GUID
  )
 
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   $params = @{
    phoneNumber = $PhoneNumber
    phoneType = "mobile"
   }
 
-  $GraphURL = "https://graph.microsoft.com/v1.0/users/$User/authentication/phoneMethods/"
+  $GraphURL = "https://graph.microsoft.com/v1.0/users/$UPNorID/authentication/phoneMethods/"
 
   # Add check if user is found and / exists
   # Add check if value already exists
 
   $ParamJson = $params | convertto-json
 
-  $Result = Invoke-RestMethod -Method POST -headers $header -Uri $GraphURL -Body $ParamJson
+  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphURL -Body $ParamJson -Method POST
 
   if (! $Result) {
    Throw "Error during apply of update"
   }
  } catch {
-  $Exception = $($Error[0])
-  Try {
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   Write-Error -Message "Error adding MFA Method $PhoneNumber of user $User ($StatusCode | $StatusMessage))"
-  } catch {
-   Write-Error $Exception
-  }
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as a method for users
@@ -16239,53 +16227,43 @@ Function Add-AzureAdUserMFATemporaryAccessPass { # Add Temporary Access Pass as 
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
-Function Get-AzureADUserMFADeviceBoundAAGUID {
+Function Get-AzureADUserMFADeviceBoundAAGUID { # Retrieve Azure AD User MFA Device Bound AA GUIDs
  Param (
-  [parameter(Mandatory = $true)]$Token, # Access Token retrieved with Get-AzureGraphAPIToken
+  $Token, # Access Token retrieved with Get-AzureGraphAPIToken
   [parameter(Mandatory = $true)]$InputFile # Must contain be an output of Get-AzureADUserMFA
  )
  Try {
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   $usermfa = Import-csv $InputFile | Where-Object { $_.MFA_Method_passKeyDeviceBound -eq "True" }
 
  $aaGuidList = $usermfa | ForEach-Object {
   Progress -Message "Current Users " -PrintTime -Value $_.userDisplayName
-  (Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$($_.id)/authentication/fido2Methods").value | Select-Object -ExcludeProperty id
+  get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$($_.id)/authentication/fido2Methods" | Select-Object -ExcludeProperty id
  }
  $aaGuidList | Group-Object aaGuid
-} catch {
- $Exception = $($Error[0])
- $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
- $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
- Write-host -ForegroundColor Red "Error $StatusCode | $StatusMessage"
-}
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
 }
 Function Get-AzureADUserMFAMethods { # Check MFA Methods
  Param (
   $Token, # Access Token retrieved with Get-AzureGraphAPIToken
-  [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
+  [parameter(Mandatory = $true)][Alias("User")]$UPNorID, # can be UPN or GUID
   [ValidateSet("methods","emailMethods","fido2Methods","microsoftAuthenticatorMethods","passwordMethods","phoneMethods","softwareOathMethods",
-  "temporaryAccessPassMethods","windowsHelloForBusinessMethods")]$Method = "methods", # Getting details from a specific Methods is about twice faster than the generic | Methods gets all methods
-  [switch]$SkipTokenValidation # To make request faster
+  "temporaryAccessPassMethods","windowsHelloForBusinessMethods")]$Method = "methods" # Getting details from a specific Methods is about twice faster than the generic | Methods gets all methods
  )
  Try {
-  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token
-  $header = $authDetails.Header
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   $GraphURL = "https://graph.microsoft.com/v1.0/users/$UPNorID/authentication/$Method"
 
-  $Result = Invoke-RestMethod -Method GET -headers $header -Uri $GraphURL -MaximumRetryCount 2
+  $Result = get-azuregraph -Token $authDetails.Token -GraphRequest $GraphURL
 
   if (! $Result) {
-   Throw "No result from Invoke-RestMethod"
+   Throw "No result from Get-AzureGraph"
   } else {
-   $Result.Value | Select-Object @{Name="UPNorID";Expression={$UPNorID}},
+   $Result | Select-Object @{Name="UPNorID";Expression={$UPNorID}},
    @{Name="Method";Expression={
     if ($Method -eq 'methods') {
      $_.'@odata.type'.split('.')[-1] -replace "AuthenticationMethod","Methods" # The replace is to get a standardized answer same as the methods
@@ -16295,112 +16273,58 @@ Function Get-AzureADUserMFAMethods { # Check MFA Methods
    }},* -ExcludeProperty '@odata.type'
   }
  } catch {
-  $Exception = $($Error[0])
-  if ($Exception.ErrorDetails.message) {
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   Write-Error -Message "Error checking MFA Methods information for user $UPNorID (Method : $Method) ($StatusCode | $StatusMessage))"
-  } else {
-   Write-Error -Message "Error checking MFA Methods information for user $UPNorID (Method : $Method) ($Exception))"
-  }
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Remove-AzureADUserMFAMethods { # Remove MFA Methods
  Param (
   $Token, # Access Token retrieved with Get-AzureGraphAPIToken
-  [parameter(Mandatory = $true)]$UPNorID, # can be UPN or GUID
+  [parameter(Mandatory = $true)][Alias("User")]$UPNorID, # can be UPN or GUID
   [parameter(Mandatory = $true)]$MethodID, # can be UPN or GUID
   [ValidateSet("methods","emailMethods","fido2Methods","microsoftAuthenticatorMethods","passwordMethods","phoneMethods","softwareOathMethods",
-  "temporaryAccessPassMethods","windowsHelloForBusinessMethods")]$Method = "methods", # Getting details from a specific Methods is about twice faster than the generic | Methods gets all methods
-  [switch]$SkipTokenValidation # To make request faster
+  "temporaryAccessPassMethods","windowsHelloForBusinessMethods")]$Method = "methods" # Getting details from a specific Methods is about twice faster than the generic | Methods gets all methods
  )
  Try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  $header = $authDetails.Header
 
   $GraphURL = "https://graph.microsoft.com/v1.0/users/$UPNorID/authentication/$Method/$MethodID"
 
-  Invoke-RestMethod -Method DELETE -headers $header -Uri $GraphURL
-
+  get-azuregraph -Token $authDetails.Token -GraphRequest $GraphURL -Method DELETE
  } catch {
-  $Exception = $($Error[0])
-  if ($Exception.ErrorDetails.message) {
-   $StatusCode = ($Exception.ErrorDetails.message | ConvertFrom-json).error.code
-   $StatusMessage = ($Exception.ErrorDetails.message | ConvertFrom-json).error.message
-   Write-Host -ForegroundColor Red -Message "Error Deleting MFA Methods information for user $UPNorID ($StatusCode | $StatusMessage))"
-  } else {
-   Write-Host -ForegroundColor Red -Message "Error Deleting MFA Methods information for user $UPNorID ($($Error[0])))"
-  }
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Set-AzureADUserMFADefaultMethod { # Change Default Method for authentication (will work only if method is available in systemPreferredAuthenticationMethod endpoint)
  Param (
-  [Parameter(Mandatory)]$UPNorID,
+  [Parameter(Mandatory)][Alias("User")]$UPNorID,
   [Parameter(Mandatory)][ValidateSet("push", "oath", "voiceMobile", "voiceAlternateMobile", "voiceOffice", "sms", "none", "unknownFutureValue")]$Method,
-  [Parameter(Mandatory)]$Token
+  $Token
  )
  Try {
-  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
-  if ($UserGUID) { Write-Verbose "Working with GUID" } else {
-   Write-Verbose "Working with UPN, will be slower"
-   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID -Token $Token).id
-  }
-  if (! $UserGUID) {
-   Write-Host -ForegroundColor Red "User $UPNorID not found" ; Return
-  }
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
 
   $params = @{
    "userPreferredMethodForSecondaryAuthentication" = $Method
-  }
+  } | convertto-json
 
-  $ParamJson = $params | convertto-json
-  Invoke-RestMethod -Method PATCH -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/authentication/signInPreferences" -Body $ParamJson
+  get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID/authentication/signInPreferences" -Body $params -Method PATCH
  } catch {
-  $Exception = $($Error[0])
-  $StatusCodeJson = $Exception.ErrorDetails.message
-  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-  $StatusMessageJson = $Exception.ErrorDetails.message
-  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error setting default MFA Method for user $UPNorID ($StatusCode | $StatusMessage))"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
 Function Get-AzureADUserMFADefaultMethod { # Get Default Method for authentication
  Param (
-  [Parameter(Mandatory)]$UPNorID,
-  [Parameter(Mandatory)]$Token
+  [Parameter(Mandatory)][Alias("User")]$UPNorID,
+  $Token
  )
  Try {
-  if (Assert-IsGUID $UPNorID) {$UserGUID = $UPNorID}
-  if ($UserGUID) { Write-Verbose "Working with GUID" } else {
-   Write-Verbose "Working with UPN, will be slower"
-   $UserGUID = (get-azureaduserInfo -UPNorID $UPNorID -Token $Token).id
-  }
-  if (! $UserGUID) {
-   Throw "User $UPNorID not found"
-  }
-  if (! $(Assert-IsTokenLifetimeValid -Token $Token -ErrorAction Stop) ) { Throw "Token is invalid, provide a valid token" }
-  $header = @{
-   'Authorization' = "$($Token.token_type) $($Token.access_token)"
-   'Content-type'  = "application/json"
-  }
-
- Invoke-RestMethod -Method GET -headers $header -Uri "https://graph.microsoft.com/beta/users/$UserGUID/authentication/signInPreferences" | Select-Object -ExcludeProperty '@odata.context'
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  get-azuregraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID/authentication/signInPreferences" | select-object -ExcludeProperty '@odata.context'
  } catch {
-  $Exception = $($Error[0])
-  $StatusCodeJson = $Exception.ErrorDetails.message
-  if ($StatusCodeJson) { $StatusCode = ($StatusCodeJson| ConvertFrom-json).error.code }
-  $StatusMessageJson = $Exception.ErrorDetails.message
-  if ($StatusMessageJson) { $StatusMessage = ($StatusMessageJson | ConvertFrom-json).error.message }
-  if ((! $StatusMessageJson) -and (!$StatusCodeJson ) ) { $StatusCode = "Catch Error" ; $StatusMessage = $($Error[0])}
-  Write-host -ForegroundColor Red "Error getting default MFA Method for user $UPNorID ($StatusCode | $StatusMessage))"
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+
 #endregion SECTION : MFA
 #region SECTION : AAD Group Management
 
@@ -19169,6 +19093,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [switch]$ShowUniqueDevices,
   [switch]$ShowUniqueIPs,
   [switch]$ShowUniqueApps,
+  [switch]$Colorize, # Wraps values in ANSI colors (display only, breaks filtering on those columns)
+  [switch]$Readable, # Same as -SimplifiedQuery -Colorize
   $Token,
   $ResultTypeExclusion, # Exclude specific result types (e.g. "50140" ("Keep me signed in"), "50126" ("Incorrect Password"), "53003" ("Blocked by CA Policy"), "50076" ("Standard MFA"))
   $ResultTypeInclusion, # Include only specific result types (e.g. "90094" for "Admin consent is required")
@@ -19182,6 +19108,8 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
  )
 
  try {
+
+  if ($Readable) { $SimplifiedQuery = [switch]$true; $Colorize = [switch]$true }
 
   Write-Verbose "Getting WorkspaceID"
   if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
@@ -19372,22 +19300,26 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   Write-Verbose "Final Query : $Query"
 
   # Launch Query
-  $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken
+  $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken | Sort-Object -Property TimeGenerated
 
   if ($ResultRaw) {
    if ($SimplifiedQuery) { $ResultRaw = $ResultRaw | Select-Object -ExcludeProperty *id } # Removes ID from result
 
    # Convert TimeGenerated from UTC to the local user timezone (WEBSITE_TIME_ZONE for FunctionApps)
    $localTz = if ($env:WEBSITE_TIME_ZONE) { [System.TimeZoneInfo]::FindSystemTimeZoneById($env:WEBSITE_TIME_ZONE) } else { [System.TimeZoneInfo]::Local }
+   $green = $PSStyle.Foreground.Green; $red = $PSStyle.Foreground.Red; $reset = $PSStyle.Reset
    $ResultRaw = $ResultRaw | ForEach-Object {
     $_ | Add-Member -MemberType NoteProperty -Name 'Local_TimeGenerated' -Value ([System.TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind($_.TimeGenerated, [System.DateTimeKind]::Utc), $localTz))
     $_ | Add-Member -MemberType NoteProperty -Name 'Local_Timezone' -Value $localTz.Id
+    if ($Colorize) {
+     $_.ResultSignature = $(if ($_.ResultSignature -eq 'SUCCESS') { $green } else { $red }) + $_.ResultSignature + $reset
+     $_.ConditionalAccessStatus = $(if ($_.ConditionalAccessStatus -in 'success', 'notApplied') { $green } else { $red }) + $_.ConditionalAccessStatus + $reset
+    }
     $_
-
    }
   } else {
    # Stop here if no results where found
-   return @() | Sort-Object -Property TimeGenerated
+   return @()
   }
 
   # Build ordered column list: time columns first, then everything else
@@ -19396,7 +19328,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($SimplifiedQuery -or $ShowRawResult) {
    $colOrder = $timeColumns + ($ResultRaw[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
    $colOrder = $colOrder | Where-Object { $_ -notin @('TimeGenerated','Local_Timezone') }
-   return ($ResultRaw | Select-Object -Property $colOrder | Sort-Object -Property TimeGenerated)
+   return ($ResultRaw | Select-Object -Property $colOrder)
   } else {
    $Result = $ResultRaw | ForEach-Object {
     # Use Add-Member to create the new properties on the read-only object
@@ -19423,7 +19355,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
 
    $colOrder = $timeColumns + ($Result[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
-   return ($Result | Select-Object -Property $colOrder | Sort-Object -Property TimeGenerated)
+   return ($Result | Select-Object -Property $colOrder)
   }
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -19444,6 +19376,8 @@ Function Get-SentinelDeviceInfo {
   [switch]$ShowRawResult,
   [switch]$ShowUniqueDevices,
   [switch]$ShowUniqueIPs,
+  [switch]$Colorize,
+  [switch]$Readable,
   $Token,
   $ResultTypeExclusion,
   $ResultTypeInclusion,
