@@ -13045,6 +13045,76 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
 }
+Function Add-AzureAppRegistrationFederatedCredential { # Add Federated Credential to App (Token), currently supports Managed Identity (User Assigned)
+ [CmdletBinding(DefaultParameterSetName="ManagedIdentity")]
+ Param (
+  [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # Accepts App Registration Name or AppID (GUID)
+  [parameter(Mandatory=$true,ParameterSetName="ManagedIdentity")][String]$ManagedIdentity, # Name of the User Assigned Managed Identity (also used as the credential Name)
+  [parameter(Mandatory=$true,ParameterSetName="ManagedIdentity")][String]$Subscription, # Subscription ID or Name where the Managed Identity is located
+  [parameter(ParameterSetName="ManagedIdentity")][String]$ResourceGroup, # Optional, to disambiguate if the same Managed Identity name exists in multiple Resource Groups
+  [parameter(Mandatory=$true)][String]$Description, # Mandatory for every parameter set
+  [switch]$ShowObjectID,
+  $Token
+ )
+ try {
+  $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
+  $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
+  if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
+
+  # Resolve Subscription (ID or Name)
+  $SubInfo = @(Get-AzureSubscriptions -Subscription $Subscription -Exact -Token $authDetails.Token -ErrorAction Stop)
+  if ($SubInfo.Count -eq 0) { Throw "Subscription not found: $Subscription" }
+  if ($SubInfo.Count -gt 1) { Throw "Multiple subscriptions found for: $Subscription" }
+  $SubscriptionId = $SubInfo[0].subscriptionId
+
+  # Find the Managed Identity
+  $MIList = @(Get-AzureResource -Name $ManagedIdentity -Exact -SubscriptionId $SubscriptionId -Token $authDetails.Token -ErrorAction Stop |
+   Where-Object { $_.type -eq "microsoft.managedidentity/userassignedidentities" })
+  if ($ResourceGroup) { $MIList = @($MIList | Where-Object { $_.resourceGroup -eq $ResourceGroup }) }
+  if ($MIList.Count -eq 0) { Throw "User Assigned Managed Identity not found: $ManagedIdentity in subscription $SubscriptionId" }
+  if ($MIList.Count -gt 1) { Throw "Multiple Managed Identities named $ManagedIdentity found, use -ResourceGroup to select one" }
+  $MI = $MIList[0]
+  $PrincipalId = $MI.properties.principalId
+  $MITenantId = if ($MI.properties.tenantId) { $MI.properties.tenantId } else { $Global:TenantID }
+  if (!$PrincipalId -or !$MITenantId) { Throw "Unable to retrieve principalId / tenantId of Managed Identity $ManagedIdentity" }
+
+  # Check for an existing credential with the same name
+  $AppObjectId = $AppInfo.ID
+  $GraphURL = "https://graph.microsoft.com/v1.0/applications/$AppObjectId/federatedIdentityCredentials"
+  $Existing = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL -ErrorAction Stop | Where-Object { $_.name -eq $ManagedIdentity })
+  if ($Existing.Count -gt 0) { Throw "A federated credential named $ManagedIdentity already exists on $($AppInfo.displayName)" }
+
+  $params = @{
+   name = $ManagedIdentity
+   issuer = "https://login.microsoftonline.com/$MITenantId/v2.0"
+   subject = $PrincipalId
+   audiences = @("api://AzureADTokenExchange")
+   description = $Description
+  }
+  $Result = Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL -Method POST -Body ($params | ConvertTo-Json) -ErrorAction Stop
+
+  $Result = [pscustomobject]@{
+   TenantID = $MITenantId
+   ApplicationDisplayName = $AppInfo.displayName
+   ApplicationID = $AppInfo.AppID
+   ApplicationObjectID = $AppObjectId
+   CredentialName = $Result.name
+   CredentialID = $Result.id
+   Issuer = $Result.issuer
+   Subject = $Result.subject
+   Audiences = ($Result.audiences -join ",")
+   Description = $Result.description
+   ManagedIdentity = $MI.name
+   ManagedIdentityResourceGroup = $MI.resourceGroup
+   SubscriptionID = $SubscriptionId
+  }
+  if (! $ShowObjectID) { $Result = $Result | Select-Object -ExcludeProperty ApplicationObjectID }
+  $Result
+
+ } catch {
+  Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
+ }
+}
 Function Add-AzureAppRegistrationCertificate { # Add Certificate to App (Token)
  [CmdletBinding()]
  Param (
@@ -19754,11 +19824,17 @@ Function Get-SentinelAuditInfo {
   $CorrelationId,
   $AzureMonitorToken,
   $Duration = '1d',
+  $StartDuration,
+  $EndDuration,
   $WorkspaceID,
   [Switch]$ExcludeDefaultApps,
   [Switch]$DefaultFilter,
+  [Switch]$OnlyRealChanges,
+  [string[]]$IgnoreProperties = @('LastAuthenticatedTimestamp','OathTokenTimeDrift','TimeInterval'),
   [Switch]$Readable
  )
+
+ # Example to loop for multiple days : $all = 0..10 | ForEach-Object {  $end = (Get-Date).Date.AddDays(-$_ + 1) ;  write-host "loop $($_)" ;  Get-SentinelAuditInfo -StartDuration $end.AddDays(-1) -EndDuration $end -Initiator "Azure MFA StrongAuthenticationService" -Readable }
 
  # 1. Setup & Auth
  if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
@@ -19772,6 +19848,21 @@ Function Get-SentinelAuditInfo {
   Throw 'Azure Monitor Token is not found'
  }
  if (! (Assert-IsTokenLifetimeValid -Token $AzureMonitorToken -ErrorAction Stop) ) { Return }
+
+ # Prepare TimeFrame
+ if (! $EndDuration) {
+  $EndDuration = "now()"
+ } else {
+  $EndDuration = "datetime(" + $(get-date $EndDuration).ToString("yyyy-MM-dd HH:mm:ss") + ")"
+  Write-Verbose "Using EndDuration $EndDuration"
+ }
+ if (! $StartDuration) {
+  $StartDuration = "ago($Duration)"
+ } else {
+  $StartDuration = "datetime(" + $(get-date $StartDuration).ToString("yyyy-MM-dd HH:mm:ss") + ")"
+  Write-Verbose "Using StartDuration $StartDuration"
+ }
+ $TimeFrame = "$StartDuration .. $EndDuration"
 
  # 2. Build Safe Pre-Filters (Applied before Join)
  $PreFilters = ""
@@ -19794,6 +19885,7 @@ Function Get-SentinelAuditInfo {
   'Group_GetDynamicGroupProperties',
   'Validate user authentication',
   'Settings_GetSettingsAsync',
+  'Remove access package resource assignment',
   'Update StsRefreshTokenValidFrom Timestamp'
   )
   | where LoggedByService !in (
@@ -19808,12 +19900,15 @@ Function Get-SentinelAuditInfo {
  $Query = @"
   let UserDetails = IdentityInfo
   | where isnotempty(AccountObjectId)
-  | summarize arg_max(TimeGenerated, *) by AccountObjectId
+  $(if ($Initiator) { "| where AccountDisplayName contains '$Initiator'" })
+  | summarize arg_max(TimeGenerated, AccountDisplayName) by AccountObjectId
   | project InitiatorId = AccountObjectId, UserDisplayName = AccountDisplayName;
+  let MatchedInitiatorIds = toscalar(UserDetails | summarize make_set(InitiatorId));
 
   AuditLogs
-  | where TimeGenerated between (ago($Duration) .. now())
+  | where TimeGenerated between ($TimeFrame)
   $PreFilters
+  $(if ($Initiator) { "| where tostring(InitiatedBy) contains '$Initiator' or tostring(InitiatedBy) has_any (coalesce(MatchedInitiatorIds, dynamic(['__none__'])))" })
 
   // MEMORY OPTIMIZATION: Project ONLY what we need immediately to prevent 'Low Memory' errors
   | project TimeGenerated, OperationName, Category, LoggedByService, InitiatedBy, TargetResources, CorrelationId, AdditionalDetails
@@ -19836,13 +19931,15 @@ Function Get-SentinelAuditInfo {
 
   // Resolve directory users only. Application actors must remain the application actor,
   // even when their audit record does not contain an appId or servicePrincipalId.
-  | join kind=leftouter (UserDetails) on InitiatorId
+  // PERFORMANCE: when filtering on Initiator, reduce rows BEFORE the join (app/UPN match or user whose display name matches)
+  $(if ($Initiator) { "| where InitiatorNameFallback contains '$Initiator' or tostring(InitiatedBy) contains '$Initiator' or InitiatorId in (MatchedInitiatorIds)" })
+  | join hint.strategy=broadcast kind=leftouter (UserDetails) on InitiatorId
   | project-away InitiatorId1
   | extend InitiatorName = iff(InitiatorType == "User", coalesce(UserDisplayName, InitiatorNameFallback), InitiatorNameFallback)
   | project-away InitiatorNameFallback, ActivityIPAddress
 
   // FILTER BY INITIATOR (Done after join to ensure names are resolved)
-  $(if ($Initiator) { "| where InitiatorName contains '$Initiator'" })
+  $(if ($Initiator) { "| where InitiatorName contains '$Initiator' or tostring(InitiatedBy) contains '$Initiator'" })
   $(if ($ExcludeDefaultApps) {
     "| where InitiatorName !has 'Microsoft Substrate Management'
      | where InitiatorName !has 'Microsoft Approval Management'
@@ -19856,7 +19953,8 @@ Function Get-SentinelAuditInfo {
   | extend
     ModifiedObjectDisplayName = tostring(TargetResources.displayName),
     ModifiedObjectType = tostring(TargetResources.type),
-    ModifiedObjectID = tostring(TargetResources.id)
+    ModifiedObjectID = tostring(TargetResources.id),
+    ModifiedObjectUPN = tostring(TargetResources.userPrincipalName)
 
   // Extract Properties (Safe Logic to preserve rows with no changes)
   | extend mProps = TargetResources.modifiedProperties
@@ -19866,7 +19964,7 @@ Function Get-SentinelAuditInfo {
   // AccountEnabled are visible even when they are not ID or display-name changes.
   | mv-apply mProps on (
     summarize
-      Change_Details = take_anyif(mProps, isnotempty(tostring(mProps.displayName)) and tostring(mProps.displayName) !has "Included Updated Properties"),
+      Change_Details = take_anyif(mProps, isnotempty(tostring(mProps.displayName)) and tostring(mProps.displayName) !has "Included Updated Properties" and tostring(mProps.displayName) != "TargetId.UserType"),
       Change_All_Details = make_list(mProps)
   )
 
@@ -19876,7 +19974,7 @@ Function Get-SentinelAuditInfo {
     NewValue = tostring(Change_Details.newValue),
     ModifiedProperties = tostring(Change_All_Details)
 
-  $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorType, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectID, ActivityAppId, ActivityAppOwnerOrganizationId, SourceIPAddress, Change_Property, OldValue, NewValue, ModifiedProperties" })
+  $(if ($DefaultFilter) { "| project TimeGenerated, OperationName, LoggedByService, InitiatorType, InitiatorName, ModifiedObjectType, ModifiedObjectDisplayName, ModifiedObjectUPN, ModifiedObjectID, ActivityAppId, ActivityAppOwnerOrganizationId, SourceIPAddress, Change_Property, OldValue, NewValue, ModifiedProperties" })
   | sort by TimeGenerated asc
 "@
 
@@ -19890,12 +19988,42 @@ Function Get-SentinelAuditInfo {
     $_ | Add-Member -MemberType NoteProperty -Name 'Local_TimeGenerated' -Value ([System.TimeZoneInfo]::ConvertTimeFromUtc([datetime]::SpecifyKind($_.TimeGenerated, [System.DateTimeKind]::Utc), $localTz)) -Force
     $_ | Add-Member -MemberType NoteProperty -Name 'Local_Timezone' -Value $localTz.Id -Force
    }
+   $_ | Add-Member -MemberType NoteProperty -Name 'OldValueJson' -Value $(if ($_.OldValue -match '^\s*[\[{]') { $_.OldValue | ConvertFrom-Json -ErrorAction SilentlyContinue }) -Force
+   $_ | Add-Member -MemberType NoteProperty -Name 'NewValueJson' -Value $(if ($_.NewValue -match '^\s*[\[{]') { $_.NewValue | ConvertFrom-Json -ErrorAction SilentlyContinue }) -Force
+   # Real changes only : compare old/new per item (keyed by Id/DeviceId) while ignoring noisy properties
+   $Changes = @()
+   if ($_.OldValueJson -or $_.NewValueJson) {
+    $GetKey = { param($Item, $Index) if ($Item -is [string] -or $Item -is [ValueType]) { "$Item" } elseif ($Item.Id) { "$($Item.Id)" } elseif ($Item.DeviceId) { "$($Item.DeviceId)" } else { "#$Index" } }
+    $OldItems = @{}; $NewItems = @{}
+    $i = 0; foreach ($Item in @($_.OldValueJson)) { $OldItems[(& $GetKey $Item $i)] = $Item; $i++ }
+    $i = 0; foreach ($Item in @($_.NewValueJson)) { $NewItems[(& $GetKey $Item $i)] = $Item; $i++ }
+    foreach ($Key in ($OldItems.Keys + $NewItems.Keys | Select-Object -Unique)) {
+     $Old = $OldItems[$Key]; $New = $NewItems[$Key]
+     if ($null -eq $Old) { $Changes += [PSCustomObject]@{ Key = $Key; DeviceName = $New.DeviceName; Change = 'Added'; Property = $_.Change_Property; OldValue = $null; NewValue = $(if ($New -is [string] -or $New -is [ValueType]) { $New }) }; continue }
+     if ($null -eq $New) { $Changes += [PSCustomObject]@{ Key = $Key; DeviceName = $Old.DeviceName; Change = 'Removed'; Property = $_.Change_Property;      OldValue = $(if ($Old -is [string] -or $Old -is [ValueType]) { $Old }); NewValue = $null }; continue }
+          if ($Old -is [string] -or $Old -is [ValueType]) { continue }
+     foreach ($Prop in ($Old.PSObject.Properties.Name + $New.PSObject.Properties.Name | Select-Object -Unique)) {
+      if ($Prop -in $IgnoreProperties) { continue }
+      if ("$($Old.$Prop)" -ne "$($New.$Prop)") { $Changes += [PSCustomObject]@{ Key = $Key; DeviceName = $New.DeviceName; Change = 'Updated'; Property = $Prop; OldValue = $Old.$Prop; NewValue = $New.$Prop } }
+     }
+    }
+   } elseif ($_.OldValue -ne $_.NewValue) {
+    $Changes += [PSCustomObject]@{ Key = $null; DeviceName = $null; Change = 'Updated'; Property = $_.Change_Property; OldValue = $_.OldValue; NewValue = $_.NewValue }
+   }
+   $_ | Add-Member -MemberType NoteProperty -Name 'UpdatedValue' -Value $Changes -Force
+   $_ | Add-Member -MemberType NoteProperty -Name 'UpdatedValueText' -Value (($Changes | ForEach-Object {
+     $Target = (@($_.DeviceName, $_.Key) | Where-Object { $_ } | Select-Object -First 1)
+     $Label = (@($_.Property, $(if ($Target) { "[$Target]" })) | Where-Object { $_ }) -join ' '
+     "$($_.Change) $Label$(if ($_.Change -eq 'Updated') { " : $($_.OldValue) -> $($_.NewValue)" } elseif ($_.NewValue) { " : $($_.NewValue)" } elseif ($_.OldValue) { " : $($_.OldValue)" })"
+    }) -join ' | ') -Force
+   $_ | Add-Member -MemberType NoteProperty -Name 'HasRealChange' -Value ([bool]$Changes.Count) -Force
    $_
   })
+  if ($OnlyRealChanges) { $Result = @($Result | Where-Object HasRealChange) }
  }
  if ($Readable ) {
   # $Result | Select-Object -ExcludeProperty InitiatedBy,TargetResources,AdditionalDetails,InitiatedByParams,AdditionalDetailsParams,mProps,Change_Details,Change_All_Details,ModifiedProperties
-  $Result | Select-Object Local_TimeGenerated,OperationName,Category,LoggedByService,InitiatorType,SourceIPAddress,InitiatorName,ModifiedObjectDisplayName,ModifiedObjectType,Change_Property,OldValue,NewValue
+  $Result | Select-Object Local_TimeGenerated,OperationName,Category,LoggedByService,InitiatorType,SourceIPAddress,InitiatorName,ModifiedObjectUPN,ModifiedObjectDisplayName,ModifiedObjectID,ModifiedObjectType,Change_Property,HasRealChange,UpdatedValue,UpdatedValueText,OldValue,NewValue,OldValueJson,NewValueJson
  } else {
   $Result
  }
