@@ -19576,11 +19576,11 @@ Function Get-SentinelAppInfo { # Get App logs from Sentinel
 
   # Get distinct Users directly from Sentinel (avoids pulling/parsing every log line just to dedupe locally)
   if ($ShowUniqueUsers) {
-   $Query = $QueryStart + '| where isnotempty(UserPrincipalName) | summarize by UserDisplayName, UserPrincipalName, UserId | sort by UserPrincipalName asc'
+   $Query = $QueryStart + '| where isnotempty(UserPrincipalName) | summarize UsageCount = count() by UserDisplayName, UserPrincipalName, UserId | sort by UserPrincipalName asc'
     Write-Verbose "Final Query : $Query"
    $ResultRaw = Get-AzureLogAnalyticsRequest -WorkspaceID $WorkspaceID -Query $Query -Token $AzureMonitorToken -ErrorAction Stop
    if (! $ResultRaw) { return }
-   return ($ResultRaw | Select-Object UserDisplayName, UserPrincipalName, @{Name = 'UserObjectId'; Expression = { $_.UserId } })
+   return ($ResultRaw | Select-Object UserDisplayName, UserPrincipalName, @{Name = 'UserObjectId'; Expression = { $_.UserId } }, UsageCount)
   }
 
   # Add Unified Values
@@ -20032,7 +20032,7 @@ Function Get-SentinelGraphActivityInfo {
  [CmdletBinding()]
  Param (
   $AppId,
-  $UserId,
+  [Alias('UserId')]$User,
   $RequestUri,
   $IPAddress,
   $UserAgent,
@@ -20096,7 +20096,16 @@ Function Get-SentinelGraphActivityInfo {
  )
 
  if ($AppId) { $QueryLines += "| where AppId contains '$AppId'" }
- if ($UserId) { $QueryLines += "| where UserId contains '$UserId'" }
+ if ($User) {
+  if (Assert-IsGUID $User) {
+   $UserId = $User
+  } else {
+   Write-Verbose "Using UPN, getting user ID"
+   $UserId = (Get-AzureADUserInfo -User $User -ErrorAction Stop).id
+   if (! $UserId) { Throw "User $User was not found" }
+  }
+  $QueryLines += "| where UserId contains '$UserId'"
+ }
  if ($RequestUri) { $QueryLines += "| where RequestUri contains '$RequestUri'" }
  if ($IPAddress) { $QueryLines += "| where IPAddress contains '$IPAddress'" }
  if ($UserAgent) { $QueryLines += "| where UserAgent contains '$UserAgent'" }
