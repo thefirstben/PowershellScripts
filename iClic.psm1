@@ -19168,28 +19168,30 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   [Parameter(Mandatory = $true, ParameterSetName = 'User')]$User,
   [Parameter(Mandatory = $true, ParameterSetName = 'Device')][guid]$DeviceId,
   [switch]$ConditionalAccessShowOnlySuccess,
-    [switch]$ConditionalAccessShowOnlyFailure,
+  [switch]$ConditionalAccessShowOnlyFailure,
   [switch]$ShowOnlySuccess,
   [switch]$ShowOnlyFailures,
   [switch]$ShowOnlyInteractive,
   [switch]$ConditionalAccessIgnoreNotApplied,
   [switch]$SimplifiedQuery,
   [switch]$IncludeMFARequirement,
-  [switch]$ShowRawResult,
+  [switch]$ShowOnlyMFA, # Server-side filter: only sign-ins having MfaDetail (MFA really triggered)
+  $AppFilter,
   [switch]$ShowUniqueDevices,
   [switch]$ShowUniqueIPs,
   [switch]$ShowUniqueApps,
   [switch]$Colorize, # Wraps values in ANSI colors (display only, breaks filtering on those columns)
   [switch]$Readable, # Same as -SimplifiedQuery -Colorize
-  $Token,
+  [switch]$ShowRawResult,
+  [switch]$HidePrivateData, # Removes the IPAddress property from the result
   $ResultTypeExclusion, # Exclude specific result types (e.g. "50140" ("Keep me signed in"), "50126" ("Incorrect Password"), "53003" ("Blocked by CA Policy"), "50076" ("Standard MFA"))
   $ResultTypeInclusion, # Include only specific result types (e.g. "90094" for "Admin consent is required")
   $AzureMonitorToken,
+  $Token,
   $Duration = '1d',
   $StartDuration,
   $EndDuration,
   $WorkspaceID,
-  $AppFilter,
   [ValidateSet("DisplayName","Mail","UserPrincipalName")][string]$UserType="UserPrincipalName"
  )
 
@@ -19289,6 +19291,7 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($ShowOnlySuccess) { $QueryStart += '| where ResultSignature == "SUCCESS"' }
   if ($ShowOnlyInteractive) { $QueryStart += '| where Type == "SigninLogs"' }
   if ($ShowOnlyFailures) { $QueryStart += '| where ResultSignature == "FAILURE"' }
+  if ($ShowOnlyMFA) { $QueryStart += '| where array_length(bag_keys(coalesce(MfaDetail_dynamic, parse_json(MfaDetail_string)))) > 0 ' } # Only sign-ins where MFA was really performed (non-empty MfaDetail)
   if ($ResultTypeExclusion) { $QueryStart += '| where ResultType !in (' + ($ResultTypeExclusion -join ',') + ')' }
   if ($ResultTypeInclusion) { $QueryStart += '| where ResultType in (' + ($ResultTypeInclusion -join ',') + ')' }
 
@@ -19414,7 +19417,9 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
   if ($SimplifiedQuery -or $ShowRawResult) {
    $colOrder = $timeColumns + ($ResultRaw[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
    $colOrder = $colOrder | Where-Object { $_ -notin @('TimeGenerated','Local_Timezone') }
-   return ($ResultRaw | Select-Object -Property $colOrder)
+   $Output = $ResultRaw | Select-Object -Property $colOrder
+   if ($HidePrivateData) { $Output = $Output | Select-Object -ExcludeProperty IPAddress }
+   return $Output
   } else {
    $Result = $ResultRaw | ForEach-Object {
     # Use Add-Member to create the new properties on the read-only object
@@ -19441,7 +19446,9 @@ Function Get-SentinelUserInfo { # Get user logs from Sentinel
    AuthenticationDetails,AuthenticationProcessingDetails,AuthenticationRequirementPolicies,NetworkLocationDetails,SessionLifetimePolicies # CONVERTED
 
    $colOrder = $timeColumns + ($Result[0].PSObject.Properties.Name | Where-Object { $_ -notin $timeColumns })
-   return ($Result | Select-Object -Property $colOrder)
+   $Output = $Result | Select-Object -Property $colOrder
+   if ($HidePrivateData) { $Output = $Output | Select-Object -ExcludeProperty IPAddress }
+   return $Output
   }
  } catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -19464,6 +19471,8 @@ Function Get-SentinelDeviceInfo {
   [switch]$ShowUniqueIPs,
   [switch]$Colorize,
   [switch]$Readable,
+  [switch]$HidePrivateData,
+  [switch]$ShowOnlyMFA,
   $Token,
   $ResultTypeExclusion,
   $ResultTypeInclusion,
