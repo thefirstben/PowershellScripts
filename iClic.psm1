@@ -6824,7 +6824,7 @@ Function Get-KeyCloakRolesFromID { # Get All Assigned Role from Users or Service
   $GlobalClientRights
 }
 #endregion SECTION : Keycloak
-#region SECTION : Powershell history management 
+#region SECTION : Powershell history management
 #Found on github : https://github.com/PowerShell/PSReadLine/issues/1778
 Function Remove-PSReadlineHistory {
  param (
@@ -11494,13 +11494,13 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
     Write-Host -ForegroundColor Cyan -Object "Associated Service Principal already exists with Object ID: $($existingSp.id)"
    } else {
     Write-Host -ForegroundColor DarkMagenta -Object "Creating associated Service Principal for `"$AppRegistrationName`" with App ID: $AppID"
-    
+
     # Retry logic for Service Principal creation - handles Azure AD replication delays
     $maxRetries = 6
     $retryCount = 0
     $newSp = $null
     $lastError = $null
-    
+
     while ($retryCount -lt $maxRetries -and -not $newSp) {
      try {
       $spBody = @{
@@ -11510,27 +11510,27 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
 
       $newSp = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals" -ErrorAction Stop -Method POST -Body $spBody
       Write-Host -ForegroundColor Green "Created associated Service Principal with Object ID: $($newSp.id) and Assignment Required set to True (Attempt: $($retryCount + 1))"
-    
+
       if (-not $newSp.id) {
        Throw "Failed to create Service Principal for App ID: $AppID. No Object ID returned."
       }
-      
+
       # Added verification step to confirm SP creation due to potential Azure AD replication delays
       $verificationAttempts = 0
       $maxVerificationAttempts = 20
       $newlyCreatedSP = $null
-      
+
       while ($verificationAttempts -lt $maxVerificationAttempts -and -not $newlyCreatedSP) {
        Write-Host -ForegroundColor Cyan -Object "Verifying creation of Service Principal for App ID: $AppID (Attempt $($verificationAttempts + 1)/$maxVerificationAttempts)"
        $verificationResult = Get-AzureGraph -Token $authDetails.Token -GraphRequest "/servicePrincipals?`$filter=appId eq '$AppID'" -ErrorAction SilentlyContinue
-       
+
        # Check if we got a valid result with an id
        if ($verificationResult -and $verificationResult.id) {
         $newlyCreatedSP = $verificationResult
         Write-Host -ForegroundColor Green "Service Principal verified successfully with Object ID: $($newlyCreatedSP.id)"
         break
        }
-       
+
        $verificationAttempts++
        if ($verificationAttempts -lt $maxVerificationAttempts) {
         Start-Sleep -Seconds 2 # Short delay before next verification attempt
@@ -11541,7 +11541,7 @@ Function New-AzureAppRegistration { # Create a single App Registration completel
      } catch {
       $lastError = $_
       $retryCount++
-      
+
       if ($retryCount -lt $maxRetries) {
        $backoffSeconds = [Math]::Min([Math]::Pow(2, $retryCount - 1), 32) # Exponential backoff: 1, 2, 4, 8, 16, 32 seconds
        Write-Verbose "SP creation failed (Attempt $retryCount/$maxRetries): $($lastError.Exception.Message). Retrying in $backoffSeconds seconds..."
@@ -12875,7 +12875,7 @@ Function Set-AzureAppRegistrationAcceptMappedClaims { # Set acceptMappedClaims a
  )
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
-  
+
   $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ValuesToShow "id,appId,displayName" -ErrorAction Stop
   if (!$AppInfo.ID) { Throw "Application not found: $Application" }
   Write-Verbose "Found App with Object ID $($AppInfo.ID)"
@@ -13034,7 +13034,7 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
   $Result = $Result | Select-Object -ExcludeProperty customKeyIdentifier,'@odata.context',hint,keyId -Property TenantID,ApplicationDisplayName,
    ApplicationID,ApplicationObjectID,
     @{Name="Secret";Expression={$_.secretText}}, Description,
-    @{Name="Secret_Start_Date";Expression={$_.startDateTime}}, 
+    @{Name="Secret_Start_Date";Expression={$_.startDateTime}},
     @{Name="Secret_End_Date";Expression={$_.endDateTime}}
   if ( ! $ShowObjectID) { $Result = $Result | Select-Object -ExcludeProperty ApplicationObjectID }
 
@@ -13046,46 +13046,41 @@ Function Add-AzureAppRegistrationSecret { # Add Secret to App (Token)
  }
 }
 Function Add-AzureAppRegistrationFederatedCredential { # Add Federated Credential to App (Token), currently supports Managed Identity (User Assigned)
- [CmdletBinding(DefaultParameterSetName="ManagedIdentity")]
+ [CmdletBinding()]
  Param (
   [Alias("AppRegistration")][parameter(Mandatory=$true)]$Application, # Accepts App Registration Name or AppID (GUID)
-  [parameter(Mandatory=$true,ParameterSetName="ManagedIdentity")][String]$ManagedIdentity, # Name of the User Assigned Managed Identity (also used as the credential Name)
-  [parameter(Mandatory=$true,ParameterSetName="ManagedIdentity")][String]$Subscription, # Subscription ID or Name where the Managed Identity is located
-  [parameter(ParameterSetName="ManagedIdentity")][String]$ResourceGroup, # Optional, to disambiguate if the same Managed Identity name exists in multiple Resource Groups
-  [parameter(Mandatory=$true)][String]$Description, # Mandatory for every parameter set
+  [parameter(Mandatory=$true)][String]$ManagedIdentity, # Name, AppID or ObjectID (GUID) of the User Assigned Managed Identity, resolved via Get-AzureServicePrincipal
+  [parameter(Mandatory=$true)][String]$Description,
   [switch]$ShowObjectID,
-  $Token
+  $Token # Graph Token
  )
  try {
   $authDetails = Get-AuthMethod -BoundParameters $PSBoundParameters -PassedToken $Token -TokenOnly
   $AppInfo = Get-AzureAppRegistration -Application $Application -Token $authDetails.Token -ErrorAction Stop
   if (!$AppInfo.ID) { Throw "Application not found: $Application" } else { Write-Verbose "Found App with Object ID $($AppInfo.ID)" }
 
-  # Resolve Subscription (ID or Name)
-  $SubInfo = @(Get-AzureSubscriptions -Subscription $Subscription -Exact -Token $authDetails.Token -ErrorAction Stop)
-  if ($SubInfo.Count -eq 0) { Throw "Subscription not found: $Subscription" }
-  if ($SubInfo.Count -gt 1) { Throw "Multiple subscriptions found for: $Subscription" }
-  $SubscriptionId = $SubInfo[0].subscriptionId
-
-  # Find the Managed Identity
-  $MIList = @(Get-AzureResource -Name $ManagedIdentity -Exact -SubscriptionId $SubscriptionId -Token $authDetails.Token -ErrorAction Stop |
-   Where-Object { $_.type -eq "microsoft.managedidentity/userassignedidentities" })
-  if ($ResourceGroup) { $MIList = @($MIList | Where-Object { $_.resourceGroup -eq $ResourceGroup }) }
-  if ($MIList.Count -eq 0) { Throw "User Assigned Managed Identity not found: $ManagedIdentity in subscription $SubscriptionId" }
-  if ($MIList.Count -gt 1) { Throw "Multiple Managed Identities named $ManagedIdentity found, use -ResourceGroup to select one" }
-  $MI = $MIList[0]
-  $PrincipalId = $MI.properties.principalId
-  $MITenantId = if ($MI.properties.tenantId) { $MI.properties.tenantId } else { $Global:TenantID }
-  if (!$PrincipalId -or !$MITenantId) { Throw "Unable to retrieve principalId / tenantId of Managed Identity $ManagedIdentity" }
+  $MISP = Get-AzureServicePrincipal -Application $ManagedIdentity -Token $authDetails.Token -ErrorAction Stop
+  if ($MISP.servicePrincipalType -ne "ManagedIdentity") { Throw "Service Principal $ManagedIdentity is not a Managed Identity" }
+  $PrincipalId = $MISP.id
+  $MIName = $MISP.displayName
+  $MITenantId = $authDetails.Token.token_converted.tid
+  $MIResourceGroup = $null
+  $MISubscriptionId = $null
+  $ArmId = @($MISP.alternativeNames) | Where-Object { $_ -like "/subscriptions/*" } | Select-Object -First 1
+  if ($ArmId -match "^/subscriptions/([^/]+)/resourceGroups/([^/]+)/") {
+   $MISubscriptionId = $Matches[1]
+   $MIResourceGroup = $Matches[2]
+  }
+  if (!$PrincipalId -or !$MITenantId) { Throw "Unable to retrieve principalId / tenantId of Managed Identity $MIName" }
 
   # Check for an existing credential with the same name
   $AppObjectId = $AppInfo.ID
   $GraphURL = "https://graph.microsoft.com/v1.0/applications/$AppObjectId/federatedIdentityCredentials"
-  $Existing = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL -ErrorAction Stop | Where-Object { $_.name -eq $ManagedIdentity })
-  if ($Existing.Count -gt 0) { Throw "A federated credential named $ManagedIdentity already exists on $($AppInfo.displayName)" }
+  $Existing = @(Get-AzureGraph -Token $authDetails.Token -GraphRequest $GraphURL -ErrorAction Stop | Where-Object { $_.name -eq $MIName })
+  if ($Existing.Count -gt 0) { Throw "A federated credential named $MIName already exists on $($AppInfo.displayName)" }
 
   $params = @{
-   name = $ManagedIdentity
+   name = $MIName
    issuer = "https://login.microsoftonline.com/$MITenantId/v2.0"
    subject = $PrincipalId
    audiences = @("api://AzureADTokenExchange")
@@ -13104,9 +13099,9 @@ Function Add-AzureAppRegistrationFederatedCredential { # Add Federated Credentia
    Subject = $Result.subject
    Audiences = ($Result.audiences -join ",")
    Description = $Result.description
-   ManagedIdentity = $MI.name
-   ManagedIdentityResourceGroup = $MI.resourceGroup
-   SubscriptionID = $SubscriptionId
+   ManagedIdentity = $MIName
+   ManagedIdentityResourceGroup = $MIResourceGroup
+   SubscriptionID = $MISubscriptionId
   }
   if (! $ShowObjectID) { $Result = $Result | Select-Object -ExcludeProperty ApplicationObjectID }
   $Result
@@ -13433,7 +13428,7 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
   if ($AppRoleList) {
    Write-Verbose "Adding Role List"
    $RolesToApply = @()
-   
+
    if (-not $Overwrite) {
     Write-Verbose "Merging: keeping ALL existing roles and adding new ones"
     # Keep ALL existing roles unchanged (preserving IDs, state, membertypes)
@@ -13448,10 +13443,10 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
      }
     }
    }
-   
+
    # Add new roles (only when not overwriting, or when overwriting with explicit flag)
    $RolesToApply += $AppRoleList
-   
+
    $body = @{
     appRoles = @($RolesToApply)
    }| ConvertTo-Json -Depth 10
@@ -13459,7 +13454,7 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
    Write-Verbose "Adding Individual Role. Checking Member Type"
    if ($allowedMemberTypes -eq 'Both') { $allowedMemberTypes = "User","Application" }
    $RolesToApply = @()
-   
+
    if (-not $Overwrite) {
     Write-Verbose "Merging existing roles with new individual role"
     $RolesToApply = @($ExistingRoles | ForEach-Object {
@@ -13473,7 +13468,7 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
      }
     })
    }
-   
+
    $RolesToApply += @{
     allowedMemberTypes = @($allowedMemberTypes)
     description         = $Description
@@ -13482,7 +13477,7 @@ Function Add-AzureAppRegistrationAppRoles { # Add Azure AppRegistrationAppRoles,
     isEnabled           = $true
     value               = $Value
    }
-   
+
    $body = @{
     appRoles = @($RolesToApply)
    } | ConvertTo-Json -Depth 10
@@ -13700,7 +13695,7 @@ Function Get-AzureServicePrincipal { # Get Service Principal, either specific or
 
       $URI = "https://graph.microsoft.com/v1.0/ServicePrincipals?`$count=true&`$select=$ValuesToShow&`$filter=$CurrentFilter eq '$CurrentValue'"
       $QueryResult = Get-AzureGraph -GraphRequest $URI -Token $authDetails.Token -ErrorAction SilentlyContinue
-      
+
       if ($QueryResult -and (@($QueryResult).Count -gt 1)) {
        throw "Multiple Service Principals found for $CurrentFilter '$CurrentValue'. Use a unique identifier."
       }
@@ -14211,7 +14206,7 @@ Function Get-AzureServicePrincipalAssignments { # Get Service Principal Assigned
   $URI = "https://graph.microsoft.com/v1.0/servicePrincipals/$ServicePrincipalID/appRoleAssignedTo"
 
   $AppAssigments = get-azuregraph -GraphRequest $URI -Token $authDetails.Token
-  
+
   # If App Roles is selected add the information to the result
   If ($ShowAppRole) {
    $AppRole = Get-AzureServicePrincipalPolicyPermissions -ServicePrincipalAppID $ServicePrincipalID -Token $authDetails.Token
@@ -15197,7 +15192,7 @@ Function Get-AzureAdministrativeUnit {
     $Result = $Result | Where-Object { $_.displayName -like "*$Name*" }
    }
   }
-  
+
   # Fetch members if ShowMembers flag is set
   if ($ShowMembers -and $Result) {
    $Result | ForEach-Object {
@@ -15206,7 +15201,7 @@ Function Get-AzureAdministrativeUnit {
     $_ | Add-Member -MemberType NoteProperty -Name "members" -Value $Members -Force
    }
   }
-  
+
   $Result | select-object * -ExcludeProperty deletedDateTime
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
@@ -15765,7 +15760,7 @@ Function Get-ADOProjectList { # Get All Azure DevOps project list | Uses on Get-
  } Catch {
   Write-Error "Error in $($MyInvocation.MyCommand.Name) : $_"
  }
- 
+
 }
 Function Get-ADOUsers { # Get All Azure DevOps Users | Uses on Get-ADO_Request
  param (
@@ -15814,7 +15809,7 @@ Function Get-ADORepositoryList { # Get All Azure DevOps Repository from a single
  if (! $Token) { throw "No Token provided and no global ADOToken available" }
  if (! $Organization) { $Organization = $global:AzureDevOpsOrganizationName }
  if (! $Organization) { throw "No Organization provided and no global AzureDevOpsOrganizationName available" }
- 
+
   # 1. Resolve Project Name to ID
   # We look up the project first because using the Project ID in the URL is safer than using a name with spaces.
   $EncodedProject = [Uri]::EscapeDataString($ProjectName)
@@ -17325,7 +17320,7 @@ Function Set-AzureADUserDisablePasswordExpiration { # Set Disable password Expir
   $params = @{
    "passwordPolicies" = "DisablePasswordExpiration"
   }
- 
+
   $ParamJson = $params | convertto-json
   Get-AzureGraph -Token $authDetails.Token -GraphRequest "https://graph.microsoft.com/beta/users/$UPNorID" -Method PATCH -Body $ParamJson
  } catch {
@@ -20051,8 +20046,12 @@ Function Get-SentinelGraphActivityInfo {
   $WorkspaceID,
   [string[]]$ExcludedAppIds,
   [switch]$IncludeDefaultExcludedAppIds,
-  [switch]$DefaultFilter
+  [switch]$DefaultFilter,
+  # URL prefix whose next path segment is extracted from RequestUri, e.g. 'https://graph.microsoft.com/v1.0/users/'
+  [string]$UriPrefixToExtract
  )
+
+ # Example to get users for an app : Get-SentinelGraphActivityInfo -UriPrefixToExtract 'https://graph.microsoft.com/v1.0/users/' -Duration 30d
 
  # 1. Setup & Auth
  if (! $WorkspaceID) { $WorkspaceID = $global:SentinelWorkspaceID }
@@ -20137,7 +20136,15 @@ Function Get-SentinelGraphActivityInfo {
   $QueryLines += '| project TimeGenerated, AppId, UserId, IPAddress, RequestMethod, RequestUri, ResponseStatusCode, UserAgent, DurationMs, OperationId, RequestId'
  }
 
- $QueryLines += '| sort by TimeGenerated asc'
+ if ($UriPrefixToExtract) {
+  $EscapedPrefix = $UriPrefixToExtract.Replace("'", "''")
+  $QueryLines += "| where RequestUri startswith '$EscapedPrefix'"
+  $QueryLines += "| extend ExtractedValue = tostring(split(split(substring(RequestUri, $($UriPrefixToExtract.Length)), '/')[0], '?')[0])"
+  $QueryLines += '| summarize Requests = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated), SampleUris = make_set(RequestUri, 20) by ExtractedValue'
+  $QueryLines += '| sort by LastSeen desc'
+ } else {
+  $QueryLines += '| sort by TimeGenerated asc'
+ }
  $Query = $QueryLines -join "`n"
 
  Write-Verbose "Final Query : $Query"
